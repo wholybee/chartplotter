@@ -8,6 +8,8 @@ This is intended as the seed of a larger, more modern chartplotter — the desig
 keeps chart parsing, the viewport/renderer, and the application shell in separate
 units so each can grow independently.
 
+<img src="screenshots/Catalina_Island.png" />
+
 ## What it does
 
 - A toolbar button opens a folder picker; the chosen directory is remembered
