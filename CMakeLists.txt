@@ -400,5 +400,37 @@ if(WIN32)
     set(CPACK_NSIS_MODIFY_PATH OFF)
 
     include(CPack)
+
+    # ---- Auto-build the NSIS installer as part of a Release build ------------
+    #
+    # Folds `cpack --config build/.../CPackConfig.cmake -C Release -G NSIS` into
+    # the normal build so the installer is produced without a separate command.
+    # The `installer` target is in ALL (so it runs on every build) but only
+    # actually packages on a Release build (pack_release.cmake guards on $<CONFIG>,
+    # since the install payload is Release-only). It depends on the exe and every
+    # plugin so it runs *after* all of them — including their post-build deploy
+    # steps (windeployqt, plugin DLLs, gdal-data) — have populated the Release dir
+    # that CPack packages.
+    #
+    # Requires NSIS (makensis) on PATH. Turn off with -DCHARTPLOTTER_BUILD_INSTALLER=OFF
+    # (e.g. for fast iterative Release builds, or on a machine without NSIS).
+    option(CHARTPLOTTER_BUILD_INSTALLER
+        "Build the NSIS installer automatically during a Release build" ON)
+    if(CHARTPLOTTER_BUILD_INSTALLER)
+        add_custom_target(installer ALL
+            COMMAND ${CMAKE_COMMAND}
+                    -DCFG=$<CONFIG>
+                    -DCPACK_CMD=${CMAKE_CPACK_COMMAND}
+                    -DCPACK_CONFIG=${CMAKE_BINARY_DIR}/CPackConfig.cmake
+                    -DBIN_DIR=${CMAKE_BINARY_DIR}
+                    -P ${CMAKE_SOURCE_DIR}/cmake/pack_release.cmake
+            WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
+            COMMENT "Packaging NSIS installer (Release only)"
+            VERBATIM
+        )
+        # Order after the exe + all plugins so their deployed output is in place.
+        add_dependencies(installer chartviewer
+            signalk_plugin gpx_plugin wmm_plugin instruments_plugin)
+    endif()
 endif()
 
