@@ -173,6 +173,39 @@ dialog reached from the Plugins menu.
 (hidden until the first item is added). The toggle uses the same check-mark style
 as the built-in toggles. Callbacks fire on the GUI thread.
 
+### Plugin dialogs and UI chrome
+
+Most plugin UI should be a core-hosted **settings page** (`ISettingsPageProvider`,
+below): the plugin supplies only a content widget and the core owns the window
+chrome. When a plugin genuinely needs its own top-level dialog (the **GPX Import /
+Export** plugin is the worked example — reached from a menu action, parented to
+`dialogParent()`), it can match the host's frameless white/blue look without
+re-implementing it by including a small set of **sanctioned core UI-helper
+headers** from `src/` (consumed by source, resolved against the host exe at link
+time — the same way plugins already use `theme.hpp`):
+
+| Header | Provides |
+|--------|----------|
+| `theme.hpp` | `theme::menu()` / `theme::input()` / `theme::textMuted()` — the shared palette. |
+| `window_dragger.hpp` | Header-only; makes a frameless window draggable by a child widget (e.g. its title bar). |
+| `dialog_chrome.hpp` | Header-only; the frameless side-menu dialog chrome used app-wide — `dialogchrome::setup(dlg, title[, closeOnDismiss])` builds the bordered panel + navy title bar with a ✕, returning the panel layout; plus `sectionHeader()`, `styledSlider()`, `styleAccentButton()` / `styleOutlinedButton()`, and `okCancelRow()`. |
+
+```cpp
+auto* dlg = new QDialog(core->dialogParent());
+dlg->setAttribute(Qt::WA_DeleteOnClose);
+// Modeless + self-deleting → dismiss via close() (closeOnDismiss), not reject().
+auto* panelCol = dialogchrome::setup(dlg, QStringLiteral("My Plugin"), /*closeOnDismiss=*/true);
+panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("Options")));
+// … add a margined body widget …
+panelCol->addWidget(dialogchrome::okCancelRow(dlg));   // or a custom button bar
+```
+
+These are **host-internal** headers, not a frozen SDK surface: they are sanctioned
+for in-tree plugins today but may change until the plugin SDK freezes an ABI. The
+intended long-term direction mirrors the settings-page split — a core-hosted
+dialog service on `ICoreApi` so plugins supply only content and never include
+chrome internals.
+
 ### Data sources
 
 `registerDataSource(sourceId, name, onOpenSettings)` makes the plugin a

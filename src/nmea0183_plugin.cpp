@@ -4,11 +4,11 @@
 #include "ais_decoder.hpp"
 #include "touch_spin_box.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QWidget>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
-#include <QGroupBox>
 #include <QRadioButton>
 #include <QLineEdit>
 #include <QCheckBox>
@@ -112,78 +112,88 @@ void Nmea0183Plugin::showDebugWindow() {
 }
 
 QWidget* Nmea0183Plugin::createSettingsPage(QWidget* parent) {
+    const theme::MenuPalette& t = theme::menu();
     auto* page = new QWidget(parent);
     auto* col = new QVBoxLayout(page);
     col->setContentsMargins(0, 0, 0, 0);
-    col->setSpacing(14);
+    col->setSpacing(0);
 
     auto* intro = new QLabel(QStringLiteral(
         "Connect to a WiFi gateway that broadcasts NMEA 0183 data over the network."));
     intro->setWordWrap(true);
+    intro->setStyleSheet(QStringLiteral("font-size:14px; color:%1; padding:12px 16px 4px 16px;")
+                         .arg(t.actionFg));
     col->addWidget(intro);
 
+    auto cap = [&](const QString& s) {
+        auto* l = new QLabel(s);
+        l->setWordWrap(true);
+        l->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
+        return l;
+    };
+
     // Connection type.
-    auto* typeBox = new QGroupBox(QStringLiteral("Connection Type"));
-    auto* typeRow = new QHBoxLayout(typeBox);
+    col->addWidget(dialogchrome::sectionHeader(QStringLiteral("Connection Type")));
+    auto* typeBody = new QWidget;
+    auto* typeRow = new QHBoxLayout(typeBody);
+    typeRow->setContentsMargins(16, 4, 16, 8);
     auto* tcp = new QRadioButton(QStringLiteral("TCP"));
     auto* udp = new QRadioButton(QStringLiteral("UDP"));
-    for (QRadioButton* r : {tcp, udp}) {
-        r->setMinimumHeight(40);
-        r->setStyleSheet(QStringLiteral("QRadioButton{ font-size:15px; }"));
-    }
+    for (QRadioButton* r : {tcp, udp}) dialogchrome::styleRadio(r);
     (transport_ == NmeaTransport::Udp ? udp : tcp)->setChecked(true);
     typeRow->addWidget(tcp);
     typeRow->addWidget(udp);
     typeRow->addStretch(1);
-    col->addWidget(typeBox);
+    col->addWidget(typeBody);
+
+    // Server.
+    col->addWidget(dialogchrome::sectionHeader(QStringLiteral("Server")));
+    auto* body = new QWidget;
+    auto* b = new QVBoxLayout(body);
+    b->setContentsMargins(16, 4, 16, 12);
+    b->setSpacing(8);
 
     // Host (TCP only).
     auto* hostRow = new QWidget;
     auto* hostCol = new QVBoxLayout(hostRow);
     hostCol->setContentsMargins(0, 0, 0, 0);
     hostCol->setSpacing(4);
-    auto* hostCap = new QLabel(QStringLiteral("Gateway IP address:"));
-    hostCap->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
+    hostCol->addWidget(cap(QStringLiteral("Gateway IP address:")));
     auto* hostEdit = new QLineEdit(host_);
     hostEdit->setPlaceholderText(QStringLiteral("e.g. 192.168.4.1"));
-    hostEdit->setMinimumHeight(40);
-    hostEdit->setStyleSheet(QStringLiteral("QLineEdit{ font-size:16px; padding:4px 8px; }"));
-    hostCol->addWidget(hostCap);
+    dialogchrome::styleLineEdit(hostEdit);
     hostCol->addWidget(hostEdit);
-    col->addWidget(hostRow);
+    b->addWidget(hostRow);
     hostRow->setVisible(tcp->isChecked());
     QObject::connect(tcp, &QRadioButton::toggled, hostRow,
                      [hostRow](bool on) { hostRow->setVisible(on); });
 
     // Port.
-    auto* portCap = new QLabel(QStringLiteral("Port:"));
-    portCap->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-    col->addWidget(portCap);
+    b->addWidget(cap(QStringLiteral("Port:")));
     auto* portBox = new TouchSpinBox;
     portBox->setRange(1, 65535);
     portBox->setSingleStep(1);
     portBox->setDecimals(0);
     portBox->setValue(port_ > 0 ? double(port_) : 10110.0);
-    col->addWidget(portBox);
+    b->addWidget(portBox);
 
     // Enable.
     auto* enableBox = new QCheckBox(QStringLiteral("Enable connection"));
     enableBox->setChecked(enabled_);
-    enableBox->setMinimumHeight(40);
-    enableBox->setStyleSheet(QStringLiteral(
-        "QCheckBox{ font-size:16px; }"
-        "QCheckBox::indicator{ width:24px; height:24px; }"));
-    col->addWidget(enableBox);
+    dialogchrome::styleCheckBox(enableBox);
+    b->addWidget(enableBox);
 
     // Actions.
     auto* btnRow = new QHBoxLayout;
     auto* applyBtn = new QPushButton(QStringLiteral("Apply"));
     auto* rawBtn   = new QPushButton(QStringLiteral("Show Raw Data…"));
-    for (QPushButton* b : {applyBtn, rawBtn}) b->setMinimumHeight(44);
+    dialogchrome::styleAccentButton(applyBtn);
+    dialogchrome::styleOutlinedButton(rawBtn);
     btnRow->addWidget(applyBtn);
     btnRow->addWidget(rawBtn);
     btnRow->addStretch(1);
-    col->addLayout(btnRow);
+    b->addLayout(btnRow);
+    col->addWidget(body);
 
     QObject::connect(applyBtn, &QPushButton::clicked, page,
                      [this, tcp, udp, hostEdit, portBox, enableBox] {

@@ -1,11 +1,11 @@
 #include "chart_symbol_size_dialog.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
-#include <QHBoxLayout>
 #include <QLabel>
-#include <QPushButton>
 #include <QSlider>
+#include <QWidget>
 #include <cmath>
 
 namespace {
@@ -26,30 +26,26 @@ QString formatScale(double scale) {
 ChartSymbolSizeDialog::ChartSymbolSizeDialog(double scale, QWidget* parent)
     : QDialog(parent) {
     setWindowTitle(QStringLiteral("Symbol Size"));
-    resize(480, 280);
+    resize(440, 300);
 
-    auto* col = new QVBoxLayout(this);
-    col->setSpacing(14);
+    const theme::MenuPalette& t = theme::menu();
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("Symbol Size"));
+    panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("Symbol Scale")));
+
+    auto* body = new QWidget;
+    auto* col = new QVBoxLayout(body);
+    col->setContentsMargins(16, 4, 16, 12);
+    col->setSpacing(10);
 
     auto* intro = new QLabel(QStringLiteral(
         "Scale chart symbols relative to their normal size. "
         "Larger values make buoys, lights, and other point symbols "
         "easier to see at a glance."));
     intro->setWordWrap(true);
+    intro->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(t.actionFg));
     col->addWidget(intro);
 
-    auto* caption = new QLabel(QStringLiteral("Symbol scale:"));
-    caption->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-    col->addWidget(caption);
-
-    slider_ = new QSlider(Qt::Horizontal);
-    slider_->setMinimum(kSliderMin);
-    slider_->setMaximum(kSliderMax);
-    slider_->setSingleStep(1);
-    slider_->setPageStep(1);
-    slider_->setTickPosition(QSlider::TicksBelow);
-    slider_->setTickInterval(1);
-    slider_->setMinimumHeight(44);
+    slider_ = dialogchrome::styledSlider(kSliderMin, kSliderMax);
     int step = scaleToStep(scale);
     if (step < kSliderMin) step = kSliderMin;
     if (step > kSliderMax) step = kSliderMax;
@@ -58,25 +54,15 @@ ChartSymbolSizeDialog::ChartSymbolSizeDialog(double scale, QWidget* parent)
 
     valueLabel_ = new QLabel;
     valueLabel_->setAlignment(Qt::AlignCenter);
-    valueLabel_->setStyleSheet(QStringLiteral("font-size:14px; font-weight:600;"));
+    valueLabel_->setStyleSheet(QStringLiteral(
+        "font-size:14px; font-weight:600; color:%1;").arg(t.accent));
     col->addWidget(valueLabel_);
     updateValueLabel();
     connect(slider_, &QSlider::valueChanged, this, [this] { updateValueLabel(); });
+    panelCol->addWidget(body);
 
-    col->addStretch(1);
-
-    auto* row = new QHBoxLayout;
-    auto* cancelBtn = new QPushButton(QStringLiteral("Cancel"));
-    auto* okBtn     = new QPushButton(QStringLiteral("OK"));
-    for (QPushButton* b : {cancelBtn, okBtn}) b->setMinimumHeight(44);
-    okBtn->setDefault(true);
-    row->addStretch(1);
-    row->addWidget(cancelBtn);
-    row->addWidget(okBtn);
-    col->addLayout(row);
-
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(okBtn,     &QPushButton::clicked, this, &QDialog::accept);
+    panelCol->addStretch(1);
+    panelCol->addWidget(dialogchrome::okCancelRow(this));
 }
 
 double ChartSymbolSizeDialog::symbolScale() const {

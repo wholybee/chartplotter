@@ -1,11 +1,11 @@
 #include "chart_detail_dialog.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
-#include <QHBoxLayout>
 #include <QLabel>
-#include <QPushButton>
 #include <QSlider>
+#include <QWidget>
 #include <cmath>
 
 namespace {
@@ -48,92 +48,78 @@ ChartDetailDialog::ChartDetailDialog(double detailLevel, double scaminLevel,
                                      QWidget* parent)
     : QDialog(parent) {
     setWindowTitle(QStringLiteral("Chart Detail"));
-    resize(480, 440);
+    resize(460, 560);
 
-    auto* col = new QVBoxLayout(this);
-    col->setSpacing(12);
+    const theme::MenuPalette& t = theme::menu();
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("Chart Detail"));
 
-    // --- Detail bias (chart-band selection) --------------------------------
-    auto* intro = new QLabel(QStringLiteral(
-        "Adjust how much chart detail is shown at the current zoom. Higher "
-        "values pull in higher-detail charts; lower values back off to less "
-        "detail. Zoom is unchanged."));
-    intro->setWordWrap(true);
-    col->addWidget(intro);
+    auto bodyLabel = [&](const QString& text) {
+        auto* l = new QLabel(text);
+        l->setWordWrap(true);
+        l->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(t.actionFg));
+        return l;
+    };
+    auto valueLabel = [&]() {
+        auto* l = new QLabel;
+        l->setAlignment(Qt::AlignCenter);
+        l->setStyleSheet(QStringLiteral(
+            "font-size:14px; font-weight:600; color:%1;").arg(t.accent));
+        return l;
+    };
 
-    auto* caption = new QLabel(QStringLiteral("Detail bias:"));
-    caption->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-    col->addWidget(caption);
+    // --- Object detail (SCAMIN declutter) — the top control -----------------
+    panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("Object Detail")));
+    auto* objBody = new QWidget;
+    auto* objCol  = new QVBoxLayout(objBody);
+    objCol->setContentsMargins(16, 4, 16, 12);
+    objCol->setSpacing(8);
 
-    slider_ = new QSlider(Qt::Horizontal);
-    slider_->setMinimum(kSliderMin);
-    slider_->setMaximum(kSliderMax);
-    slider_->setSingleStep(1);
-    slider_->setPageStep(1);
-    slider_->setTickPosition(QSlider::TicksBelow);
-    slider_->setTickInterval(1);
-    slider_->setMinimumHeight(44);
-    int step = levelToStep(detailLevel);
-    if (step < kSliderMin) step = kSliderMin;
-    if (step > kSliderMax) step = kSliderMax;
-    slider_->setValue(step);
-    col->addWidget(slider_);
-
-    valueLabel_ = new QLabel;
-    valueLabel_->setAlignment(Qt::AlignCenter);
-    valueLabel_->setStyleSheet(QStringLiteral("font-size:14px; font-weight:600;"));
-    col->addWidget(valueLabel_);
-    updateDetailLabel();
-    connect(slider_, &QSlider::valueChanged, this, [this] { updateDetailLabel(); });
-
-    // --- Object detail (SCAMIN declutter) ----------------------------------
-    auto* scaminIntro = new QLabel(QStringLiteral(
+    objCol->addWidget(bodyLabel(QStringLiteral(
         "Control how soon individual objects (buoys, beacons, soundings, …) "
         "drop off as you zoom out, using each object's built-in SCAMIN scale. "
         "Left of centre declutters; right of centre keeps more on screen. The "
-        "ends hide or show all objects regardless of zoom."));
-    scaminIntro->setWordWrap(true);
-    col->addWidget(scaminIntro);
+        "ends hide or show all objects regardless of zoom.")));
 
-    auto* scaminCaption = new QLabel(QStringLiteral("Object detail:"));
-    scaminCaption->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-    col->addWidget(scaminCaption);
-
-    scaminSlider_ = new QSlider(Qt::Horizontal);
-    scaminSlider_->setMinimum(kScaminStepMin);
-    scaminSlider_->setMaximum(kScaminStepMax);
-    scaminSlider_->setSingleStep(1);
-    scaminSlider_->setPageStep(1);
-    scaminSlider_->setTickPosition(QSlider::TicksBelow);
-    scaminSlider_->setTickInterval(1);
-    scaminSlider_->setMinimumHeight(44);
+    scaminSlider_ = dialogchrome::styledSlider(kScaminStepMin, kScaminStepMax);
     int sStep = scaminLevelToStep(scaminLevel);
     if (sStep < kScaminStepMin) sStep = kScaminStepMin;
     if (sStep > kScaminStepMax) sStep = kScaminStepMax;
     scaminSlider_->setValue(sStep);
-    col->addWidget(scaminSlider_);
+    objCol->addWidget(scaminSlider_);
 
-    scaminValueLabel_ = new QLabel;
-    scaminValueLabel_->setAlignment(Qt::AlignCenter);
-    scaminValueLabel_->setStyleSheet(QStringLiteral("font-size:14px; font-weight:600;"));
-    col->addWidget(scaminValueLabel_);
+    scaminValueLabel_ = valueLabel();
+    objCol->addWidget(scaminValueLabel_);
     updateScaminLabel();
     connect(scaminSlider_, &QSlider::valueChanged, this, [this] { updateScaminLabel(); });
+    panelCol->addWidget(objBody);
 
-    col->addStretch(1);
+    // --- Detail bias (chart-band selection) — below -------------------------
+    panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("Detail Bias")));
+    auto* biasBody = new QWidget;
+    auto* biasCol  = new QVBoxLayout(biasBody);
+    biasCol->setContentsMargins(16, 4, 16, 12);
+    biasCol->setSpacing(8);
 
-    auto* row = new QHBoxLayout;
-    auto* cancelBtn = new QPushButton(QStringLiteral("Cancel"));
-    auto* okBtn     = new QPushButton(QStringLiteral("OK"));
-    for (QPushButton* b : {cancelBtn, okBtn}) b->setMinimumHeight(44);
-    okBtn->setDefault(true);
-    row->addStretch(1);
-    row->addWidget(cancelBtn);
-    row->addWidget(okBtn);
-    col->addLayout(row);
+    biasCol->addWidget(bodyLabel(QStringLiteral(
+        "Adjust how much chart detail is shown at the current zoom. Higher "
+        "values pull in higher-detail charts; lower values back off to less "
+        "detail. Zoom is unchanged.")));
 
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(okBtn,     &QPushButton::clicked, this, &QDialog::accept);
+    slider_ = dialogchrome::styledSlider(kSliderMin, kSliderMax);
+    int step = levelToStep(detailLevel);
+    if (step < kSliderMin) step = kSliderMin;
+    if (step > kSliderMax) step = kSliderMax;
+    slider_->setValue(step);
+    biasCol->addWidget(slider_);
+
+    valueLabel_ = valueLabel();
+    biasCol->addWidget(valueLabel_);
+    updateDetailLabel();
+    connect(slider_, &QSlider::valueChanged, this, [this] { updateDetailLabel(); });
+    panelCol->addWidget(biasBody);
+
+    panelCol->addStretch(1);
+    panelCol->addWidget(dialogchrome::okCancelRow(this));
 }
 
 double ChartDetailDialog::detailLevel() const {

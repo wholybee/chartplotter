@@ -3,6 +3,7 @@
 #include "signalk_decoder.hpp"
 #include "touch_spin_box.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QWidget>
 #include <QVBoxLayout>
@@ -73,10 +74,11 @@ void SignalKPlugin::applyConfig(const QString& host, quint16 port, bool enabled)
 }
 
 QWidget* SignalKPlugin::createSettingsPage(QWidget* parent) {
+    const theme::MenuPalette& t = theme::menu();
     auto* page = new QWidget(parent);
     auto* col = new QVBoxLayout(page);
     col->setContentsMargins(0, 0, 0, 0);
-    col->setSpacing(14);
+    col->setSpacing(0);
 
     auto* intro = new QLabel(QStringLiteral(
         "Connect to a Signal K server. The plugin opens a WebSocket to "
@@ -84,45 +86,53 @@ QWidget* SignalKPlugin::createSettingsPage(QWidget* parent) {
         "AIS targets. Default port is 80 (use 3000 for the signalk-server-node "
         "default)."));
     intro->setWordWrap(true);
+    intro->setStyleSheet(QStringLiteral("font-size:14px; color:%1; padding:12px 16px 4px 16px;")
+                         .arg(t.actionFg));
     col->addWidget(intro);
 
+    col->addWidget(dialogchrome::sectionHeader(QStringLiteral("Server")));
+    auto* body = new QWidget;
+    auto* b = new QVBoxLayout(body);
+    b->setContentsMargins(16, 4, 16, 12);
+    b->setSpacing(8);
+
+    auto cap = [&](const QString& s) {
+        auto* l = new QLabel(s);
+        l->setWordWrap(true);
+        l->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
+        return l;
+    };
+
     // Host.
-    auto* hostCap = new QLabel(QStringLiteral("Server IP address or hostname:"));
-    hostCap->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-    col->addWidget(hostCap);
+    b->addWidget(cap(QStringLiteral("Server IP address or hostname:")));
     auto* hostEdit = new QLineEdit(host_);
     hostEdit->setPlaceholderText(QStringLiteral("e.g. 192.168.4.1"));
-    hostEdit->setMinimumHeight(40);
-    hostEdit->setStyleSheet(QStringLiteral("QLineEdit{ font-size:16px; padding:4px 8px; }"));
-    col->addWidget(hostEdit);
+    dialogchrome::styleLineEdit(hostEdit);
+    b->addWidget(hostEdit);
 
     // Port.
-    auto* portCap = new QLabel(QStringLiteral("Port:"));
-    portCap->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-    col->addWidget(portCap);
+    b->addWidget(cap(QStringLiteral("Port:")));
     auto* portBox = new TouchSpinBox;
     portBox->setRange(1, 65535);
     portBox->setSingleStep(1);
     portBox->setDecimals(0);
     portBox->setValue(port_ > 0 ? double(port_) : double(kDefaultPort));
-    col->addWidget(portBox);
+    b->addWidget(portBox);
 
     // Enable.
     auto* enableBox = new QCheckBox(QStringLiteral("Enable connection"));
     enableBox->setChecked(enabled_);
-    enableBox->setMinimumHeight(40);
-    enableBox->setStyleSheet(QStringLiteral(
-        "QCheckBox{ font-size:16px; }"
-        "QCheckBox::indicator{ width:24px; height:24px; }"));
-    col->addWidget(enableBox);
+    dialogchrome::styleCheckBox(enableBox);
+    b->addWidget(enableBox);
 
     // Actions.
     auto* btnRow = new QHBoxLayout;
     auto* applyBtn = new QPushButton(QStringLiteral("Apply"));
-    applyBtn->setMinimumHeight(44);
+    dialogchrome::styleAccentButton(applyBtn);
     btnRow->addWidget(applyBtn);
     btnRow->addStretch(1);
-    col->addLayout(btnRow);
+    b->addLayout(btnRow);
+    col->addWidget(body);
 
     QObject::connect(applyBtn, &QPushButton::clicked, page,
                      [this, hostEdit, portBox, enableBox] {

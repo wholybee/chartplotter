@@ -2,9 +2,11 @@
 #include "nav_data_store.hpp"
 #include "theme.hpp"
 #include "units.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
 #include <QLabel>
+#include <QWidget>
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QTimer>
@@ -17,11 +19,25 @@
 NavDataBrowserWindow::NavDataBrowserWindow(const NavDataStore* store, QWidget* parent)
     : QDialog(parent), store_(store) {
     setWindowTitle(QStringLiteral("NavData Browser"));
-    resize(520, 640);
-    setWindowFlag(Qt::Window, true);   // real top-level window, modeless via show()
+    resize(560, 660);
 
-    auto* col = new QVBoxLayout(this);
-    table_ = new QTableWidget(0, 4, this);
+    const theme::MenuPalette& t = theme::menu();
+    // Modeless, reused window (kept by the owner); the ✕ closes/hides it.
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("NavData Browser"), true);
+
+    const QString tableStyle = QStringLiteral(
+        "QTableWidget{ background:%1; color:%2; gridline-color:%3; border:none; }"
+        "QHeaderView::section{ background:%4; color:%5; border:none; padding:6px;"
+        " font-size:12px; font-weight:600; }"
+        "QTableCornerButton::section{ background:%4; border:none; }")
+        .arg(t.panelBg, t.actionFg, t.separator, t.headerBg, t.headerFg);
+
+    auto* body = new QWidget;
+    auto* col = new QVBoxLayout(body);
+    col->setContentsMargins(12, 8, 12, 8);
+    col->setSpacing(8);
+
+    table_ = new QTableWidget(0, 4);
     table_->setHorizontalHeaderLabels(
         {QStringLiteral("Field"), QStringLiteral("Value"),
          QStringLiteral("Source"), QStringLiteral("Age")});
@@ -29,6 +45,7 @@ NavDataBrowserWindow::NavDataBrowserWindow(const NavDataStore* store, QWidget* p
     table_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     table_->setSelectionMode(QAbstractItemView::NoSelection);
     table_->setFocusPolicy(Qt::NoFocus);
+    table_->setStyleSheet(tableStyle);
     table_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     table_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     table_->horizontalHeader()->setSectionResizeMode(2, QHeaderView::ResizeToContents);
@@ -36,20 +53,23 @@ NavDataBrowserWindow::NavDataBrowserWindow(const NavDataStore* store, QWidget* p
     col->addWidget(table_, 3);
 
     // Route navigation (APB/RMB) section: computed values, so just Field / Value.
-    auto* navHeader = new QLabel(QStringLiteral("Navigation (APB / RMB)"), this);
-    navHeader->setStyleSheet(QStringLiteral("font-weight:600; padding:4px 2px;"));
+    auto* navHeader = new QLabel(QStringLiteral("Navigation (APB / RMB)"));
+    navHeader->setStyleSheet(QStringLiteral(
+        "font-size:13px; font-weight:600; color:%1; padding:4px 2px;").arg(t.headerFg));
     col->addWidget(navHeader);
 
-    navTable_ = new QTableWidget(0, 2, this);
+    navTable_ = new QTableWidget(0, 2);
     navTable_->setHorizontalHeaderLabels(
         {QStringLiteral("Field"), QStringLiteral("Value")});
     navTable_->verticalHeader()->setVisible(false);
     navTable_->setEditTriggers(QAbstractItemView::NoEditTriggers);
     navTable_->setSelectionMode(QAbstractItemView::NoSelection);
     navTable_->setFocusPolicy(Qt::NoFocus);
+    navTable_->setStyleSheet(tableStyle);
     navTable_->horizontalHeader()->setSectionResizeMode(0, QHeaderView::ResizeToContents);
     navTable_->horizontalHeader()->setSectionResizeMode(1, QHeaderView::Stretch);
     col->addWidget(navTable_, 2);
+    panelCol->addWidget(body, 1);
 
     if (store_) {
         connect(store_, &NavDataStore::ownshipChanged, this, &NavDataBrowserWindow::refresh);

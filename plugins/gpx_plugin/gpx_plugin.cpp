@@ -2,12 +2,14 @@
 #include "gpx_io.hpp"
 #include "route_store.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QDialog>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
+#include <QWidget>
 #include <QFileDialog>
 #include <QFile>
 #include <QFileInfo>
@@ -18,12 +20,18 @@
 
 namespace {
 
-// A big touch target: tall, generous font. Used for the two primary actions so
-// they're easy to hit on a panel mounted at the helm.
+// A big touch target: tall, generous font, accent-filled as a primary action so
+// it's easy to hit on a panel mounted at the helm.
 QPushButton* bigButton(const QString& text) {
+    const theme::MenuPalette& t = theme::menu();
     auto* b = new QPushButton(text);
     b->setMinimumHeight(60);
-    b->setStyleSheet(QStringLiteral("QPushButton{ font-size:18px; padding:6px 16px; }"));
+    b->setCursor(Qt::PointingHandCursor);
+    b->setStyleSheet(QStringLiteral(
+        "QPushButton{ font-size:18px; padding:6px 16px; border:none;"
+        " border-radius:6px; background:%1; color:%2; font-weight:600; }"
+        "QPushButton:pressed{ background:%3; }")
+        .arg(t.accent, t.titleFg, t.titleBg));
     return b;
 }
 
@@ -67,53 +75,61 @@ void GpxPlugin::openDialog() {
 
     auto* dlg = new QDialog(core_->dialogParent());
     dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setWindowFlag(Qt::Window, true);
     dlg->setWindowTitle(QStringLiteral("GPX Import / Export"));
-    dlg->resize(460, 420);
+    dlg->resize(460, 460);
 
-    auto* col = new QVBoxLayout(dlg);
-    col->setContentsMargins(20, 20, 20, 16);
-    col->setSpacing(16);
+    const theme::MenuPalette& t = theme::menu();
+    // Modeless and self-deleting (WA_DeleteOnClose), so the ✕ must dismiss via
+    // close() rather than reject() — hence closeOnDismiss = true.
+    auto* panelCol = dialogchrome::setup(dlg, QStringLiteral("GPX Import / Export"), true);
+
+    auto* body = new QWidget;
+    auto* bodyCol = new QVBoxLayout(body);
+    bodyCol->setContentsMargins(20, 16, 20, 16);
+    bodyCol->setSpacing(14);
 
     auto* intro = new QLabel(QStringLiteral(
         "Import routes and waypoints from a GPX file into the chartplotter, or "
         "export everything currently stored to a GPX file you can share or back up."));
     intro->setWordWrap(true);
-    intro->setStyleSheet(QStringLiteral("font-size:15px;"));
-    col->addWidget(intro);
+    intro->setStyleSheet(QStringLiteral("font-size:15px; color:%1;").arg(t.actionFg));
+    bodyCol->addWidget(intro);
 
     auto* summary = new QLabel(summaryText(rs));
     summary->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-    col->addWidget(summary);
+    bodyCol->addWidget(summary);
 
     auto* importBtn = bigButton(QStringLiteral("Import GPX File…"));
     auto* exportBtn = bigButton(QStringLiteral("Export GPX File…"));
-    col->addWidget(importBtn);
-    col->addWidget(exportBtn);
+    bodyCol->addWidget(importBtn);
+    bodyCol->addWidget(exportBtn);
 
-    col->addStretch(1);
+    bodyCol->addStretch(1);
 
     // Result of the last operation; stays visible so a glance confirms success.
     auto* status = new QLabel;
     status->setWordWrap(true);
-    status->setStyleSheet(QStringLiteral("font-size:14px;"));
-    col->addWidget(status);
+    status->setStyleSheet(QStringLiteral("font-size:14px; color:%1;").arg(t.actionFg));
+    bodyCol->addWidget(status);
 
     auto* footer = new QHBoxLayout;
     footer->addStretch(1);
     auto* closeBtn = new QPushButton(QStringLiteral("Close"));
-    closeBtn->setMinimumHeight(44);
+    dialogchrome::styleOutlinedButton(closeBtn);
     QObject::connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
     footer->addWidget(closeBtn);
-    col->addLayout(footer);
+    bodyCol->addLayout(footer);
 
+    panelCol->addWidget(body, 1);
+
+    const QString okColor = t.actionFg;
     const auto showError = [status](const QString& msg) {
         status->setStyleSheet(QStringLiteral("font-size:14px; color:%1;").arg(theme::isDark()
             ? QStringLiteral("#ff8a80") : QStringLiteral("#b00020")));
         status->setText(msg);
     };
-    const auto showOk = [status](const QString& msg) {
-        status->setStyleSheet(QStringLiteral("font-size:14px;"));
+    const auto showOk = [status, okColor](const QString& msg) {
+        status->setStyleSheet(QStringLiteral("font-size:14px; color:%1;").arg(okColor));
         status->setText(msg);
     };
 

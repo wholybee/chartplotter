@@ -1,29 +1,32 @@
 #include "ownship_prediction_dialog.hpp"
 #include "touch_spin_box.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
-#include <QHBoxLayout>
 #include <QLabel>
-#include <QPushButton>
+#include <QWidget>
 
 OwnshipPredictionDialog::OwnshipPredictionDialog(double minutes, QWidget* parent)
     : QDialog(parent) {
     setWindowTitle(QStringLiteral("Ownship Course Prediction"));
-    resize(440, 240);
+    resize(440, 280);
 
-    auto* col = new QVBoxLayout(this);
-    col->setSpacing(14);
+    const theme::MenuPalette& t = theme::menu();
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("Ownship Course Prediction"));
+    panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("Prediction Length")));
+
+    auto* body = new QWidget;
+    auto* col = new QVBoxLayout(body);
+    col->setContentsMargins(16, 4, 16, 12);
+    col->setSpacing(10);
 
     auto* intro = new QLabel(QStringLiteral(
         "How far ahead the course-prediction line reaches, as minutes of travel "
         "at the current speed."));
     intro->setWordWrap(true);
+    intro->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(t.actionFg));
     col->addWidget(intro);
-
-    auto* caption = new QLabel(QStringLiteral("Prediction length:"));
-    caption->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-    col->addWidget(caption);
 
     minutesBox_ = new TouchSpinBox;
     minutesBox_->setRange(1.0, 120.0);
@@ -32,21 +35,10 @@ OwnshipPredictionDialog::OwnshipPredictionDialog(double minutes, QWidget* parent
     minutesBox_->setSuffix(QStringLiteral(" min"));
     minutesBox_->setValue(minutes);
     col->addWidget(minutesBox_);
+    panelCol->addWidget(body);
 
-    col->addStretch(1);
-
-    auto* row = new QHBoxLayout;
-    auto* cancelBtn = new QPushButton(QStringLiteral("Cancel"));
-    auto* okBtn     = new QPushButton(QStringLiteral("OK"));
-    for (QPushButton* b : {cancelBtn, okBtn}) b->setMinimumHeight(44);
-    okBtn->setDefault(true);
-    row->addStretch(1);
-    row->addWidget(cancelBtn);
-    row->addWidget(okBtn);
-    col->addLayout(row);
-
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(okBtn,     &QPushButton::clicked, this, &QDialog::accept);
+    panelCol->addStretch(1);
+    panelCol->addWidget(dialogchrome::okCancelRow(this));
 }
 
 double OwnshipPredictionDialog::minutes() const { return minutesBox_->value(); }

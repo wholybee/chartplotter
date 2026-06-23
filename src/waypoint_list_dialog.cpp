@@ -1,6 +1,8 @@
 #include "waypoint_list_dialog.hpp"
 #include "route_store.hpp"
 #include "units.hpp"
+#include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -10,6 +12,7 @@
 #include <QCheckBox>
 #include <QFrame>
 #include <QLabel>
+#include <QSizePolicy>
 #include <QMessageBox>
 
 namespace {
@@ -17,7 +20,8 @@ QLabel* makeCell(int fixedWidth, Qt::Alignment align) {
     auto* l = new QLabel;
     l->setAttribute(Qt::WA_TransparentForMouseEvents);
     l->setAlignment(align);
-    l->setStyleSheet(QStringLiteral("font-size:14px; padding:0 4px; border:none;"));
+    l->setStyleSheet(QStringLiteral("font-size:14px; padding:0 4px; border:none; color:%1;")
+                     .arg(theme::menu().actionFg));
     if (fixedWidth > 0) l->setFixedWidth(fixedWidth);
     return l;
 }
@@ -30,45 +34,50 @@ QString fmtPos(double lat, double lon) {
 
 WaypointListDialog::WaypointListDialog(RouteStore* store, bool pickMode, QWidget* parent)
     : QDialog(parent), store_(store), pickMode_(pickMode) {
-    setWindowTitle(pickMode ? QStringLiteral("Select Waypoint")
-                            : QStringLiteral("Waypoints"));
+    const QString titleText = pickMode ? QStringLiteral("Select Waypoint")
+                                       : QStringLiteral("Waypoints");
+    setWindowTitle(titleText);
     resize(520, 600);
-    setWindowFlag(Qt::Window, true);
 
-    auto* col = new QVBoxLayout(this);
-    col->setSpacing(0);
-    col->setContentsMargins(0, 0, 0, 8);
+    const theme::MenuPalette& t = theme::menu();
+    auto* panelCol = dialogchrome::setup(this, titleText);
 
-    countLabel_ = new QLabel(this);
-    countLabel_->setStyleSheet(QStringLiteral("font-size:13px; padding:6px 8px;"));
-    col->addWidget(countLabel_);
+    countLabel_ = new QLabel;
+    countLabel_->setStyleSheet(QStringLiteral("font-size:13px; padding:6px 12px; color:%1;")
+                               .arg(t.actionFg));
+    panelCol->addWidget(countLabel_);
 
     {   // static column header
-        auto* hdr = new QWidget(this);
+        auto* hdr = new QWidget;
+        hdr->setObjectName(QStringLiteral("WaypointListHdr"));
         hdr->setStyleSheet(QStringLiteral(
-            "background: palette(button); font-size:12px; font-weight:600;"));
+            "#WaypointListHdr{ background:%1; border-bottom:1px solid %2; }")
+            .arg(t.headerBg, t.separator));
         auto* hl = new QHBoxLayout(hdr);
         hl->setContentsMargins(8, 4, 8, 4);
         hl->setSpacing(0);
-        auto* hName = new QLabel(QStringLiteral("Name"), hdr);
-        hName->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
-        auto* hPos = new QLabel(QStringLiteral("Position"), hdr);
-        hPos->setFixedWidth(250);
-        hPos->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        auto* hVis = new QLabel(QStringLiteral("Visible"), hdr);
-        hVis->setFixedWidth(64);
-        hVis->setAlignment(Qt::AlignCenter);
-        hl->addWidget(hName);
-        hl->addWidget(hPos);
-        hl->addWidget(hVis);
-        col->addWidget(hdr);
+        auto headerCell = [&](const QString& text, int width, Qt::Alignment align) {
+            auto* l = new QLabel(text, hdr);
+            l->setStyleSheet(QStringLiteral(
+                "font-size:12px; font-weight:600; color:%1; padding:0 4px;").arg(t.headerFg));
+            if (width > 0) l->setFixedWidth(width);
+            else l->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+            l->setAlignment(align);
+            return l;
+        };
+        hl->addWidget(headerCell(QStringLiteral("Name"),     0,   Qt::AlignLeft  | Qt::AlignVCenter), 1);
+        hl->addWidget(headerCell(QStringLiteral("Position"), 250, Qt::AlignRight | Qt::AlignVCenter));
+        hl->addWidget(headerCell(QStringLiteral("Visible"),  64,  Qt::AlignCenter));
+        panelCol->addWidget(hdr);
     }
 
-    scrollArea_ = new QScrollArea(this);
+    scrollArea_ = new QScrollArea;
     scrollArea_->setFrameShape(QFrame::NoFrame);
     scrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scrollArea_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scrollArea_->setWidgetResizable(true);
+    scrollArea_->setStyleSheet(QStringLiteral(
+        "QScrollArea, QScrollArea > QWidget > QWidget { background:%1; }").arg(t.panelBg));
     rowContainer_ = new QWidget;
     rowLayout_ = new QVBoxLayout(rowContainer_);
     rowLayout_->setContentsMargins(0, 0, 0, 0);
@@ -76,48 +85,55 @@ WaypointListDialog::WaypointListDialog(RouteStore* store, bool pickMode, QWidget
     rowLayout_->addStretch(1);
     scrollArea_->setWidget(rowContainer_);
     QScroller::grabGesture(scrollArea_->viewport(), QScroller::LeftMouseButtonGesture);
-    col->addWidget(scrollArea_, 1);
+    panelCol->addWidget(scrollArea_, 1);
 
-    auto* btnRow = new QHBoxLayout;
-    btnRow->setContentsMargins(8, 8, 8, 0);
-    deleteBtn_ = new QPushButton(QStringLiteral("Delete"));
-    deleteBtn_->setMinimumHeight(44);
+    // Shared button styling: outlined for the secondary actions, accent-filled
+    // for the default Close/Cancel.
+    auto outlined = [](QPushButton* b) { dialogchrome::styleOutlinedButton(b); };
+    auto accent   = [](QPushButton* b) { dialogchrome::styleAccentButton(b); };
+
+    auto* btnBar = new QWidget;
+    auto* btnRow = new QHBoxLayout(btnBar);
+    btnRow->setContentsMargins(12, 8, 12, 12);
+    btnRow->setSpacing(8);
+    deleteBtn_ = new QPushButton(QStringLiteral("Delete"), btnBar);
     deleteBtn_->setEnabled(false);
     deleteBtn_->setVisible(!pickMode_);
+    outlined(deleteBtn_);
     connect(deleteBtn_, &QPushButton::clicked, this, &WaypointListDialog::deleteSelected);
     btnRow->addWidget(deleteBtn_);
-    propsBtn_ = new QPushButton(QStringLiteral("Properties"));
-    propsBtn_->setMinimumHeight(44);
+    propsBtn_ = new QPushButton(QStringLiteral("Properties"), btnBar);
     propsBtn_->setEnabled(false);
     propsBtn_->setVisible(!pickMode_);
+    outlined(propsBtn_);
     connect(propsBtn_, &QPushButton::clicked, this, [this] {
         if (selectedId_ >= 0) emit propertiesRequested(selectedId_);
     });
     btnRow->addWidget(propsBtn_);
-    editBtn_ = new QPushButton(QStringLiteral("Move on Chart"));
-    editBtn_->setMinimumHeight(44);
+    editBtn_ = new QPushButton(QStringLiteral("Move on Chart"), btnBar);
     editBtn_->setEnabled(false);
     editBtn_->setVisible(!pickMode_);
+    outlined(editBtn_);
     connect(editBtn_, &QPushButton::clicked, this, [this] {
         if (selectedId_ >= 0) { emit editRequested(selectedId_); accept(); }
     });
     btnRow->addWidget(editBtn_);
     btnRow->addStretch(1);
-    dropBtn_ = new QPushButton(QStringLiteral("Drop at Boat"));
-    dropBtn_->setMinimumHeight(44);
+    dropBtn_ = new QPushButton(QStringLiteral("Drop at Boat"), btnBar);
     dropBtn_->setVisible(!pickMode_);
+    outlined(dropBtn_);
     connect(dropBtn_, &QPushButton::clicked, this, [this] {
         emit newWaypointAtOwnshipRequested();
         accept();
     });
     btnRow->addWidget(dropBtn_);
     auto* closeBtn = new QPushButton(pickMode_ ? QStringLiteral("Cancel")
-                                               : QStringLiteral("Close"));
-    closeBtn->setMinimumHeight(44);
+                                               : QStringLiteral("Close"), btnBar);
     closeBtn->setDefault(true);
+    accent(closeBtn);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::reject);
     btnRow->addWidget(closeBtn);
-    col->addLayout(btnRow);
+    panelCol->addWidget(btnBar);
 
     if (store_) connect(store_, &RouteStore::waypointsChanged, this, &WaypointListDialog::refresh);
     refresh();
@@ -129,11 +145,12 @@ WaypointListDialog::Row WaypointListDialog::makeRow() {
     r.btn->setFlat(true);
     r.btn->setMinimumHeight(44);
     r.btn->setCheckable(true);
+    const theme::MenuPalette& t = theme::menu();
     r.btn->setStyleSheet(QStringLiteral(
-        "QPushButton { text-align:left; border:none;"
-        " border-bottom:1px solid palette(mid); }"
-        "QPushButton:checked { background:palette(highlight);"
-        " color:palette(highlighted-text); }"));
+        "QPushButton { text-align:left; border:none; background:%1; color:%2;"
+        " border-bottom:1px solid %3; }"
+        "QPushButton:checked { background:%4; color:%5; }")
+        .arg(t.actionBg, t.actionFg, t.separator, t.accent, t.titleFg));
     auto* hl = new QHBoxLayout(r.btn);
     hl->setContentsMargins(8, 0, 8, 0);
     hl->setSpacing(0);
@@ -211,8 +228,19 @@ void WaypointListDialog::selectRow(qint64 id) {
 }
 
 void WaypointListDialog::restyleRows() {
-    for (Row& r : rows_)
-        r.btn->setChecked(r.id == selectedId_ && selectedId_ >= 0);
+    // The cell labels carry their own colour (they're transparent to the mouse),
+    // so flip them to the title-foreground on the accent-highlighted selected row
+    // to keep contrast; plain rows use the normal action foreground.
+    const theme::MenuPalette& t = theme::menu();
+    for (Row& r : rows_) {
+        const bool sel = (r.id == selectedId_ && selectedId_ >= 0);
+        r.btn->setChecked(sel);
+        const QString cell = QStringLiteral(
+            "font-size:14px; padding:0 4px; border:none; color:%1;")
+            .arg(sel ? t.titleFg : t.actionFg);
+        r.name->setStyleSheet(cell);
+        r.pos->setStyleSheet(cell);
+    }
 }
 
 void WaypointListDialog::deleteSelected() {
