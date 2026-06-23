@@ -710,7 +710,10 @@ void ChartView::onCatalogFinished(bool ok, const QString&) {
     ++generation_;
     clearAll();
     haveCatalog_ = ok && catalog_ && catalog_->bounds().valid();
-    userInteracted_ = false;
+    // NB: do NOT reset userInteracted_ here. It was already reset at scan start
+    // (setRasterChartFolder), and the raster discovery runs in parallel: if it
+    // finished first it may have already restored the saved view (setting
+    // userInteracted_), and resetting now would let the auto-fit below clobber it.
 
     if (!haveCatalog_) {
         emit statusChanged(QString());
@@ -729,7 +732,9 @@ void ChartView::onCatalogFinished(bool ok, const QString&) {
         restoreView(pendingLon_, pendingLat_, pendingScale_);
         havePendingView_ = false;
         userInteracted_ = true;
-    } else {
+    } else if (!userInteracted_) {
+        // No saved view — and none was applied by the parallel raster discovery,
+        // which sets userInteracted_ when it restores one. Frame the whole set.
         fitToCatalog();
     }
     updateVisibleCells();
@@ -1361,9 +1366,11 @@ void ChartView::setRasterChartFolder(const QString& dir) {
     tileCache_.clear();
     tileInFlight_.clear();
     tileAbsent_.clear();
-    // A folder change is a fresh start: allow the next discovery to frame the
-    // charts (the ENC catalog finishing also resets this). Guards against the
-    // old folder's view lingering over a new, geographically distant chart set.
+    // A folder change is a fresh start: allow the next discovery (or the ENC
+    // catalog) to frame the charts. Guards against the old folder's view
+    // lingering over a new, geographically distant chart set. This is the single
+    // per-scan reset of the flag — onCatalogFinished must not reset it again, or
+    // it would clobber a saved view that the parallel raster path had restored.
     userInteracted_ = false;
     emit rasterSetFolder(dir, rasterGen_);
     update();
