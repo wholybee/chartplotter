@@ -38,6 +38,10 @@ public:
     // MBTiles raster charts drawn beneath the ENC vector cells. When off, the
     // raster layer paints nothing; discovery/loading is unaffected.
     bool showRasterCharts() const { return showRasterCharts_; }
+    // Vector-overlay mode: hide the opaque chart base (land/water area fills and
+    // the GSHHG basemap) so the raster layer shows through, leaving only vector
+    // linework/symbols on top. Intended for satellite/imagery raster bases.
+    bool vectorOverlay() const { return vectorOverlay_; }
 
     // When true, soundings and symbols are suppressed during a pan/zoom gesture
     // (the moving frame draws only vector geometry, for speed). Default false:
@@ -140,6 +144,7 @@ public slots:
     void setShowDepthContours(bool on);
     void setShowAisTargets(bool on);
     void setShowRasterCharts(bool on);
+    void setVectorOverlay(bool on);
     void setHideSymbolsWhilePanning(bool on);
     void setChartSets(const QVector<ChartSet>& sets);
     void setView(double lon, double lat, double scale);
@@ -173,6 +178,7 @@ signals:
     void showDepthContoursChanged(bool on);
     void showAisTargetsChanged(bool on);
     void showRasterChartsChanged(bool on);
+    void vectorOverlayChanged(bool on);
     void hideSymbolsWhilePanningChanged(bool on);
     void chartSetsChanged();
     void basemapDirectoryChanged(const QString& dir);
@@ -205,6 +211,7 @@ private:
     bool showDepthContours_ = true;
     bool showAisTargets_ = true;
     bool showRasterCharts_ = true;
+    bool vectorOverlay_ = false;
     bool hideSymbolsWhilePanning_ = false;
     QVector<ChartSet> chartSets_;
     QString basemapDir_;

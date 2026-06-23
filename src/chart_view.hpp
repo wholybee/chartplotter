@@ -180,6 +180,11 @@ public:
     void setHideSymbolsWhilePanning(bool on);
     // Show/hide the MBTiles raster-chart layer (tracking + loading continue).
     void setShowRasterCharts(bool on);
+    // Vector-overlay mode: suppress the opaque chart base — land/water area fills
+    // plus the GSHHG basemap — so the raster layer shows through, while keeping
+    // all vector linework, depth contours, symbols, soundings and text on top.
+    // Intended for an imagery MBTiles base (e.g. satellite). Repaint only.
+    void setVectorOverlay(bool on);
 
     // Point the raster-chart layer at a folder: it is scanned (recursively, on a
     // worker thread) for *.mbtiles files, which are drawn beneath the ENC vector
@@ -446,6 +451,7 @@ private:
     bool showSymbols_ = true;
     bool showText_ = true;
     bool showDepthContours_ = true;
+    bool vectorOverlay_ = false;      // hide base land/water fills + basemap so raster shows through
     bool hideSymbolsWhilePanning_ = false;   // skip point overlays during a gesture
     double chartDetailLevel_ = 0.0;   // -2.0..+2.0, biases target band
     double scaminLevel_      = 0.0;   // -1.0..+1.0, biases SCAMIN declutter

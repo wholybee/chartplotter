@@ -95,12 +95,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     view_->setShowText(settings_->showText());
     view_->setShowDepthContours(settings_->showDepthContours());
     view_->setShowRasterCharts(settings_->showRasterCharts());
+    view_->setVectorOverlay(settings_->vectorOverlay());
     view_->setHideSymbolsWhilePanning(settings_->hideSymbolsWhilePanning());
     connect(settings_, &Settings::showSoundingsChanged,     view_, &ChartView::setShowSoundings);
     connect(settings_, &Settings::showSymbolsChanged,       view_, &ChartView::setShowSymbols);
     connect(settings_, &Settings::showTextChanged,          view_, &ChartView::setShowText);
     connect(settings_, &Settings::showDepthContoursChanged, view_, &ChartView::setShowDepthContours);
     connect(settings_, &Settings::showRasterChartsChanged,  view_, &ChartView::setShowRasterCharts);
+    connect(settings_, &Settings::vectorOverlayChanged,     view_, &ChartView::setVectorOverlay);
     connect(settings_, &Settings::hideSymbolsWhilePanningChanged,
             view_, &ChartView::setHideSymbolsWhilePanning);
     connect(view_, &ChartView::rasterChartsChanged, this, &MainWindow::onRasterChartsChanged);
