@@ -412,11 +412,17 @@ if(WIN32)
     # steps (windeployqt, plugin DLLs, gdal-data) — have populated the Release dir
     # that CPack packages.
     #
-    # Requires NSIS (makensis) on PATH. Turn off with -DCHARTPLOTTER_BUILD_INSTALLER=OFF
-    # (e.g. for fast iterative Release builds, or on a machine without NSIS).
+    # Gated to MULTI-CONFIG generators (Visual Studio): the install(DIRECTORY
+    # .../Release/ ...) rule above assumes the build/<Config>/ layout that only a
+    # multi-config generator produces, and the payload bundles the MSVC runtime.
+    # A single-config build — notably the Ninja/MinGW CI job — sets no
+    # CMAKE_CONFIGURATION_TYPES, so this target is NOT created there. That keeps
+    # CI from invoking cpack/NSIS (no makensis on those runners) and from
+    # packaging the wrong layout. Requires NSIS (makensis); turn off with
+    # -DCHARTPLOTTER_BUILD_INSTALLER=OFF.
     option(CHARTPLOTTER_BUILD_INSTALLER
-        "Build the NSIS installer automatically during a Release build" ON)
-    if(CHARTPLOTTER_BUILD_INSTALLER)
+        "Auto-build the NSIS installer during a multi-config Release build" ON)
+    if(CHARTPLOTTER_BUILD_INSTALLER AND CMAKE_CONFIGURATION_TYPES)
         add_custom_target(installer ALL
             COMMAND ${CMAKE_COMMAND}
                     -DCFG=$<CONFIG>
