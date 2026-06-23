@@ -1,12 +1,11 @@
 #include "stale_thresholds_dialog.hpp"
 #include "touch_spin_box.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
-#include <QHBoxLayout>
 #include <QLabel>
-#include <QFrame>
-#include <QPushButton>
+#include <QWidget>
 #include <algorithm>
 
 namespace {
@@ -23,13 +22,6 @@ QWidget* labelledStepper(const QString& caption, TouchSpinBox* box) {
     col->addWidget(box);
     return w;
 }
-
-QFrame* makeDivider() {
-    auto* line = new QFrame;
-    line->setFrameShape(QFrame::HLine);
-    line->setFrameShadow(QFrame::Plain);
-    return line;
-}
 } // namespace
 
 StaleThresholdsDialog::StaleThresholdsDialog(double staleSeconds, double invalidSeconds,
@@ -37,17 +29,28 @@ StaleThresholdsDialog::StaleThresholdsDialog(double staleSeconds, double invalid
                                              QWidget* parent)
     : QDialog(parent) {
     setWindowTitle(QStringLiteral("Stale Data Thresholds"));
-    resize(440, 480);
+    resize(440, 560);
 
-    auto* col = new QVBoxLayout(this);
-    col->setSpacing(14);
+    const theme::MenuPalette& t = theme::menu();
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("Stale Data Thresholds"));
+
+    auto intro = [&](const QString& text) {
+        auto* l = new QLabel(text);
+        l->setWordWrap(true);
+        l->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(t.actionFg));
+        return l;
+    };
 
     // ---- Ownship section ----------------------------------------------------
-    auto* ownIntro = new QLabel(QStringLiteral(
+    panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("Ownship")));
+    auto* ownBody = new QWidget;
+    auto* ownCol  = new QVBoxLayout(ownBody);
+    ownCol->setContentsMargins(16, 4, 16, 12);
+    ownCol->setSpacing(10);
+
+    ownCol->addWidget(intro(QStringLiteral(
         "How long an ownship fix is trusted before it is flagged as stale, "
-        "then hidden."));
-    ownIntro->setWordWrap(true);
-    col->addWidget(ownIntro);
+        "then hidden.")));
 
     staleBox_ = new TouchSpinBox;
     staleBox_->setRange(1.0, 600.0);
@@ -55,7 +58,7 @@ StaleThresholdsDialog::StaleThresholdsDialog(double staleSeconds, double invalid
     staleBox_->setDecimals(0);
     staleBox_->setSuffix(QStringLiteral(" s"));
     staleBox_->setValue(staleSeconds);
-    col->addWidget(labelledStepper(
+    ownCol->addWidget(labelledStepper(
         QStringLiteral("Ownship — mark Stale after:"), staleBox_));
 
     invalidBox_ = new TouchSpinBox;
@@ -64,21 +67,24 @@ StaleThresholdsDialog::StaleThresholdsDialog(double staleSeconds, double invalid
     invalidBox_->setDecimals(0);
     invalidBox_->setSuffix(QStringLiteral(" s"));
     invalidBox_->setValue(std::max(invalidSeconds, staleSeconds + 1.0));
-    col->addWidget(labelledStepper(
+    ownCol->addWidget(labelledStepper(
         QStringLiteral("Ownship — mark Invalid (hidden) after:"), invalidBox_));
 
     connect(staleBox_, &TouchSpinBox::valueChanged, this, [this](double s) {
         invalidBox_->setRange(s + 1.0, 3600.0);
     });
+    panelCol->addWidget(ownBody);
 
     // ---- AIS section --------------------------------------------------------
-    col->addWidget(makeDivider());
+    panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("AIS Targets")));
+    auto* aisBody = new QWidget;
+    auto* aisCol  = new QVBoxLayout(aisBody);
+    aisCol->setContentsMargins(16, 4, 16, 12);
+    aisCol->setSpacing(10);
 
-    auto* aisIntro = new QLabel(QStringLiteral(
+    aisCol->addWidget(intro(QStringLiteral(
         "How long an AIS target is kept before it is greyed out, then "
-        "removed from the display."));
-    aisIntro->setWordWrap(true);
-    col->addWidget(aisIntro);
+        "removed from the display.")));
 
     const double aisStaleMin = aisStaleSeconds / 60.0;
     const double aisLostMin  = aisLostSeconds  / 60.0;
@@ -89,7 +95,7 @@ StaleThresholdsDialog::StaleThresholdsDialog(double staleSeconds, double invalid
     aisStaleBox_->setDecimals(0);
     aisStaleBox_->setSuffix(QStringLiteral(" min"));
     aisStaleBox_->setValue(aisStaleMin);
-    col->addWidget(labelledStepper(
+    aisCol->addWidget(labelledStepper(
         QStringLiteral("AIS — mark Stale after:"), aisStaleBox_));
 
     aisLostBox_ = new TouchSpinBox;
@@ -98,27 +104,16 @@ StaleThresholdsDialog::StaleThresholdsDialog(double staleSeconds, double invalid
     aisLostBox_->setDecimals(0);
     aisLostBox_->setSuffix(QStringLiteral(" min"));
     aisLostBox_->setValue(std::max(aisLostMin, aisStaleMin + 1.0));
-    col->addWidget(labelledStepper(
+    aisCol->addWidget(labelledStepper(
         QStringLiteral("AIS — remove after:"), aisLostBox_));
 
     connect(aisStaleBox_, &TouchSpinBox::valueChanged, this, [this](double s) {
         aisLostBox_->setRange(s + 1.0, 120.0);
     });
+    panelCol->addWidget(aisBody);
 
-    col->addStretch(1);
-
-    auto* row = new QHBoxLayout;
-    auto* cancelBtn = new QPushButton(QStringLiteral("Cancel"));
-    auto* okBtn     = new QPushButton(QStringLiteral("OK"));
-    for (QPushButton* b : {cancelBtn, okBtn}) b->setMinimumHeight(44);
-    okBtn->setDefault(true);
-    row->addStretch(1);
-    row->addWidget(cancelBtn);
-    row->addWidget(okBtn);
-    col->addLayout(row);
-
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(okBtn,     &QPushButton::clicked, this, &QDialog::accept);
+    panelCol->addStretch(1);
+    panelCol->addWidget(dialogchrome::okCancelRow(this));
 }
 
 double StaleThresholdsDialog::staleSeconds()    const { return staleBox_->value(); }

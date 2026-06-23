@@ -1,6 +1,7 @@
 #include "dangerous_ships_dialog.hpp"
 #include "touch_spin_box.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -8,12 +9,14 @@
 #include <QCheckBox>
 #include <QFrame>
 #include <QPushButton>
+#include <QWidget>
 
 namespace {
 QFrame* makeDivider() {
     auto* line = new QFrame;
     line->setFrameShape(QFrame::HLine);
     line->setFrameShadow(QFrame::Plain);
+    line->setStyleSheet(QStringLiteral("color:%1;").arg(theme::menu().separator));
     return line;
 }
 
@@ -25,7 +28,7 @@ QWidget* ruleRow(QCheckBox* check, TouchSpinBox* box) {
     auto* col = new QVBoxLayout(w);
     col->setContentsMargins(0, 0, 0, 0);
     col->setSpacing(4);
-    check->setStyleSheet(QStringLiteral("font-size:14px;"));
+    check->setStyleSheet(QStringLiteral("font-size:14px; color:%1;").arg(theme::menu().actionFg));
     col->addWidget(check);
 
     // Indent the stepper so it reads as belonging to the checkbox above it.
@@ -44,9 +47,14 @@ DangerousShipsDialog::DangerousShipsDialog(bool ignoreFarEnabled, double ignoreF
                                            QWidget* parent)
     : QDialog(parent) {
     setWindowTitle(QStringLiteral("Dangerous Ships"));
-    resize(440, 560);
+    resize(460, 600);
 
-    auto* col = new QVBoxLayout(this);
+    const theme::MenuPalette& t = theme::menu();
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("Dangerous Ships"));
+
+    auto* body = new QWidget;
+    auto* col = new QVBoxLayout(body);
+    col->setContentsMargins(16, 12, 16, 12);
     col->setSpacing(14);
 
     // ---- Pre-filter ---------------------------------------------------------
@@ -111,7 +119,7 @@ DangerousShipsDialog::DangerousShipsDialog(bool ignoreFarEnabled, double ignoreF
     // Treat stationary vessels as never dangerous, to clear the false-positive
     // swarm from a marina or anchorage.
     anchoredCheck_ = new QCheckBox(QStringLiteral("Consider anchored vessels safe"));
-    anchoredCheck_->setStyleSheet(QStringLiteral("font-size:14px;"));
+    anchoredCheck_->setStyleSheet(QStringLiteral("font-size:14px; color:%1;").arg(t.actionFg));
     anchoredCheck_->setChecked(anchoredSafeEnabled);
     col->addWidget(anchoredCheck_);
 
@@ -149,19 +157,8 @@ DangerousShipsDialog::DangerousShipsDialog(bool ignoreFarEnabled, double ignoreF
     syncAnchored();
 
     col->addStretch(1);
-
-    auto* row = new QHBoxLayout;
-    auto* cancelBtn = new QPushButton(QStringLiteral("Cancel"));
-    auto* okBtn     = new QPushButton(QStringLiteral("OK"));
-    for (QPushButton* b : {cancelBtn, okBtn}) b->setMinimumHeight(44);
-    okBtn->setDefault(true);
-    row->addStretch(1);
-    row->addWidget(cancelBtn);
-    row->addWidget(okBtn);
-    col->addLayout(row);
-
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
-    connect(okBtn,     &QPushButton::clicked, this, &QDialog::accept);
+    panelCol->addWidget(body, 1);
+    panelCol->addWidget(dialogchrome::okCancelRow(this));
 }
 
 bool   DangerousShipsDialog::ignoreFarEnabled() const { return ignoreFarCheck_->isChecked(); }

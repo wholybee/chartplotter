@@ -5,10 +5,12 @@
 #include "chart_view.hpp"
 #include "chart_source.hpp"   // ChartSourceRegistry
 #include "data_sources.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QPushButton>
 #include <QSettings>
 #include <QDialog>
+#include <QWidget>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 
@@ -87,24 +89,33 @@ void CoreApi::showSettingsPage(ISettingsPageProvider* provider) {
         existing->show(); existing->raise(); existing->activateWindow();
         return;
     }
-    // Host the plugin's content in a standard dialog (chrome owned by the core).
+    // Host the plugin's content in the shared frameless side-menu dialog chrome
+    // (the core owns the chrome; the plugin supplies only the page content). This
+    // gives every plugin settings page the same white/blue look as the rest of
+    // the app for free.
     auto* dlg = new QDialog(dialogParent_);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
-    dlg->setWindowFlag(Qt::Window, true);
     dlg->setWindowTitle(provider->settingsPageTitle());
-    dlg->resize(400, 220);
 
-    auto* col = new QVBoxLayout(dlg);
+    // Modeless + self-deleting, single-instance via settingsDialogs_; dismissal
+    // must go through close() (closeOnDismiss) so the close event fires, the
+    // dialog is destroyed, and its QPointer clears.
+    auto* panelCol = dialogchrome::setup(dlg, provider->settingsPageTitle(), true);
     if (QWidget* page = provider->createSettingsPage(dlg))
-        col->addWidget(page);
-    col->addStretch(1);
-    auto* closeBtn = new QPushButton(QStringLiteral("Close"));
-    closeBtn->setMinimumHeight(40);
-    auto* footer = new QHBoxLayout;
+        panelCol->addWidget(page);
+
+    auto* btnBar = new QWidget;
+    auto* footer = new QHBoxLayout(btnBar);
+    footer->setContentsMargins(16, 8, 16, 16);
     footer->addStretch(1);
+    auto* closeBtn = new QPushButton(QStringLiteral("Close"));
+    dialogchrome::styleAccentButton(closeBtn);
     footer->addWidget(closeBtn);
-    col->addLayout(footer);
-    QObject::connect(closeBtn, &QPushButton::clicked, dlg, &QDialog::close);
+    panelCol->addWidget(btnBar);
+    QObject::connect(closeBtn, &QPushButton::clicked, dlg, &QWidget::close);
+
+    dlg->adjustSize();                 // size to the page's content (not resizable)
+    dlg->setMinimumWidth(440);
 
     settingsDialogs_.insert(provider, dlg);   // QPointer clears when destroyed
     dlg->show();

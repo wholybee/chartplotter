@@ -1,6 +1,7 @@
 #include "ais_target_list_dialog.hpp"
 #include "ais_target_store.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -41,52 +42,13 @@ AisTargetListDialog::AisTargetListDialog(const AisTargetStore* store, QWidget* p
     : QDialog(parent), store_(store) {
     setWindowTitle(QStringLiteral("AIS Targets"));
     resize(560, 600);
-    // Frameless + side-menu palette (light/dark aware), matching the chart-object
-    // chooser, instead of the system window chrome.
-    setWindowFlags(Qt::Window | Qt::FramelessWindowHint);
 
     const theme::MenuPalette& t = theme::menu();
+    // Frameless side-menu chrome. Modeless + self-deleting (WA_DeleteOnClose),
+    // so the ✕ dismisses via close() (closeOnDismiss) to actually destroy it.
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("AIS Targets"), true);
 
-    auto* col = new QVBoxLayout(this);
-    col->setContentsMargins(0, 0, 0, 0);
-    col->setSpacing(0);
-
-    // Bordered panel so the frameless window still has a visible edge.
-    auto* panel = new QFrame(this);
-    panel->setObjectName(QStringLiteral("AisListPanel"));
-    panel->setStyleSheet(QStringLiteral(
-        "#AisListPanel{ background:%1; border:1px solid %2; }")
-        .arg(t.panelBg, t.panelBorder));
-    col->addWidget(panel);
-
-    auto* panelCol = new QVBoxLayout(panel);
-    panelCol->setContentsMargins(0, 0, 0, 0);
-    panelCol->setSpacing(0);
-
-    // Title bar, mirroring the side-menu header: a brand-navy strip with the
-    // title and a close "✕" (the window is frameless, so this is the dismiss).
-    auto* titleBar = new QWidget(panel);
-    titleBar->setStyleSheet(QStringLiteral("background:%1;").arg(t.titleBg));
-    auto* titleRow = new QHBoxLayout(titleBar);
-    titleRow->setContentsMargins(16, 8, 8, 8);
-    titleRow->setSpacing(6);
-    auto* titleLbl = new QLabel(QStringLiteral("AIS Targets"), titleBar);
-    titleLbl->setStyleSheet(QStringLiteral(
-        "font-size:18px; font-weight:600; background:transparent; color:%1;").arg(t.titleFg));
-    titleRow->addWidget(titleLbl, 1);
-    auto* closeBtn = new QPushButton(QString(QChar(0x2715)), titleBar);   // ✕
-    closeBtn->setFlat(true);
-    closeBtn->setFixedSize(44, 44);
-    closeBtn->setCursor(Qt::PointingHandCursor);
-    closeBtn->setStyleSheet(QStringLiteral(
-        "QPushButton{ border:none; background:transparent; color:%1; font-size:18px; }"
-        "QPushButton:pressed{ background:%2; border-radius:6px; }")
-        .arg(t.titleFg, t.actionPressed));
-    connect(closeBtn, &QPushButton::clicked, this, &QDialog::accept);
-    titleRow->addWidget(closeBtn);
-    panelCol->addWidget(titleBar);
-
-    countLabel_ = new QLabel(panel);
+    countLabel_ = new QLabel;
     countLabel_->setStyleSheet(QStringLiteral("font-size:13px; padding:6px 12px; color:%1;")
                                .arg(t.actionFg));
     panelCol->addWidget(countLabel_);
@@ -94,7 +56,7 @@ AisTargetListDialog::AisTargetListDialog(const AisTargetStore* store, QWidget* p
     // Clickable column headers — tap to sort, tap again to reverse. Widths match
     // the row cells below so the columns line up.
     {
-        auto* hdr = new QWidget(panel);
+        auto* hdr = new QWidget;
         hdr->setObjectName(QStringLiteral("AisListHdr"));
         hdr->setStyleSheet(QStringLiteral(
             "#AisListHdr{ background:%1; border-bottom:1px solid %2; }")
@@ -134,7 +96,7 @@ AisTargetListDialog::AisTargetListDialog(const AisTargetStore* store, QWidget* p
     // Scrollable row area. Uses QScrollArea — the same widget the side menu uses
     // via wrapScroll() — so QScroller delivers identical pixel-level drag-to-scroll
     // behaviour: content moves exactly with the finger, no velocity amplification.
-    scrollArea_ = new QScrollArea(panel);
+    scrollArea_ = new QScrollArea;
     scrollArea_->setFrameShape(QFrame::NoFrame);
     scrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scrollArea_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);

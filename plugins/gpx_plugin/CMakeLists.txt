@@ -24,6 +24,13 @@ set_target_properties(gpx_plugin PROPERTIES
 # Plugins consume the public chartplotter SDK headers and a small handful of
 # core headers; they link against the host exe for those symbols (ENABLE_EXPORTS
 # on chartviewer).
+#
+# Sanctioned core UI-helper headers a plugin may include (consumed by source,
+# resolved against the host at link time): theme.hpp (palette), window_dragger.hpp
+# (header-only; frameless-window drag) and dialog_chrome.hpp (header-only; the
+# frameless side-menu dialog chrome — setup()/sectionHeader()/okCancelRow()/…,
+# so plugin dialogs match the host without re-implementing the chrome). These are
+# host-internal until the plugin SDK freezes an ABI; see docs/plugin_api.md.
 target_include_directories(gpx_plugin PRIVATE
     "${CMAKE_SOURCE_DIR}/src"
 )

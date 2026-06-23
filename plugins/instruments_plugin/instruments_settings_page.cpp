@@ -3,6 +3,7 @@
 #include "instrument_config.hpp"
 #include "touch_spin_box.hpp"
 #include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -14,6 +15,7 @@
 #include <QScrollArea>
 #include <QScroller>
 #include <QFrame>
+#include <QWidget>
 #include <QHash>
 
 namespace {
@@ -30,32 +32,29 @@ InstrumentsSettingsPage::InstrumentsSettingsPage(InstrumentsPlugin* plugin, QWid
     const QStringList sel = plugin_->selected();
     selected_ = QSet<QString>(sel.begin(), sel.end());
 
+    const theme::MenuPalette& t = theme::menu();
     auto* col = new QVBoxLayout(this);
     col->setContentsMargins(0, 0, 0, 0);
-    col->setSpacing(12);
+    col->setSpacing(0);
 
     auto* intro = new QLabel(QStringLiteral(
         "Choose which instruments appear on the bar and in what order. The list "
         "of available instruments is defined in instruments.xml; edit that file "
         "to add or change instruments."));
     intro->setWordWrap(true);
+    intro->setStyleSheet(QStringLiteral("font-size:14px; color:%1; padding:12px 16px 4px 16px;")
+                         .arg(t.actionFg));
     col->addWidget(intro);
 
     // ---- Orientation -------------------------------------------------------
     {
-        auto* cap = new QLabel(QStringLiteral("Orientation:"));
-        cap->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-        col->addWidget(cap);
-
-        auto* row = new QHBoxLayout;
+        col->addWidget(dialogchrome::sectionHeader(QStringLiteral("Orientation")));
+        auto* body = new QWidget;
+        auto* row = new QHBoxLayout(body);
+        row->setContentsMargins(16, 4, 16, 8);
         auto* horiz = new QRadioButton(QStringLiteral("Horizontal"));
         auto* vert  = new QRadioButton(QStringLiteral("Vertical"));
-        for (QRadioButton* b : { horiz, vert }) {
-            b->setMinimumHeight(40);
-            b->setStyleSheet(QStringLiteral(
-                "QRadioButton{ font-size:15px; }"
-                "QRadioButton::indicator{ width:24px; height:24px; }"));
-        }
+        for (QRadioButton* b : { horiz, vert }) dialogchrome::styleRadio(b);
         horiz->setChecked(plugin_->isHorizontal());
         vert->setChecked(!plugin_->isHorizontal());
         auto* group = new QButtonGroup(this);
@@ -64,7 +63,7 @@ InstrumentsSettingsPage::InstrumentsSettingsPage(InstrumentsPlugin* plugin, QWid
         row->addWidget(horiz);
         row->addWidget(vert);
         row->addStretch(1);
-        col->addLayout(row);
+        col->addWidget(body);
 
         connect(horiz, &QRadioButton::toggled, this, [this](bool on) {
             if (plugin_) plugin_->setHorizontal(on);
@@ -73,9 +72,10 @@ InstrumentsSettingsPage::InstrumentsSettingsPage(InstrumentsPlugin* plugin, QWid
 
     // ---- Scale -------------------------------------------------------------
     {
-        auto* cap = new QLabel(QStringLiteral("Size:"));
-        cap->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-        col->addWidget(cap);
+        col->addWidget(dialogchrome::sectionHeader(QStringLiteral("Size")));
+        auto* body = new QWidget;
+        auto* b = new QVBoxLayout(body);
+        b->setContentsMargins(16, 4, 16, 8);
 
         auto* scaleBox = new TouchSpinBox;
         scaleBox->setRange(0.5, 3.0);
@@ -83,7 +83,8 @@ InstrumentsSettingsPage::InstrumentsSettingsPage(InstrumentsPlugin* plugin, QWid
         scaleBox->setDecimals(1);
         scaleBox->setSuffix(QStringLiteral("×"));
         scaleBox->setValue(plugin_->scale());
-        col->addWidget(scaleBox);
+        b->addWidget(scaleBox);
+        col->addWidget(body);
 
         connect(scaleBox, &TouchSpinBox::valueChanged, this, [this](double v) {
             if (plugin_) plugin_->setScale(v);
@@ -92,18 +93,26 @@ InstrumentsSettingsPage::InstrumentsSettingsPage(InstrumentsPlugin* plugin, QWid
 
     // ---- Instrument list ---------------------------------------------------
     {
-        auto* cap = new QLabel(QStringLiteral("Instruments (tick to show, use ▲▼ to reorder):"));
+        col->addWidget(dialogchrome::sectionHeader(QStringLiteral("Instruments")));
+        auto* body = new QWidget;
+        auto* b = new QVBoxLayout(body);
+        b->setContentsMargins(16, 4, 16, 8);
+        b->setSpacing(6);
+
+        auto* cap = new QLabel(QStringLiteral("Tick to show, use ▲▼ to reorder."));
         cap->setWordWrap(true);
         cap->setStyleSheet(QStringLiteral("font-size:13px; color:%1;").arg(theme::textMuted()));
-        col->addWidget(cap);
+        b->addWidget(cap);
 
         // Scrollable, drag-to-scroll list — same pattern as the AIS target list.
-        auto* scroll = new QScrollArea(this);
+        auto* scroll = new QScrollArea;
         scroll->setFrameShape(QFrame::NoFrame);
         scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         scroll->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
         scroll->setWidgetResizable(true);
         scroll->setMinimumHeight(220);
+        scroll->setStyleSheet(QStringLiteral(
+            "QScrollArea, QScrollArea > QWidget > QWidget { background:%1; }").arg(t.panelBg));
 
         rowContainer_ = new QWidget;
         rowLayout_ = new QVBoxLayout(rowContainer_);
@@ -113,7 +122,8 @@ InstrumentsSettingsPage::InstrumentsSettingsPage(InstrumentsPlugin* plugin, QWid
         scroll->setWidget(rowContainer_);
 
         QScroller::grabGesture(scroll->viewport(), QScroller::LeftMouseButtonGesture);
-        col->addWidget(scroll, 1);
+        b->addWidget(scroll, 1);
+        col->addWidget(body, 1);
     }
 
     rebuildList();
@@ -129,6 +139,7 @@ void InstrumentsSettingsPage::rebuildList() {
         delete it;
     }
 
+    const theme::MenuPalette& t = theme::menu();
     const QHash<QString, InstrumentDef> defs = byId(plugin_->catalog());
 
     for (int i = 0; i < order_.size(); ++i) {
@@ -138,17 +149,17 @@ void InstrumentsSettingsPage::rebuildList() {
 
         auto* rowW = new QWidget(rowContainer_);
         rowW->setStyleSheet(QStringLiteral(
-            "QWidget{ border-bottom:1px solid palette(mid); }"));
+            "QWidget{ border-bottom:1px solid %1; }").arg(t.separator));
         auto* hl = new QHBoxLayout(rowW);
         hl->setContentsMargins(4, 2, 4, 2);
         hl->setSpacing(6);
 
         auto* check = new QCheckBox(dit.value().name, rowW);
         check->setChecked(selected_.contains(id));
-        check->setMinimumHeight(44);
         check->setStyleSheet(QStringLiteral(
-            "QCheckBox{ font-size:15px; border:none; }"
-            "QCheckBox::indicator{ width:24px; height:24px; }"));
+            "QCheckBox{ font-size:15px; border:none; color:%1; spacing:8px; }"
+            "QCheckBox::indicator{ width:22px; height:22px; }").arg(t.actionFg));
+        check->setMinimumHeight(44);
         connect(check, &QCheckBox::toggled, this, [this, id](bool on) {
             if (on) selected_.insert(id); else selected_.remove(id);
             pushToPlugin();
@@ -159,9 +170,12 @@ void InstrumentsSettingsPage::rebuildList() {
         auto* down = new QPushButton(QStringLiteral("▼"), rowW);
         for (QPushButton* b : { up, down }) {
             b->setFixedSize(44, 44);
-            b->setStyleSheet(QStringLiteral("QPushButton{ font-size:16px; border:none; }"
-                "QPushButton:pressed{ background:palette(highlight); }"
-                "QPushButton:disabled{ color:palette(mid); }"));
+            b->setCursor(Qt::PointingHandCursor);
+            b->setStyleSheet(QStringLiteral(
+                "QPushButton{ font-size:16px; border:none; background:transparent; color:%1; }"
+                "QPushButton:pressed{ background:%2; border-radius:6px; }"
+                "QPushButton:disabled{ color:%3; }")
+                .arg(t.actionFg, t.actionPressed, theme::textMuted()));
         }
         up->setEnabled(i > 0);
         down->setEnabled(i < order_.size() - 1);
