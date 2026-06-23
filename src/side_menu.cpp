@@ -227,6 +227,9 @@ QWidget* SideMenu::buildMainPage() {
     auto* raster = makeCheckAction(QStringLiteral("Raster Charts"), settings_->showRasterCharts());
     connect(raster, &QPushButton::toggled, settings_, &Settings::setShowRasterCharts);
     col->addWidget(raster);
+    auto* overlay = makeCheckAction(QStringLiteral("Vectors over Imagery"), settings_->vectorOverlay());
+    connect(overlay, &QPushButton::toggled, settings_, &Settings::setVectorOverlay);
+    col->addWidget(overlay);
 
     // Plugins section: hidden until a plugin contributes its first item.
     pluginHeader_ = makeHeader(QStringLiteral("Plugins"));

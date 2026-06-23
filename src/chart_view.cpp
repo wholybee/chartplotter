@@ -1346,6 +1346,11 @@ void ChartView::setShowRasterCharts(bool on) {
     showRasterCharts_ = on; update();
 }
 
+void ChartView::setVectorOverlay(bool on) {
+    if (on == vectorOverlay_) return;
+    vectorOverlay_ = on; update();
+}
+
 // ---- raster (MBTiles) layer ------------------------------------------------
 
 void ChartView::setRasterChartFolder(const QString& dir) {
@@ -1715,7 +1720,11 @@ void ChartView::paintEvent(QPaintEvent*) {
         for (const BuiltPath& bp : c.paths) {
             if (bp.isDepthContour && !showDepthContours_) continue;
             if (!bp.bounds.intersects(visFrame)) continue;
-            p.setBrush(bp.filled ? QBrush(bp.brush) : QBrush(Qt::NoBrush));
+            // Vector-overlay mode drops every area fill (land/water/other) so the
+            // raster imagery beneath shows through; pens are kept, so coastlines
+            // and other outlines still draw over the imagery.
+            const bool fill = bp.filled && !vectorOverlay_;
+            p.setBrush(fill ? QBrush(bp.brush) : QBrush(Qt::NoBrush));
             if (bp.hasPen) {
                 pen.setColor(bp.penColor);
                 pen.setWidthF(bp.penWidth);
@@ -1729,8 +1738,10 @@ void ChartView::paintEvent(QPaintEvent*) {
     };
 
     // 0) Basemap underlay (land/lakes) beneath everything; charts cover it where
-    //    they exist.
-    for (const BuiltCell& bc : basemap_) drawPaths(bc);
+    //    they exist. Skipped in vector-overlay mode, where its opaque land fill
+    //    would hide the raster imagery that serves as the base instead.
+    if (!vectorOverlay_)
+        for (const BuiltCell& bc : basemap_) drawPaths(bc);
 
     // 0.5) Raster (MBTiles) charts above the basemap, below the ENC vector cells
     //      so vector detail and overlays stay on top. Drawn in device space, so
@@ -1780,7 +1791,9 @@ void ChartView::paintEvent(QPaintEvent*) {
         }
         if (showSoundings_) {
             QFont f = p.font(); f.setPointSizeF(8.0); p.setFont(f);
-            p.setPen(QColor(26, 51, 115));
+            // White soundings in vector-overlay mode read better over dark
+            // satellite imagery than the usual deep-blue ink.
+            p.setPen(vectorOverlay_ ? QColor(255, 255, 255) : QColor(26, 51, 115));
             const QFontMetricsF fm(f);
             const double asc = fm.ascent();
 

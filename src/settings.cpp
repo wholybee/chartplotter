@@ -12,6 +12,7 @@ constexpr auto kText      = "display/showText";
 constexpr auto kContours  = "display/showDepthContours";
 constexpr auto kAisShow   = "display/showAisTargets";
 constexpr auto kRasterShow = "display/showRasterCharts";
+constexpr auto kVectorOverlay = "display/vectorOverlay";
 constexpr auto kHideSymPan = "display/hideSymbolsWhilePanning";
 constexpr auto kViewLon   = "view/centerLon";
 constexpr auto kViewLat   = "view/centerLat";
@@ -54,6 +55,7 @@ Settings::Settings(QObject* parent) : QObject(parent) {
     showDepthContours_ = s.value(QLatin1String(kContours),  true).toBool();
     showAisTargets_    = s.value(QLatin1String(kAisShow),   true).toBool();
     showRasterCharts_  = s.value(QLatin1String(kRasterShow), true).toBool();
+    vectorOverlay_     = s.value(QLatin1String(kVectorOverlay), false).toBool();
     hideSymbolsWhilePanning_ = s.value(QLatin1String(kHideSymPan), false).toBool();
     viewLon_   = s.value(QLatin1String(kViewLon),   0.0).toDouble();
     viewLat_   = s.value(QLatin1String(kViewLat),   0.0).toDouble();
@@ -368,6 +370,13 @@ void Settings::setShowRasterCharts(bool on) {
     showRasterCharts_ = on;
     QSettings().setValue(QLatin1String(kRasterShow), on);
     emit showRasterChartsChanged(on);
+}
+
+void Settings::setVectorOverlay(bool on) {
+    if (on == vectorOverlay_) return;
+    vectorOverlay_ = on;
+    QSettings().setValue(QLatin1String(kVectorOverlay), on);
+    emit vectorOverlayChanged(on);
 }
 
 void Settings::setHideSymbolsWhilePanning(bool on) {
