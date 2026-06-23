@@ -9,6 +9,7 @@
 #include <QStackedWidget>
 #include <QScrollArea>
 #include <QScroller>
+#include <QScrollerProperties>
 #include <QFrame>
 #include <QPropertyAnimation>
 #include <QEvent>
@@ -19,6 +20,9 @@
 #include <QPainter>
 #include <QColor>
 #include <QIcon>
+
+#include <algorithm>
+#include <initializer_list>
 
 namespace {
 // A 14px status dot: a filled green circle when active, otherwise transparent.
@@ -123,9 +127,26 @@ SideMenu::SideMenu(Settings* settings, QWidget* parent)
     outer->addWidget(header);
 
     stack_ = new QStackedWidget(panel_);
-    mainIndex_     = stack_->addWidget(wrapScroll(buildMainPage()));
-    settingsIndex_ = stack_->addWidget(wrapScroll(buildSettingsPage()));
-    routesIndex_   = stack_->addWidget(wrapScroll(buildRoutesPage()));
+    // Build the pages first, then widen the panel to fit the widest item's full
+    // text. Sizing to the content leaves the scroll areas with no horizontal
+    // range, so the menu only ever scrolls up/down (no side-to-side drag) while
+    // still showing every label without truncation or horizontal scrolling.
+    QWidget* mainPage     = buildMainPage();
+    QWidget* settingsPage = buildSettingsPage();
+    QWidget* routesPage   = buildRoutesPage();
+    int contentW = 0;
+    for (QWidget* p : { mainPage, settingsPage, routesPage }) {
+        p->ensurePolished();   // apply stylesheet metrics before measuring
+        contentW = std::max(contentW, p->sizeHint().width());
+    }
+    // Allow for the vertical scrollbar plus a little right-edge breathing space,
+    // and never go narrower than the original default width.
+    constexpr int kScrollbarAllowance = 24;
+    panelWidth_ = std::max(panelWidth_, contentW + kScrollbarAllowance);
+
+    mainIndex_     = stack_->addWidget(wrapScroll(mainPage));
+    settingsIndex_ = stack_->addWidget(wrapScroll(settingsPage));
+    routesIndex_   = stack_->addWidget(wrapScroll(routesPage));
     outer->addWidget(stack_, 1);
 
     anim_ = new QPropertyAnimation(panel_, "geometry", this);
@@ -157,6 +178,43 @@ QWidget* SideMenu::buildMainPage() {
     chartSetsBox_->setSpacing(0);
     col->addWidget(setsHolder);
     rebuildChartSets();
+
+    // Raster/imagery toggles live with the chart sets: they pick which chart
+    // data is drawn, so they belong next to the set selection rather than under
+    // the vector-only Chart Detail toggles.
+    //
+    // For now the Raster Charts item is hidden and raster is forced on: flip
+    // kShowRasterChartsItem back to true to expose the user toggle again.
+    constexpr bool kShowRasterChartsItem = false;
+    if (kShowRasterChartsItem) {
+        auto* raster = makeCheckAction(QStringLiteral("Raster Charts"), settings_->showRasterCharts());
+        connect(raster, &QPushButton::toggled, settings_, &Settings::setShowRasterCharts);
+        col->addWidget(raster);
+    } else if (!settings_->showRasterCharts()) {
+        settings_->setShowRasterCharts(true);   // keep raster on while hidden
+    }
+    auto* overlay = makeCheckAction(QStringLiteral("Vectors over Imagery"), settings_->vectorOverlay());
+    connect(overlay, &QPushButton::toggled, settings_, &Settings::setVectorOverlay);
+    col->addWidget(overlay);
+
+    col->addWidget(makeHeader(QStringLiteral("Chart Detail")));
+    auto* detailLvlBtn = makeIndentedAction(QStringLiteral("Detail Level"));
+    connect(detailLvlBtn, &QPushButton::clicked, this, [this] {
+        emit editChartDetailLevelRequested();
+    });
+    col->addWidget(detailLvlBtn);
+    auto* snd = makeCheckAction(QStringLiteral("Soundings"), settings_->showSoundings());
+    connect(snd, &QPushButton::toggled, settings_, &Settings::setShowSoundings);
+    col->addWidget(snd);
+    auto* sym = makeCheckAction(QStringLiteral("Symbols"), settings_->showSymbols());
+    connect(sym, &QPushButton::toggled, settings_, &Settings::setShowSymbols);
+    col->addWidget(sym);
+    auto* txt = makeCheckAction(QStringLiteral("Text"), settings_->showText());
+    connect(txt, &QPushButton::toggled, settings_, &Settings::setShowText);
+    col->addWidget(txt);
+    auto* con = makeCheckAction(QStringLiteral("Depth Contours"), settings_->showDepthContours());
+    connect(con, &QPushButton::toggled, settings_, &Settings::setShowDepthContours);
+    col->addWidget(con);
 
     col->addWidget(makeHeader(QStringLiteral("View")));
     auto* centerBtn = makeIndentedAction(QStringLiteral("Center on Own Ship"));
@@ -206,31 +264,6 @@ QWidget* SideMenu::buildMainPage() {
             [this](bool on) { emit navigatingToggled(on); });
     col->addWidget(navigatingBtn_);
 
-    col->addWidget(makeHeader(QStringLiteral("Chart Detail")));
-    auto* detailLvlBtn = makeIndentedAction(QStringLiteral("Detail Level"));
-    connect(detailLvlBtn, &QPushButton::clicked, this, [this] {
-        emit editChartDetailLevelRequested();
-    });
-    col->addWidget(detailLvlBtn);
-    auto* snd = makeCheckAction(QStringLiteral("Soundings"), settings_->showSoundings());
-    connect(snd, &QPushButton::toggled, settings_, &Settings::setShowSoundings);
-    col->addWidget(snd);
-    auto* sym = makeCheckAction(QStringLiteral("Symbols"), settings_->showSymbols());
-    connect(sym, &QPushButton::toggled, settings_, &Settings::setShowSymbols);
-    col->addWidget(sym);
-    auto* txt = makeCheckAction(QStringLiteral("Text"), settings_->showText());
-    connect(txt, &QPushButton::toggled, settings_, &Settings::setShowText);
-    col->addWidget(txt);
-    auto* con = makeCheckAction(QStringLiteral("Depth Contours"), settings_->showDepthContours());
-    connect(con, &QPushButton::toggled, settings_, &Settings::setShowDepthContours);
-    col->addWidget(con);
-    auto* raster = makeCheckAction(QStringLiteral("Raster Charts"), settings_->showRasterCharts());
-    connect(raster, &QPushButton::toggled, settings_, &Settings::setShowRasterCharts);
-    col->addWidget(raster);
-    auto* overlay = makeCheckAction(QStringLiteral("Vectors over Imagery"), settings_->vectorOverlay());
-    connect(overlay, &QPushButton::toggled, settings_, &Settings::setVectorOverlay);
-    col->addWidget(overlay);
-
     // Plugins section: hidden until a plugin contributes its first item.
     pluginHeader_ = makeHeader(QStringLiteral("Plugins"));
     pluginHeader_->setVisible(false);
@@ -264,6 +297,32 @@ QWidget* SideMenu::buildSettingsPage() {
     col->setContentsMargins(0, 0, 0, 0);
     col->setSpacing(0);
 
+    col->addWidget(makeHeader(QStringLiteral("Ships")));
+    auto* predBtn = makeSettingsAction(QStringLiteral("Course Prediction Line…"));
+    connect(predBtn, &QPushButton::clicked, this,
+            [this] { emit editOwnshipPredictionRequested(); });
+    col->addWidget(predBtn);
+
+    auto* shipSizeBtn = makeSettingsAction(QStringLiteral("Ship Size…"));
+    connect(shipSizeBtn, &QPushButton::clicked, this,
+            [this] { emit editVesselSizeRequested(); });
+    col->addWidget(shipSizeBtn);
+
+    auto* mmsiBtn = makeSettingsAction(QStringLiteral("Own Ship MMSI…"));
+    connect(mmsiBtn, &QPushButton::clicked, this,
+            [this] { emit editOwnshipMmsiRequested(); });
+    col->addWidget(mmsiBtn);
+
+    auto* headingSrcBtn = makeSettingsAction(QStringLiteral("Heading Source…"));
+    connect(headingSrcBtn, &QPushButton::clicked, this,
+            [this] { emit editHeadingSourceRequested(); });
+    col->addWidget(headingSrcBtn);
+
+    auto* dangerBtn = makeSettingsAction(QStringLiteral("Dangerous Ships…"));
+    connect(dangerBtn, &QPushButton::clicked, this,
+            [this] { emit editDangerousShipsRequested(); });
+    col->addWidget(dangerBtn);
+
     col->addWidget(makeHeader(QStringLiteral("Charts")));
     auto* chartSetsBtn = makeSettingsAction(QStringLiteral("Chart Sets"));
     connect(chartSetsBtn, &QPushButton::clicked, this,
@@ -295,6 +354,16 @@ QWidget* SideMenu::buildSettingsPage() {
             [this] { emit editUnitsRequested(); });
     col->addWidget(unitsBtn);
 
+    // Plugin settings pages: hidden until a plugin contributes one.
+    pluginSettingsHeader_ = makeHeader(QStringLiteral("Plugin Settings"));
+    pluginSettingsHeader_->setVisible(false);
+    col->addWidget(pluginSettingsHeader_);
+    auto* psHolder = new QWidget(page);
+    pluginSettingsBox_ = new QVBoxLayout(psHolder);
+    pluginSettingsBox_->setContentsMargins(0, 0, 0, 0);
+    pluginSettingsBox_->setSpacing(0);
+    col->addWidget(psHolder);
+
     col->addWidget(makeHeader(QStringLiteral("Data Connections")));
 
     // Data sources (NMEA 0183/2000 and plugin-registered sources) register
@@ -323,32 +392,6 @@ QWidget* SideMenu::buildSettingsPage() {
             [this] { emit navDataBrowserRequested(); });
     col->addWidget(navBrowserBtn);
 
-    col->addWidget(makeHeader(QStringLiteral("Ships")));
-    auto* predBtn = makeSettingsAction(QStringLiteral("Course Prediction Line…"));
-    connect(predBtn, &QPushButton::clicked, this,
-            [this] { emit editOwnshipPredictionRequested(); });
-    col->addWidget(predBtn);
-
-    auto* shipSizeBtn = makeSettingsAction(QStringLiteral("Ship Size…"));
-    connect(shipSizeBtn, &QPushButton::clicked, this,
-            [this] { emit editVesselSizeRequested(); });
-    col->addWidget(shipSizeBtn);
-
-    auto* mmsiBtn = makeSettingsAction(QStringLiteral("Own Ship MMSI…"));
-    connect(mmsiBtn, &QPushButton::clicked, this,
-            [this] { emit editOwnshipMmsiRequested(); });
-    col->addWidget(mmsiBtn);
-
-    auto* headingSrcBtn = makeSettingsAction(QStringLiteral("Heading Source…"));
-    connect(headingSrcBtn, &QPushButton::clicked, this,
-            [this] { emit editHeadingSourceRequested(); });
-    col->addWidget(headingSrcBtn);
-
-    auto* dangerBtn = makeSettingsAction(QStringLiteral("Dangerous Ships…"));
-    connect(dangerBtn, &QPushButton::clicked, this,
-            [this] { emit editDangerousShipsRequested(); });
-    col->addWidget(dangerBtn);
-
     col->addWidget(makeHeader(QStringLiteral("Menu")));
     auto* autoHideBtn = makeCheckAction(QStringLiteral("Auto Hide Menu"),
                                         settings_->autoHideMenu());
@@ -358,16 +401,6 @@ QWidget* SideMenu::buildSettingsPage() {
         if (autoHideBtn->isChecked() != on) autoHideBtn->setChecked(on);
     });
     col->addWidget(autoHideBtn);
-
-    // Plugin settings pages: hidden until a plugin contributes one.
-    pluginSettingsHeader_ = makeHeader(QStringLiteral("Plugin Settings"));
-    pluginSettingsHeader_->setVisible(false);
-    col->addWidget(pluginSettingsHeader_);
-    auto* psHolder = new QWidget(page);
-    pluginSettingsBox_ = new QVBoxLayout(psHolder);
-    pluginSettingsBox_->setContentsMargins(0, 0, 0, 0);
-    pluginSettingsBox_->setSpacing(0);
-    col->addWidget(psHolder);
 
     col->addStretch(1);
     // Back now lives on the header bar (the "‹" button), always reachable.
@@ -416,6 +449,14 @@ QWidget* SideMenu::wrapScroll(QWidget* content) {
                                        "{ background:%1; }").arg(theme::menu().panelBg));
     // Touch: drag anywhere to scroll (kinetic). Taps still hit the buttons.
     QScroller::grabGesture(area->viewport(), QScroller::LeftMouseButtonGesture);
+    // Vertical-only: the panel is sized to its content so there is no horizontal
+    // range to scroll, and turning off horizontal overshoot removes any side-to-
+    // side rubber-banding too, so dragging only ever moves the list up/down.
+    QScroller* scroller = QScroller::scroller(area->viewport());
+    QScrollerProperties props = scroller->scrollerProperties();
+    props.setScrollMetric(QScrollerProperties::HorizontalOvershootPolicy,
+                          QVariant::fromValue(QScrollerProperties::OvershootAlwaysOff));
+    scroller->setScrollerProperties(props);
     return area;
 }
 
