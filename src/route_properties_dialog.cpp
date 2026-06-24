@@ -1,5 +1,7 @@
 #include "route_properties_dialog.hpp"
 #include "units.hpp"
+#include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -10,6 +12,7 @@
 #include <QScrollArea>
 #include <QScroller>
 #include <QFrame>
+#include <QWidget>
 #include <QMessageBox>
 
 namespace {
@@ -17,9 +20,16 @@ namespace {
 // (no validator) since formats like DMS aren't plain numbers; the input is parsed
 // tolerantly on commit via units::parseLatitude/Longitude.
 QLineEdit* makeCoordEdit(double value, bool isLat) {
+    const theme::MenuPalette& t = theme::menu();
+    const theme::InputPalette& in = theme::input();
     auto* e = new QLineEdit;
-    e->setMinimumHeight(34);
+    e->setMinimumHeight(36);
     e->setText(isLat ? units::formatLatitude(value) : units::formatLongitude(value));
+    e->setStyleSheet(QStringLiteral(
+        "QLineEdit{ font-size:14px; padding:4px 8px; background:%1; color:%2;"
+        " border:1px solid %3; border-radius:6px; }"
+        "QLineEdit:focus{ border:1px solid %4; }")
+        .arg(in.fieldBg, in.fg, in.border, t.accent));
     return e;
 }
 }  // namespace
@@ -28,28 +38,42 @@ RoutePropertiesDialog::RoutePropertiesDialog(const Route& route, QWidget* parent
     : QDialog(parent), work_(route) {
     setWindowTitle(QStringLiteral("Route Properties"));
     resize(520, 620);
-    setWindowFlag(Qt::Window, true);
 
-    auto* col = new QVBoxLayout(this);
-    col->setSpacing(8);
+    const theme::MenuPalette& t = theme::menu();
+    // Modeless + self-deleting (WA_DeleteOnClose), single-instance; dismiss via
+    // close() so the dialog is destroyed and the owner's pointer clears.
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("Route Properties"), true);
+    panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("Details")));
 
+    auto* body = new QWidget;
+    body->setStyleSheet(QStringLiteral("QLabel{ color:%1; font-size:14px; }").arg(t.actionFg));
+    auto* bcol = new QVBoxLayout(body);
+    bcol->setContentsMargins(16, 4, 16, 8);
+    bcol->setSpacing(8);
     auto* form = new QFormLayout;
+    form->setSpacing(8);
     nameEdit_ = new QLineEdit(work_.name);
-    nameEdit_->setMinimumHeight(36);
+    dialogchrome::styleLineEdit(nameEdit_);
     descEdit_ = new QLineEdit(work_.description);
-    descEdit_->setMinimumHeight(36);
+    dialogchrome::styleLineEdit(descEdit_);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Description"), descEdit_);
-    col->addLayout(form);
+    bcol->addLayout(form);
+    panelCol->addWidget(body);
 
-    countLabel_ = new QLabel(this);
-    countLabel_->setStyleSheet(QStringLiteral("font-size:13px; font-weight:600; padding:4px 2px;"));
-    col->addWidget(countLabel_);
+    // Points header doubles as the section-header strip; rebuildRows updates the count.
+    countLabel_ = new QLabel;
+    countLabel_->setStyleSheet(QStringLiteral(
+        "font-size:12px; font-weight:600; color:%1;"
+        "padding:14px 16px 6px 16px; background:%2;").arg(t.headerFg, t.headerBg));
+    panelCol->addWidget(countLabel_);
 
-    scrollArea_ = new QScrollArea(this);
+    scrollArea_ = new QScrollArea;
     scrollArea_->setFrameShape(QFrame::NoFrame);
     scrollArea_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     scrollArea_->setWidgetResizable(true);
+    scrollArea_->setStyleSheet(QStringLiteral(
+        "QScrollArea, QScrollArea > QWidget > QWidget { background:%1; }").arg(t.panelBg));
     rowContainer_ = new QWidget;
     rowLayout_ = new QVBoxLayout(rowContainer_);
     rowLayout_->setContentsMargins(0, 0, 0, 0);
@@ -59,19 +83,24 @@ RoutePropertiesDialog::RoutePropertiesDialog(const Route& route, QWidget* parent
     // Drag-to-scroll, consistent with the list dialogs. Taps still reach the
     // per-row fields and buttons.
     QScroller::grabGesture(scrollArea_->viewport(), QScroller::LeftMouseButtonGesture);
-    col->addWidget(scrollArea_, 1);
+    panelCol->addWidget(scrollArea_, 1);
 
-    auto* btnRow = new QHBoxLayout;
+    auto* btnBar = new QWidget;
+    auto* btnRow = new QHBoxLayout(btnBar);
+    btnRow->setContentsMargins(16, 8, 16, 16);
+    btnRow->setSpacing(10);
     btnRow->addStretch(1);
     auto* cancelBtn = new QPushButton(QStringLiteral("Cancel"));
     auto* okBtn     = new QPushButton(QStringLiteral("OK"));
-    for (QPushButton* b : {cancelBtn, okBtn}) b->setMinimumHeight(44);
+    dialogchrome::styleOutlinedButton(cancelBtn);
+    dialogchrome::styleAccentButton(okBtn);
     okBtn->setDefault(true);
     btnRow->addWidget(cancelBtn);
     btnRow->addWidget(okBtn);
-    col->addLayout(btnRow);
+    panelCol->addWidget(btnBar);
 
-    connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
+    // Modeless + self-deleting: Cancel closes (destroys) rather than just hiding.
+    connect(cancelBtn, &QPushButton::clicked, this, &QWidget::close);
     connect(okBtn,     &QPushButton::clicked, this, &RoutePropertiesDialog::onOk);
 
     rebuildRows();
@@ -82,20 +111,25 @@ void RoutePropertiesDialog::rebuildRows() {
     for (Row& r : rows_) r.widget->deleteLater();
     rows_.clear();
 
+    const theme::MenuPalette& t = theme::menu();
     countLabel_->setText(QStringLiteral("Points (%1)").arg(work_.points.size()));
 
     for (int i = 0; i < work_.points.size(); ++i) {
         const RoutePoint& p = work_.points[i];
         auto* w = new QWidget(rowContainer_);
-        w->setStyleSheet(QStringLiteral("QWidget{ border-bottom:1px solid palette(mid); }"));
+        w->setObjectName(QStringLiteral("RoutePtRow"));
+        // Scope the divider to the row (#id) so it doesn't cascade to children.
+        w->setStyleSheet(QStringLiteral("#RoutePtRow{ border-bottom:1px solid %1; }")
+                             .arg(t.separator));
         auto* hl = new QHBoxLayout(w);
-        hl->setContentsMargins(4, 4, 4, 4);
+        hl->setContentsMargins(8, 4, 8, 4);
         hl->setSpacing(6);
 
         auto* num = new QLabel(QString::number(i + 1), w);
         num->setFixedWidth(28);
         num->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
-        num->setStyleSheet(QStringLiteral("border:none; font-weight:600;"));
+        num->setStyleSheet(QStringLiteral("border:none; font-weight:600; color:%1;")
+                               .arg(t.actionFg));
         hl->addWidget(num);
 
         Row row;
@@ -108,13 +142,13 @@ void RoutePropertiesDialog::rebuildRows() {
         hl->addWidget(row.lon, 1);
 
         auto* editBtn = new QPushButton(QStringLiteral("Edit"), w);
-        editBtn->setMinimumHeight(34);
+        dialogchrome::styleOutlinedButton(editBtn);
         editBtn->setToolTip(QStringLiteral("Drag this point on the chart"));
         connect(editBtn, &QPushButton::clicked, this, [this, i] { emit editPointRequested(i); });
         hl->addWidget(editBtn);
 
         auto* delBtn = new QPushButton(QStringLiteral("Delete"), w);
-        delBtn->setMinimumHeight(34);
+        dialogchrome::styleOutlinedButton(delBtn);
         connect(delBtn, &QPushButton::clicked, this, [this, i] { onDeletePoint(i); });
         hl->addWidget(delBtn);
 
