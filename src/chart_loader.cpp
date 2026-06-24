@@ -7,6 +7,7 @@
 #include <cpl_conv.h>
 
 #include <algorithm>
+#include <cctype>
 #include <string>
 #include <vector>
 
@@ -71,13 +72,29 @@ std::string normalizedFieldValue(OGRFeatureH feat, int idx) {
             return s;
         }
         default: {
-            // OFTString and anything else: the S-57 driver returns a bare
-            // value (or comma list embedded in a string); strip spaces.
+            // OFTString and anything else. Enumerated / list attributes arrive
+            // as a bare code or comma list ("4", "1, 4"), sometimes with stray
+            // spaces that must go for symbology lookups to match. But free-text
+            // attributes (INFORM, NINFOM, ...) carry real sentences whose spaces
+            // must be preserved, or they display as one run-on word. Tell them
+            // apart by content: strip every space only when the value is purely
+            // a numeric code/list; otherwise keep internal spacing and trim ends.
             const char* s = OGR_F_GetFieldAsString(feat, idx);
-            std::string out;
-            for (const char* p = s; p && *p; ++p)
-                if (*p != ' ') out += *p;
-            return out;
+            if (!s) return std::string();
+            const std::string raw = s;
+            bool codeLike = true;
+            for (unsigned char c : raw)
+                if (!std::isdigit(c) && c != ',' && c != ' ') { codeLike = false; break; }
+            if (codeLike) {
+                std::string out;
+                for (char c : raw)
+                    if (c != ' ') out += c;
+                return out;
+            }
+            const auto b = raw.find_first_not_of(" \t\r\n");
+            if (b == std::string::npos) return std::string();
+            const auto e = raw.find_last_not_of(" \t\r\n");
+            return raw.substr(b, e - b + 1);
         }
     }
 }
