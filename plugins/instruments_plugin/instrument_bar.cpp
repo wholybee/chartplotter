@@ -53,10 +53,22 @@ void InstrumentBar::setInstruments(const QList<InstrumentDef>& defs) {
 }
 
 void InstrumentBar::restorePosition(QPoint p) {
-    if (p.x() < 0 || p.y() < 0) return;
-    move(p);
+    if (p.x() < 0 || p.y() < 0) return;   // no saved position
+    savedPos_ = p;
     placed_ = true;
+    // Don't move/clamp yet: at plugin-init time the parent chart view isn't laid
+    // out, so clamping would snap the bar to (0,0). Apply when the parent is sized
+    // (first show / resize); see tryApplySavedPosition().
+    tryApplySavedPosition();
+}
+
+void InstrumentBar::tryApplySavedPosition() {
+    if (savedPos_.x() < 0 || !parentWidget()) return;
+    const QRect pr = parentWidget()->rect();
+    if (pr.width() <= width() || pr.height() <= height()) return;   // parent not sized yet
+    move(savedPos_);
     clampIntoParent();
+    savedPos_ = QPoint(-1, -1);   // consumed; further layout just clamps the live position
 }
 
 void InstrumentBar::rebuild() {
@@ -90,9 +102,21 @@ void InstrumentBar::rebuild() {
         }
     }
 
+    // A child added to an *already visible* parent is not shown automatically
+    // (Qt), and a hidden item collapses to zero size in the box layout — so on an
+    // orientation flip (rebuild while the bar is visible) the new tiles stayed
+    // hidden and the bar shrank to nothing. Show the freshly added items, then
+    // activate the layout so adjustSize() measures the correct dimensions.
+    for (int i = 0; i < layout_->count(); ++i)
+        if (QWidget* w = layout_->itemAt(i)->widget()) w->show();
+    layout_->activate();
     adjustSize();
-    if (placed_) clampIntoParent();
-    else if (isVisible()) { positionDefault(); placed_ = true; }
+    if (savedPos_.x() >= 0) tryApplySavedPosition();
+    if (savedPos_.x() < 0) {              // no pending restore
+        if (placed_) clampIntoParent();
+        else if (isVisible()) { positionDefault(); placed_ = true; }
+    }
+    if (isVisible()) raise();             // keep it above the chart after the rebuild
     refresh();
 }
 
@@ -103,8 +127,11 @@ void InstrumentBar::refresh() {
 void InstrumentBar::showEvent(QShowEvent* e) {
     QFrame::showEvent(e);
     adjustSize();
-    if (!placed_) { positionDefault(); placed_ = true; }
-    else          { clampIntoParent(); }
+    if (savedPos_.x() >= 0) tryApplySavedPosition();   // first show: parent is now laid out
+    if (savedPos_.x() < 0) {                            // no pending restore
+        if (!placed_) { positionDefault(); placed_ = true; }
+        else          { clampIntoParent(); }
+    }
     raise();
     refresh();
 }
@@ -170,7 +197,9 @@ void InstrumentBar::mouseReleaseEvent(QMouseEvent* e) {
 }
 
 bool InstrumentBar::eventFilter(QObject* obj, QEvent* e) {
-    if (obj == parentWidget() && e->type() == QEvent::Resize && isVisible())
+    if (obj == parentWidget() && e->type() == QEvent::Resize && isVisible()) {
+        if (savedPos_.x() >= 0) tryApplySavedPosition();   // parent now has a real size
         clampIntoParent();
+    }
     return QFrame::eventFilter(obj, e);
 }

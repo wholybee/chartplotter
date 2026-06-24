@@ -46,6 +46,10 @@ private:
     void rebuild();
     void clampIntoParent();
     void positionDefault();
+    // Move to the saved position once the parent has a real (laid-out) size, then
+    // clear it. A no-op while the parent is still unsized (e.g. during plugin
+    // init, before the window is shown), so the position isn't clamped to (0,0).
+    void tryApplySavedPosition();
 
     const NavDataStore*    store_ = nullptr;
     QBoxLayout*            layout_ = nullptr;
@@ -57,4 +61,5 @@ private:
     QPoint dragOffset_;
     bool   dragging_ = false;
     bool   placed_   = false;   // false until first positioned
+    QPoint savedPos_{-1, -1};   // pending restored position, applied once parent is sized
 };
