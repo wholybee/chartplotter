@@ -7,6 +7,9 @@
 #include <QLabel>
 #include <QHash>
 #include <QStringList>
+#include <QFile>
+#include <QTextStream>
+#include <QCoreApplication>
 
 namespace {
 
@@ -92,6 +95,136 @@ QString attrLabel(const QString& acr) {
     return it != m.constEnd() ? it.value() : acr;
 }
 
+// ---- S-57 enumerated-value decoding ---------------------------------------
+//
+// Enumerated ("E") and list ("L") S-57 attributes store their values as integer
+// codes — COLOUR=4, BOYSHP=4, CATLAM=1 — whose human meaning lives in GDAL's
+// catalogue CSVs, the very data folder the S-57 driver already needs:
+//
+//   s57attributes.csv     Code,Attribute,Acronym,Attributetype,Class
+//                         → acronym → numeric attribute code (+ its type)
+//   s57expectedinput.csv  Code,ID,Meaning
+//                         → (attribute code, enumerant) → text
+//
+// Only E/L attributes are decoded; numeric (I/F) and free-text (A/S) values are
+// real measurements / strings and pass through untouched. Missing files or
+// unknown codes degrade gracefully to the raw number, like classNames() above.
+
+// Split one CSV record into fields, honouring double-quoted fields that may
+// themselves contain commas (e.g. "conical (nun, ogival)") or doubled quotes.
+QStringList splitCsv(const QString& line) {
+    QStringList out;
+    QString cur;
+    bool inQuote = false;
+    for (int i = 0; i < line.size(); ++i) {
+        const QChar c = line.at(i);
+        if (inQuote) {
+            if (c == QLatin1Char('"')) {
+                if (i + 1 < line.size() && line.at(i + 1) == QLatin1Char('"')) {
+                    cur += QLatin1Char('"'); ++i;          // escaped ""
+                } else {
+                    inQuote = false;
+                }
+            } else {
+                cur += c;
+            }
+        } else if (c == QLatin1Char('"')) {
+            inQuote = true;
+        } else if (c == QLatin1Char(',')) {
+            out << cur; cur.clear();
+        } else {
+            cur += c;
+        }
+    }
+    out << cur;
+    return out;
+}
+
+struct S57EnumTable {
+    QHash<QString, int>    acronymCode;   // E/L acronyms → attribute code
+    QHash<qint64, QString> meaning;       // (code,id) packed → text
+
+    static qint64 key(int code, int id) {
+        return (static_cast<qint64>(code) << 20) | static_cast<unsigned>(id);
+    }
+
+    // The bundled gdal-data folder next to the exe (what main.cpp points GDAL
+    // at), falling back to a system GDAL_DATA override.
+    static QString dataDir() {
+        const QString bundled = QCoreApplication::applicationDirPath()
+                              + QStringLiteral("/gdal-data");
+        if (QFile::exists(bundled + QStringLiteral("/s57attributes.csv")))
+            return bundled;
+        const QString env = qEnvironmentVariable("GDAL_DATA");
+        if (!env.isEmpty()
+            && QFile::exists(env + QStringLiteral("/s57attributes.csv")))
+            return env;
+        return QString();
+    }
+
+    void load() {
+        const QString dir = dataDir();
+        if (dir.isEmpty()) return;
+
+        QFile attrs(dir + QStringLiteral("/s57attributes.csv"));
+        if (attrs.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QTextStream in(&attrs);
+            in.readLine();                                  // header row
+            while (!in.atEnd()) {
+                const QStringList f = splitCsv(in.readLine());
+                if (f.size() < 4) continue;
+                const QString type = f.at(3).trimmed();
+                if (type == QLatin1Char('E') || type == QLatin1Char('L')) {
+                    bool ok = false;
+                    const int code = f.at(0).trimmed().toInt(&ok);
+                    if (ok) acronymCode.insert(f.at(2).trimmed(), code);
+                }
+            }
+        }
+
+        QFile expIn(dir + QStringLiteral("/s57expectedinput.csv"));
+        if (expIn.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            QTextStream in(&expIn);
+            in.readLine();                                  // header row
+            while (!in.atEnd()) {
+                const QStringList f = splitCsv(in.readLine());
+                if (f.size() < 3) continue;
+                bool okC = false, okI = false;
+                const int code = f.at(0).trimmed().toInt(&okC);
+                const int id   = f.at(1).trimmed().toInt(&okI);
+                if (okC && okI) meaning.insert(key(code, id), f.at(2).trimmed());
+            }
+        }
+    }
+};
+
+// Built once, lazily, on the GUI thread (info windows are only ever opened
+// there). Empty maps when the CSVs are absent — decoding then becomes a no-op.
+const S57EnumTable& s57EnumTable() {
+    static const S57EnumTable t = [] { S57EnumTable x; x.load(); return x; }();
+    return t;
+}
+
+// Decode an enumerated/list S-57 value to human text, e.g. COLOUR "1,4" →
+// "white, green". Non-enumerated acronyms and unknown codes return the raw
+// value unchanged.
+QString decodeS57Value(const QString& acronym, const QString& raw) {
+    const S57EnumTable& t = s57EnumTable();
+    const auto it = t.acronymCode.constFind(acronym);
+    if (it == t.acronymCode.constEnd()) return raw;        // not an enumerated attr
+    const int code = it.value();
+
+    QStringList parts;
+    const QStringList toks = raw.split(QLatin1Char(','), Qt::SkipEmptyParts);
+    for (const QString& tok : toks) {
+        bool ok = false;
+        const int id = tok.trimmed().toInt(&ok);
+        const QString m = ok ? t.meaning.value(S57EnumTable::key(code, id)) : QString();
+        parts << (m.isEmpty() ? tok.trimmed() : m);
+    }
+    return parts.isEmpty() ? raw : parts.join(QStringLiteral(", "));
+}
+
 } // namespace
 
 QString chartObjectClassName(const QString& acronym) {
@@ -173,7 +306,8 @@ ChartObjectInfoWindow::ChartObjectInfoWindow(const ChartObjectInfo& obj,
     QVector<Detail> attrs;
     for (const ChartObjectAttr& a : obj.attrs) {
         if (a.key == QStringLiteral("OBJNAM") || a.value.isEmpty()) continue;
-        attrs.push_back({attrLabel(a.key), a.value, a.value.length() > 16});
+        const QString value = decodeS57Value(a.key, a.value);
+        attrs.push_back({attrLabel(a.key), value, value.length() > 16});
     }
     if (!attrs.isEmpty()) {
         col->addWidget(makeSeparator(panel()));
