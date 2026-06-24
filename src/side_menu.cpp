@@ -417,20 +417,17 @@ QWidget* SideMenu::buildRoutesPage() {
     // Lists are the management hub (visibility, properties, delete, edit on
     // chart). "+" button on the chart and long-press on empty water cover most
     // creates without a menu trip, so this page stays short: New Route, Drop
-    // Waypoint at Boat, and the two list dialogs. Tap a saved object on the
-    // chart to get rename / drag / properties / hide / delete.
+    // Waypoint at Boat, and the combined Routes & Waypoints browser. Tap a saved
+    // object on the chart to get rename / drag / properties / hide / delete.
     auto* createRoute = makeIndentedAction(QStringLiteral("New Route"));
     connect(createRoute, &QPushButton::clicked, this, [this] { emit createRouteRequested(); });
     col->addWidget(createRoute);
     auto* dropWpt = makeIndentedAction(QStringLiteral("Drop Waypoint at Boat"));
     connect(dropWpt, &QPushButton::clicked, this, [this] { emit dropWaypointRequested(); });
     col->addWidget(dropWpt);
-    auto* listRoutes = makeIndentedAction(QStringLiteral("Routes…"));
-    connect(listRoutes, &QPushButton::clicked, this, [this] { emit routeListRequested(); });
-    col->addWidget(listRoutes);
-    auto* listWpts = makeIndentedAction(QStringLiteral("Waypoints…"));
-    connect(listWpts, &QPushButton::clicked, this, [this] { emit waypointListRequested(); });
-    col->addWidget(listWpts);
+    auto* listBtn = makeIndentedAction(QStringLiteral("Routes & Waypoints…"));
+    connect(listBtn, &QPushButton::clicked, this, [this] { emit routeWaypointListRequested(); });
+    col->addWidget(listBtn);
 
     col->addStretch(1);
     return page;

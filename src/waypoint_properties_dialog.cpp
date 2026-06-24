@@ -1,49 +1,65 @@
 #include "waypoint_properties_dialog.hpp"
 #include "units.hpp"
+#include "theme.hpp"
+#include "dialog_chrome.hpp"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QWidget>
 #include <QMessageBox>
 
 WaypointPropertiesDialog::WaypointPropertiesDialog(const Waypoint& wpt, QWidget* parent)
     : QDialog(parent), work_(wpt) {
     setWindowTitle(QStringLiteral("Waypoint Properties"));
-    resize(420, 0);
+    resize(440, 380);
 
-    auto* col = new QVBoxLayout(this);
-    col->setSpacing(8);
+    const theme::MenuPalette& t = theme::menu();
+    auto* panelCol = dialogchrome::setup(this, QStringLiteral("Waypoint Properties"));
+    panelCol->addWidget(dialogchrome::sectionHeader(QStringLiteral("Details")));
+
+    auto* body = new QWidget;
+    body->setStyleSheet(QStringLiteral("QLabel{ color:%1; font-size:14px; }").arg(t.actionFg));
+    auto* bcol = new QVBoxLayout(body);
+    bcol->setContentsMargins(16, 4, 16, 12);
+    bcol->setSpacing(8);
 
     auto* form = new QFormLayout;
+    form->setSpacing(8);
     nameEdit_ = new QLineEdit(work_.name);
-    nameEdit_->setMinimumHeight(36);
+    dialogchrome::styleLineEdit(nameEdit_);
     descEdit_ = new QLineEdit(work_.description);
-    descEdit_->setMinimumHeight(36);
+    dialogchrome::styleLineEdit(descEdit_);
     // Free text (no validator): coordinate formats like DMS aren't plain numbers;
     // parsed tolerantly on OK via units::parseLatitude/Longitude.
     latEdit_ = new QLineEdit(units::formatLatitude(work_.lat));
-    latEdit_->setMinimumHeight(36);
+    dialogchrome::styleLineEdit(latEdit_);
     lonEdit_ = new QLineEdit(units::formatLongitude(work_.lon));
-    lonEdit_->setMinimumHeight(36);
+    dialogchrome::styleLineEdit(lonEdit_);
     form->addRow(QStringLiteral("Name"), nameEdit_);
     form->addRow(QStringLiteral("Description"), descEdit_);
     form->addRow(QStringLiteral("Latitude"), latEdit_);
     form->addRow(QStringLiteral("Longitude"), lonEdit_);
-    col->addLayout(form);
+    bcol->addLayout(form);
+    panelCol->addWidget(body);
 
-    col->addStretch(1);
+    panelCol->addStretch(1);
 
-    auto* row = new QHBoxLayout;
+    auto* btnBar = new QWidget;
+    auto* row = new QHBoxLayout(btnBar);
+    row->setContentsMargins(16, 8, 16, 16);
+    row->setSpacing(10);
     auto* cancelBtn = new QPushButton(QStringLiteral("Cancel"));
     auto* okBtn     = new QPushButton(QStringLiteral("OK"));
-    for (QPushButton* b : {cancelBtn, okBtn}) b->setMinimumHeight(44);
+    dialogchrome::styleOutlinedButton(cancelBtn);
+    dialogchrome::styleAccentButton(okBtn);
     okBtn->setDefault(true);
     row->addStretch(1);
     row->addWidget(cancelBtn);
     row->addWidget(okBtn);
-    col->addLayout(row);
+    panelCol->addWidget(btnBar);
 
     connect(cancelBtn, &QPushButton::clicked, this, &QDialog::reject);
     connect(okBtn,     &QPushButton::clicked, this, &WaypointPropertiesDialog::onOk);

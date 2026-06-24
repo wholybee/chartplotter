@@ -25,8 +25,7 @@ class RouteStore;
 class RouteNavigator;
 class NavDisplayWindow;
 class RouteOverlay;
-class RouteListDialog;
-class WaypointListDialog;
+class RouteWaypointDialog;
 class RoutePropertiesDialog;
 class RouteQuickInfoWindow;
 class ChartObjectInfoWindow;
@@ -72,10 +71,9 @@ private slots:
     void startCreateWaypoint();
     void startEditWaypoint();
     void dropWaypoint();
-    void showRouteList();
-    void showWaypointList();
-    void openRouteProperties(qint64 id);     // from List Routes "Properties"
-    void openWaypointProperties(qint64 id);  // from List Waypoints "Properties"
+    void showRouteWaypointList();             // open the combined tabbed browser
+    void openRouteProperties(qint64 id);     // from the Routes tab "Properties"
+    void openWaypointProperties(qint64 id);  // from the Waypoints tab "Properties"
     void publishOwnshipToView();
     void onCursorMoved(double lon, double lat);
     void onScanProgress(int done, int total);
@@ -164,8 +162,7 @@ private:
     RouteNavigator* navigator_ = nullptr;   // route-following engine (child QObject)
     NavDisplayWindow* navDisplay_ = nullptr;  // floating readout over the chart
     std::unique_ptr<RouteOverlay> routeOverlay_;
-    QPointer<RouteListDialog>     routeListDlg_;
-    QPointer<WaypointListDialog>  waypointListDlg_;
+    QPointer<RouteWaypointDialog> routeWptDlg_;
     // Route Properties editor + the drag round-trip it hands off to the chart.
     QPointer<RoutePropertiesDialog> propsDlg_;
     Route propsWork_;                  // working route while Properties is open

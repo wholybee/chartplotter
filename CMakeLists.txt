@@ -112,8 +112,7 @@ qt_add_executable(chartviewer
     src/route_navigator.cpp
     src/nav_display_window.cpp
     src/route_overlay.cpp
-    src/route_list_dialog.cpp
-    src/waypoint_list_dialog.cpp
+    src/route_waypoint_dialog.cpp
     src/route_properties_dialog.cpp
     src/waypoint_properties_dialog.cpp
     src/route_quick_info_window.cpp
