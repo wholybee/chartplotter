@@ -25,8 +25,7 @@
 #include "route_navigator.hpp"
 #include "nav_display_window.hpp"
 #include "route_overlay.hpp"
-#include "route_list_dialog.hpp"
-#include "waypoint_list_dialog.hpp"
+#include "route_waypoint_dialog.hpp"
 #include "route_properties_dialog.hpp"
 #include "waypoint_properties_dialog.hpp"
 #include "route_quick_info_window.hpp"
@@ -130,12 +129,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(settings_, &Settings::distanceUnitChanged, view_, &ChartView::setDistanceUnit);
 
     // Coordinate (lat/lon) display format: update the shared format and refresh
-    // the live displays (status-bar cursor + any open waypoint list). The AIS
-    // info and nav-data browser windows refresh on their own 1 Hz timers.
+    // the live displays (status-bar cursor + the open routes/waypoints browser).
+    // The AIS info and nav-data browser windows refresh on their own 1 Hz timers.
     connect(settings_, &Settings::angleFormatChanged, this, [this](AngleFormat f) {
         units::setCoordFormat(f);
         onCursorMoved(lastCursorLon_, lastCursorLat_);
-        if (waypointListDlg_) waypointListDlg_->refresh();
+        if (routeWptDlg_) routeWptDlg_->refreshLists();
     });
 
     // Ownship course-prediction length (minutes), persisted via Settings.
@@ -310,11 +309,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(sideMenu_, &SideMenu::aboutRequested,                   this, &MainWindow::showAbout);
     connect(sideMenu_, &SideMenu::createRouteRequested,    this, &MainWindow::startCreateRoute);
     connect(sideMenu_, &SideMenu::editRouteRequested,      this, &MainWindow::startEditRoute);
-    connect(sideMenu_, &SideMenu::routeListRequested,      this, &MainWindow::showRouteList);
     connect(sideMenu_, &SideMenu::createWaypointRequested, this, &MainWindow::startCreateWaypoint);
     connect(sideMenu_, &SideMenu::editWaypointRequested,   this, &MainWindow::startEditWaypoint);
     connect(sideMenu_, &SideMenu::dropWaypointRequested,   this, &MainWindow::dropWaypoint);
-    connect(sideMenu_, &SideMenu::waypointListRequested,   this, &MainWindow::showWaypointList);
+    connect(sideMenu_, &SideMenu::routeWaypointListRequested, this, &MainWindow::showRouteWaypointList);
 
     // Route navigation engine. Computes APB/RMB values into the nav store while
     // active. Its active state and the menu's "Navigating" checkbox mirror each
@@ -1005,11 +1003,9 @@ void MainWindow::showAddPopup(const QPointF& screenPt, const QPoint& globalPt, b
 
 void MainWindow::startEditRoute() {
     if (!routeStore_) return;
-    // Modal picker. A row tap emits routePicked and accepts; we then begin edit.
-    RouteListDialog dlg(routeStore_, /*pickMode=*/true, this);
-    qint64 picked = -1;
-    connect(&dlg, &RouteListDialog::routePicked, this, [&picked](qint64 id) { picked = id; });
-    if (dlg.exec() == QDialog::Accepted && picked >= 0) beginEditRoute(picked);
+    // Modal picker on the Routes tab; a row tap accepts with the chosen id.
+    RouteWaypointDialog dlg(routeStore_, RouteWaypointDialog::Tab::Routes, this);
+    if (dlg.exec() == QDialog::Accepted && dlg.pickedId() >= 0) beginEditRoute(dlg.pickedId());
 }
 
 void MainWindow::beginEditRoute(qint64 id) {
@@ -1082,10 +1078,8 @@ void MainWindow::onWaypointPlaced(double lat, double lon) {
 
 void MainWindow::startEditWaypoint() {
     if (!routeStore_) return;
-    WaypointListDialog dlg(routeStore_, /*pickMode=*/true, this);
-    qint64 picked = -1;
-    connect(&dlg, &WaypointListDialog::waypointPicked, this, [&picked](qint64 id) { picked = id; });
-    if (dlg.exec() == QDialog::Accepted && picked >= 0) beginEditWaypoint(picked);
+    RouteWaypointDialog dlg(routeStore_, RouteWaypointDialog::Tab::Waypoints, this);
+    if (dlg.exec() == QDialog::Accepted && dlg.pickedId() >= 0) beginEditWaypoint(dlg.pickedId());
 }
 
 void MainWindow::beginEditWaypoint(qint64 id) {
@@ -1122,36 +1116,28 @@ void MainWindow::dropWaypoint() {
     routeStore_->addWaypoint(w);
 }
 
-void MainWindow::showRouteList() {
-    if (!routeListDlg_) {
-        routeListDlg_ = new RouteListDialog(routeStore_, /*pickMode=*/false, this);
-        routeListDlg_->setAttribute(Qt::WA_DeleteOnClose);
-        connect(routeListDlg_, &RouteListDialog::propertiesRequested,
+void MainWindow::showRouteWaypointList() {
+    // One combined, modeless browser; its Routes/Waypoints tabs each relay their
+    // own actions back here.
+    if (!routeWptDlg_) {
+        routeWptDlg_ = new RouteWaypointDialog(routeStore_, this);
+        routeWptDlg_->setAttribute(Qt::WA_DeleteOnClose);
+        connect(routeWptDlg_, &RouteWaypointDialog::routePropertiesRequested,
                 this, &MainWindow::openRouteProperties);
-        connect(routeListDlg_, &RouteListDialog::editRequested,
+        connect(routeWptDlg_, &RouteWaypointDialog::routeEditRequested,
                 this, &MainWindow::beginEditRoute);
-        connect(routeListDlg_, &RouteListDialog::newRouteRequested,
+        connect(routeWptDlg_, &RouteWaypointDialog::newRouteRequested,
                 this, &MainWindow::startCreateRoute);
-    }
-    routeListDlg_->show();
-    routeListDlg_->raise();
-    routeListDlg_->activateWindow();
-}
-
-void MainWindow::showWaypointList() {
-    if (!waypointListDlg_) {
-        waypointListDlg_ = new WaypointListDialog(routeStore_, /*pickMode=*/false, this);
-        waypointListDlg_->setAttribute(Qt::WA_DeleteOnClose);
-        connect(waypointListDlg_, &WaypointListDialog::propertiesRequested,
+        connect(routeWptDlg_, &RouteWaypointDialog::waypointPropertiesRequested,
                 this, &MainWindow::openWaypointProperties);
-        connect(waypointListDlg_, &WaypointListDialog::editRequested,
+        connect(routeWptDlg_, &RouteWaypointDialog::waypointEditRequested,
                 this, &MainWindow::beginEditWaypoint);
-        connect(waypointListDlg_, &WaypointListDialog::newWaypointAtOwnshipRequested,
+        connect(routeWptDlg_, &RouteWaypointDialog::newWaypointAtOwnshipRequested,
                 this, &MainWindow::dropWaypoint);
     }
-    waypointListDlg_->show();
-    waypointListDlg_->raise();
-    waypointListDlg_->activateWindow();
+    routeWptDlg_->show();
+    routeWptDlg_->raise();
+    routeWptDlg_->activateWindow();
 }
 
 void MainWindow::openRouteProperties(qint64 id) {

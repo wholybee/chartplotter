@@ -84,11 +84,10 @@ signals:
     // Routes & Waypoints sub-page actions.
     void createRouteRequested();
     void editRouteRequested();
-    void routeListRequested();
     void createWaypointRequested();
     void editWaypointRequested();
     void dropWaypointRequested();
-    void waypointListRequested();
+    void routeWaypointListRequested();   // open the combined Routes & Waypoints dialog
 
 protected:
     void resizeEvent(QResizeEvent* e) override;
