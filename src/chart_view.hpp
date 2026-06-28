@@ -181,6 +181,14 @@ public:
     void setAutoFollow(bool on);
     bool autoFollow() const { return autoFollow_; }
 
+    // Coalesced repaint request for data-driven updates (GPS fixes, AIS target
+    // changes, route/nav changes, plugin overlays). Unlike update(), which
+    // schedules a paint on every call, this batches all requests arriving within
+    // a short window into a single repaint, so a fast NMEA/AIS feed can't drive
+    // the chart's paint rate (the dominant source of idle CPU). Interactive
+    // pan/zoom paths still call update() directly for an immediate frame.
+    void requestRepaint();
+
     // Chart display settings (driven by the core Settings object).
     void setShowSoundings(bool on);
     void setShowSymbols(bool on);
@@ -398,6 +406,11 @@ private:
     QTimer*       updateTimer_ = nullptr;
     QTimer*       aaTimer_ = nullptr;
     QTimer*       saveTimer_ = nullptr;
+    // Repaint governor: coalesces data-driven repaint requests (see
+    // requestRepaint()). Single-shot; repaintPending_ guards against restarting
+    // it on every incoming message so the rate is capped at the interval.
+    QTimer*       repaintTimer_ = nullptr;
+    bool          repaintPending_ = false;
     QPushButton*  zoomInBtn_ = nullptr;     // lower-right + button
     QPushButton*  zoomOutBtn_ = nullptr;    // lower-right - button
 

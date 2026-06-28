@@ -133,7 +133,7 @@ IDataSource* CoreApi::registerDataSource(const QString& sourceId, const QString&
 
 void CoreApi::addChartOverlay(IChartOverlay* overlay)    { view_->addOverlay(overlay); }
 void CoreApi::removeChartOverlay(IChartOverlay* overlay) { view_->removeOverlay(overlay); }
-void CoreApi::requestChartRepaint()                      { view_->update(); }
+void CoreApi::requestChartRepaint()                      { view_->requestRepaint(); }
 
 void CoreApi::registerChartSource(IChartSource* source) {
     if (chartSources_) chartSources_->add(source);

@@ -241,10 +241,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         }
     });
     connect(aisStore_, &AisTargetStore::targetUpdated, this, [this](quint32) {
-        if (view_) view_->update();
+        if (view_) view_->requestRepaint();
     });
     connect(aisStore_, &AisTargetStore::targetExpired, this, [this](quint32) {
-        if (view_) view_->update();
+        if (view_) view_->requestRepaint();
     });
 
     // Routes & waypoints: SQLite-backed store + chart overlay/editor. The overlay
@@ -265,11 +265,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         onRouteObjectClicked(hit);
     });
     view_->addOverlay(routeOverlay_.get());
-    connect(routeStore_, &RouteStore::routesChanged,    this, [this] { if (view_) view_->update(); });
-    connect(routeStore_, &RouteStore::waypointsChanged, this, [this] { if (view_) view_->update(); });
+    connect(routeStore_, &RouteStore::routesChanged,    this, [this] { if (view_) view_->requestRepaint(); });
+    connect(routeStore_, &RouteStore::waypointsChanged, this, [this] { if (view_) view_->requestRepaint(); });
     // Repaint when the active waypoint changes (advance / start / stop) so the
     // route overlay's red highlight tracks it promptly.
-    connect(navStore_, &NavDataStore::navigationChanged, this, [this] { if (view_) view_->update(); });
+    connect(navStore_, &NavDataStore::navigationChanged, this, [this] { if (view_) view_->requestRepaint(); });
 
     // Collision component: computes each target's CPA/TCPA against the ownship
     // and writes them back into the store (which the overlay and info windows
