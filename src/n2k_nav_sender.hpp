@@ -20,14 +20,14 @@ class Nmea2000Client;
 class N2kNavSender : public QObject {
     Q_OBJECT
 public:
-    N2kNavSender(const NavDataStore* store, Nmea2000Client* client,
+    N2kNavSender(NavDataStore* store, Nmea2000Client* client,
                  QString ownSourceId, QObject* parent = nullptr);
 
 private slots:
     void onNavigationChanged();
 
 private:
-    const NavDataStore* store_  = nullptr;
-    Nmea2000Client*     client_ = nullptr;
-    QString             ownSourceId_;
+    NavDataStore*   store_  = nullptr;
+    Nmea2000Client* client_ = nullptr;
+    QString         ownSourceId_;
 };

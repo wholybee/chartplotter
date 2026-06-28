@@ -4,6 +4,7 @@
 #include <QStringList>
 #include <QChar>
 #include <QDateTime>
+#include <QHash>
 #include <optional>
 #include "host_export.hpp"
 
@@ -161,6 +162,17 @@ public:
     double staleSeconds()   const { return staleSeconds_; }
     double invalidSeconds() const { return invalidSeconds_; }
 
+    // Navigation transmit status, one flag per output link. A per-link NavSender
+    // sets this each navigation tick: true while it is actually putting the
+    // route's nav sentences/PGNs on the wire — i.e. a route is active, the link
+    // is connected, and the loop guard isn't suppressing it. The nav display
+    // reads it to colour its transmit indicators (so they reflect real link
+    // state, not just the loop guard). Keyed by link source id ("nmea0183",
+    // "nmea2000"); unknown ids read as false (nothing transmitting).
+    bool navTransmitting(const QString& sourceId) const {
+        return navTransmitting_.value(sourceId, false);
+    }
+
     // INavDataPublisher --------------------------------------------------
     void publishOwnshipPosition(double latDeg, double lonDeg,
                                 const NavValueMeta& meta) override;
@@ -191,9 +203,15 @@ public slots:
     void setNavigationData(const NavigationData& d);
     void clearNavigation();
 
+    // Record a link's navigation transmit status (see navTransmitting()). Called
+    // by the per-link NavSenders each navigation tick; emits
+    // navTransmitStateChanged() only when a link's flag actually changes.
+    void setNavTransmitting(const QString& sourceId, bool on);
+
 signals:
     void ownshipChanged();            // a value or a freshness transitioned
     void navigationChanged();         // route-following output updated
+    void navTransmitStateChanged();   // a link's transmit status flipped
 
 private slots:
     void tick();
@@ -210,5 +228,6 @@ private:
     double staleSeconds_   = 5.0;
     double invalidSeconds_ = 30.0;
     QStringList sourcePriority_;     // highest priority first
+    QHash<QString, bool> navTransmitting_;   // per-link nav transmit status
     QTimer* tickTimer_ = nullptr;
 };

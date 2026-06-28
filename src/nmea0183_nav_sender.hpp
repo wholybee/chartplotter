@@ -19,17 +19,18 @@ class Nmea0183Client;
 class Nmea0183NavSender : public QObject {
     Q_OBJECT
 public:
-    // `store` is read for navigation + ownship state; `client` transmits the
+    // `store` is read for navigation + ownship state and written with this link's
+    // transmit status (NavDataStore::setNavTransmitting); `client` transmits the
     // sentences; `ownSourceId` is this link's source id (e.g. "nmea0183"), used
-    // by the loop guard.
-    Nmea0183NavSender(const NavDataStore* store, Nmea0183Client* client,
+    // by the loop guard and as the transmit-status key.
+    Nmea0183NavSender(NavDataStore* store, Nmea0183Client* client,
                       QString ownSourceId, QObject* parent = nullptr);
 
 private slots:
     void onNavigationChanged();
 
 private:
-    const NavDataStore* store_  = nullptr;
-    Nmea0183Client*     client_ = nullptr;
-    QString             ownSourceId_;
+    NavDataStore*   store_  = nullptr;
+    Nmea0183Client* client_ = nullptr;
+    QString         ownSourceId_;
 };

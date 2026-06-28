@@ -239,8 +239,8 @@ NavDisplayWindow::NavDisplayWindow(const NavDataStore* store, QWidget* parent)
     vmgLabel_ = valueLabel(this);
     grid->addWidget(vmgLabel_, 4, 1, 1, 2);
 
-    // Transmit indicator: a small dot (green = APB/RMB/RMC being transmitted on
-    // NMEA 0183, red = suppressed by the loop guard) plus a static label.
+    // Transmit indicator: a small dot (green = APB/RMB/RMC actually going out on
+    // a live NMEA 0183 link, grey = not transmitting) plus a static label.
     txDot_ = new QLabel(this);
     txDot_->setFixedSize(12, 12);
     txLabel_ = new QLabel(QStringLiteral("APB · XTE · RMB · RMC"), this);
@@ -264,8 +264,13 @@ NavDisplayWindow::NavDisplayWindow(const NavDataStore* store, QWidget* parent)
     cdi_ = new CdiWidget(store_, this);
     grid->addWidget(cdi_, 8, 0, 1, 3, Qt::AlignHCenter);
 
-    if (store_)
+    if (store_) {
         connect(store_, &NavDataStore::navigationChanged, this, &NavDisplayWindow::refresh);
+        // The senders update their transmit status just after navigationChanged
+        // (or whenever a link connects/drops), so refresh on that too to recolour
+        // the indicators without waiting for the next navigation tick.
+        connect(store_, &NavDataStore::navTransmitStateChanged, this, &NavDisplayWindow::refresh);
+    }
     if (parent) parent->installEventFilter(this);
 
     hide();   // shown only while navigating
@@ -286,29 +291,33 @@ void NavDisplayWindow::refresh() {
     rangeLabel_->setText(QString::number(n.rangeToDestNm, 'f', 2) + QStringLiteral(" nm"));
     vmgLabel_->setText(QString::number(n.closingVelocityKn, 'f', 1) + QStringLiteral(" kn"));
 
-    // Transmit state: suppressed when the navigation solution itself was sourced
-    // from the NMEA 0183 link (loop guard); otherwise it is transmitted.
-    const bool suppressed =
-        n.source.compare(QLatin1String("nmea0183"), Qt::CaseInsensitive) == 0;
-    txDot_->setStyleSheet(QStringLiteral("background:%1; border-radius:6px;")
-        .arg(suppressed ? QStringLiteral("#d23b3b") : QStringLiteral("#2e9e44")));
-    txDot_->setToolTip(suppressed
-        ? QStringLiteral("APB/XTE/RMB/RMC transmission suppressed: navigation data came "
-                         "from NMEA 0183 (loop guard)")
-        : QStringLiteral("Transmitting APB/XTE/RMB/RMC on the NMEA 0183 connection "
-                         "(when connected)"));
-
-    // NMEA 2000 nav PGNs: same logic, suppressed only when the solution came from
-    // the NMEA 2000 link itself.
-    const bool suppressed2k =
-        n.source.compare(QLatin1String("nmea2000"), Qt::CaseInsensitive) == 0;
-    txDot2k_->setStyleSheet(QStringLiteral("background:%1; border-radius:6px;")
-        .arg(suppressed2k ? QStringLiteral("#d23b3b") : QStringLiteral("#2e9e44")));
-    txDot2k_->setToolTip(suppressed2k
-        ? QStringLiteral("PGN 129283/129284/129285 transmission suppressed: navigation "
-                         "data came from NMEA 2000 (loop guard)")
-        : QStringLiteral("Transmitting PGN 129283/129284/129285 on the NMEA 2000 "
-                         "connection (when connected)"));
+    // Transmit indicators: green only while the link is actually putting the nav
+    // data on the wire, as reported by that link's sender (route active + link
+    // connected + not suppressed by the loop guard). Grey otherwise, with the
+    // tooltip naming the reason — the loop guard, or simply that the link is not
+    // active.
+    auto updateTxDot = [&](QLabel* dot, const QString& sourceId,
+                           const QString& what) {
+        const bool transmitting = store_->navTransmitting(sourceId);
+        const bool suppressed =
+            n.source.compare(sourceId, Qt::CaseInsensitive) == 0;
+        dot->setStyleSheet(QStringLiteral("background:%1; border-radius:6px;")
+            .arg(transmitting ? QStringLiteral("#2e9e44")    // green: on the wire
+                              : QStringLiteral("#555b63"))); // grey: not transmitting
+        if (transmitting)
+            dot->setToolTip(QStringLiteral("Transmitting %1").arg(what));
+        else if (suppressed)
+            dot->setToolTip(QStringLiteral(
+                "Not transmitting %1: navigation data came from this connection "
+                "(loop guard)").arg(what));
+        else
+            dot->setToolTip(QStringLiteral(
+                "Not transmitting %1: the connection is not active").arg(what));
+    };
+    updateTxDot(txDot_,   QStringLiteral("nmea0183"),
+                QStringLiteral("APB/XTE/RMB/RMC on the NMEA 0183 connection"));
+    updateTxDot(txDot2k_, QStringLiteral("nmea2000"),
+                QStringLiteral("PGN 129283/129284/129285 on the NMEA 2000 connection"));
 
     if (cdi_) cdi_->update();   // repaint the course-deviation graphic
 

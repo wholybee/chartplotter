@@ -42,9 +42,9 @@ private:
     QLabel* bearingLabel_ = nullptr;
     QLabel* rangeLabel_   = nullptr;
     QLabel* vmgLabel_     = nullptr;
-    QLabel* txDot_        = nullptr;   // green = transmitting APB/XTE/RMB/RMC, red = suppressed
+    QLabel* txDot_        = nullptr;   // green = APB/XTE/RMB/RMC on the wire, grey = not transmitting
     QLabel* txLabel_      = nullptr;
-    QLabel* txDot2k_      = nullptr;   // NMEA 2000 nav PGNs: green = transmitting, red = suppressed
+    QLabel* txDot2k_      = nullptr;   // NMEA 2000 nav PGNs: green = on the wire, grey = not transmitting
     QLabel* txLabel2k_    = nullptr;
     CdiWidget* cdi_       = nullptr;   // course-deviation graphic
 
