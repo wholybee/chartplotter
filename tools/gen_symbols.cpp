@@ -4,62 +4,56 @@
 //
 // Usage: gen_symbols <chartsymbols.xml> <symbols.bin>
 //
-// This emits the S-52 look-up table (LUP) machinery, not just one symbol per
-// object class.  Each S-57 object class has many lookups distinguished by
-// attribute conditions (e.g. BOYLAT has 72: by BOYSHP, CATLAM, COLOUR, ...).
-// The runtime picks among them by best-match against a feature's attributes.
+// This emits the S-52 look-up table (LUP) machinery plus every resource the
+// runtime needs to *execute* an S-52 instruction at draw time:
+//
+//   - SY()  symbol stamps         (atlas tiles, baked from <symbols>/<bitmap>)
+//   - LS()  simple line styles    (resolved at runtime via the colour table)
+//   - AC()  area colour washes    (resolved at runtime via the colour table)
+//   - LC()  complex lines         (HPGL vector defs, baked from <line-styles>)
+//   - AP()  area patterns         (HPGL vector defs, baked from <patterns>)
+//   - TX()/TE()  text labels      (parsed from the raw instruction at runtime)
+//   - CS()  conditional symbology (executed in C++ at runtime; see sym_atlas)
+//
+// Unlike the previous generation (which pre-resolved a single SY/LS/AC per
+// lookup), this build stores the *raw instruction string* for every lookup and
+// lets the runtime parse and execute it.  That is what makes multi-symbol
+// instructions, text, complex lines, area patterns, and conditional procedures
+// possible.  The colour table (DAY_BRIGHT) and the HPGL line/pattern definitions
+// are baked alongside so the runtime is fully self-contained from symbols.bin +
+// the atlas PNG — chartsymbols.xml is still build-time only.
 //
 // Table selection (matches the chosen display style):
 //   Point features -> "Paper" table   (realistic buoy/beacon shapes)
 //   Area  features -> "Symbolized" table (symbolized boundaries + centred SY)
-//   Line  features -> dropped (line symbology is LC/LS styling, not handled)
+//   Line  features -> "Lines" table
 // If a class has no lookup in the preferred table, the alternate point table
 // ("Simplified") / area table ("Plain") is used as a fallback for that class.
 //
 // Binary layout (little-endian, packed):
 //
-//   Header (28 bytes)
-//     char     magic[4]    = "SYM\x05"
+//   Header (32 bytes)
+//     char     magic[4]    = "SYM\x06"
 //     uint32_t symCount    number of SymRecord
 //     uint32_t lupCount    number of LupRecord
 //     uint32_t condCount   number of CondRecord (attribute conditions pool)
 //     uint32_t attrCount   number of AttrRecord (relevant-attribute acronyms)
-//     uint32_t lineCount   number of LineStyleRecord (dedup'd LS() pool)
-//     uint32_t fillCount   number of FillStyleRecord (dedup'd AC() pool)
+//     uint32_t colorCount  number of ColorRecord (DAY_BRIGHT colour table)
+//     uint32_t lcCount     number of LcDefRecord (LC line-complex HPGL defs)
+//     uint32_t apCount     number of ApDefRecord (AP area-pattern HPGL defs)
+//     uint32_t strBytes    size of the trailing string blob
 //
-//   SymRecord  x symCount  (36 bytes)  -- atlas tiles
-//     char    name[24]; int16 atlas_x,atlas_y,width,height,pivot_x,pivot_y
+//   SymRecord   x symCount   (36)  atlas tiles
+//   LupRecord   x lupCount   (24)  one lookup (+ raw-instruction string ref)
+//   CondRecord  x condCount  (32)  attribute condition pool
+//   AttrRecord  x attrCount  (8)   relevant-attribute acronyms
+//   ColorRecord x colorCount (12)  DAY_BRIGHT token -> RGBA
+//   LcDefRecord x lcCount    (48)  line-complex HPGL definitions
+//   ApDefRecord x apCount    (52)  area-pattern HPGL definitions
+//   string blob x strBytes         instruction + HPGL text, referenced by offset
 //
-//   LupRecord  x lupCount  (20 bytes)  -- one lookup
-//     char     objClass[8]   null-padded S-57 class (e.g. "BOYLAT")
-//     uint8_t  geomType      0=Point, 1=Line, 2=Area
-//     uint8_t  dispCat       0=Displaybase, 1=Standard, 2=Other
-//     uint8_t  nConds        attribute conditions for this lookup
-//     uint8_t  rotMode       0=no rotation, 1=rotate by ORIENT attribute
-//     uint16_t condStart     index of first CondRecord in the pool
-//     uint16_t symIdx        resolved symbol index (0xFFFF if unresolved)
-//     uint16_t lineStyleIdx  resolved line-style index (0xFFFF if no LS())
-//     uint16_t fillStyleIdx  resolved fill-style index (0xFFFF if no AC())
-//
-//   CondRecord x condCount  (32 bytes)  -- attribute condition pool
-//     char attr[8]    6-char S-57 attribute acronym, null-padded
-//     char value[24]  required value, e.g. "4" or "3,4,3"
-//
-//   AttrRecord x attrCount  (8 bytes)  -- union of acronyms used in conditions
-//     char acronym[8]
-//
-//   LineStyleRecord x lineCount  (8 bytes)  -- dedup'd LS() styles
-//     uint8_t pattern  0=SOLD, 1=DASH, 2=DOTT
-//     uint8_t width    S-52 line-width units (1..6)
-//     uint8_t r,g,b    RGB resolved from the DAY_BRIGHT colour table
-//     uint8_t _pad[3]
-//
-//   FillStyleRecord x fillCount  (4 bytes)  -- dedup'd AC() styles
-//     uint8_t r,g,b,a  RGBA (alpha resolved from S-52 transparency factor)
-//
-// Note on ordering: LupRecords are grouped so that all lookups for one
-// (objClass, geomType) are contiguous, which lets the runtime build a compact
-// index. Conditions are pooled and referenced by (condStart, nConds).
+// All variable-length text (lookup instructions, HPGL programs) lives in the
+// trailing string blob; records reference it by (offset,length).
 
 #include <QCoreApplication>
 #include <QFile>
@@ -87,10 +81,12 @@ struct Header {
     uint32_t lupCount;
     uint32_t condCount;
     uint32_t attrCount;
-    uint32_t lineCount;
-    uint32_t fillCount;
+    uint32_t colorCount;
+    uint32_t lcCount;
+    uint32_t apCount;
+    uint32_t strBytes;
 };
-static_assert(sizeof(Header) == 28, "Header size");
+static_assert(sizeof(Header) == 36, "Header size");
 
 struct SymRecord {
     char    name[24];
@@ -102,16 +98,17 @@ static_assert(sizeof(SymRecord) == 36, "SymRecord size");
 
 struct LupRecord {
     char     objClass[8];
-    uint8_t  geomType;
-    uint8_t  dispCat;
+    uint8_t  geomType;      // 0=Point, 1=Line, 2=Area
+    uint8_t  dispCat;       // 0=Displaybase, 1=Standard, 2=Other
     uint8_t  nConds;
-    uint8_t  rotMode;       // 0=no rotation, 1=rotate by ORIENT
+    uint8_t  _pad;
     uint16_t condStart;
-    uint16_t symIdx;
-    uint16_t lineStyleIdx;  // 0xFFFF when the instruction has no LS()
-    uint16_t fillStyleIdx;  // 0xFFFF when the instruction has no AC()
+    uint16_t _pad2;
+    uint32_t instrOff;      // offset of the raw instruction in the string blob
+    uint16_t instrLen;
+    uint16_t _pad3;
 };
-static_assert(sizeof(LupRecord) == 20, "LupRecord size");
+static_assert(sizeof(LupRecord) == 24, "LupRecord size");
 
 struct CondRecord {
     char attr[8];
@@ -124,61 +121,69 @@ struct AttrRecord {
 };
 static_assert(sizeof(AttrRecord) == 8, "AttrRecord size");
 
-struct LineStyleRecord {
-    uint8_t pattern;        // 0 SOLD, 1 DASH, 2 DOTT
-    uint8_t width;          // S-52 line-width units
-    uint8_t r, g, b;
-    uint8_t _pad[3];
+struct ColorRecord {
+    char    token[8];       // null-padded 5-char S-52 colour token
+    uint8_t r, g, b, a;
 };
-static_assert(sizeof(LineStyleRecord) == 8, "LineStyleRecord size");
+static_assert(sizeof(ColorRecord) == 12, "ColorRecord size");
 
-struct FillStyleRecord {
-    uint8_t r, g, b, a;     // alpha resolved from S-52 transparency factor
+struct LcDefRecord {        // LC() complex-line HPGL definition
+    char     name[24];
+    uint8_t  r, g, b, a;    // resolved pen colour
+    uint16_t vecW, vecH;    // vector bbox (HPGL units)
+    uint16_t pivotX, pivotY;
+    uint16_t originX, originY;
+    uint32_t hpglOff;
+    uint16_t hpglLen;
+    uint16_t _pad;
 };
-static_assert(sizeof(FillStyleRecord) == 4, "FillStyleRecord size");
+static_assert(sizeof(LcDefRecord) == 48, "LcDefRecord size");
+
+struct ApDefRecord {        // AP() area-pattern definition (HPGL or raster)
+    char     name[24];
+    uint8_t  r, g, b, a;
+    uint16_t vecW, vecH;
+    uint16_t pivotX, pivotY;
+    uint16_t originX, originY;
+    uint16_t minDist, maxDist;
+    uint8_t  fillType;      // 0=staggered(S), 1=linear(L)
+    uint8_t  spacing;       // 0=constant(C), 1=scaled(S)
+    uint8_t  hasBitmap;     // 1=use atlas tile (raster pattern), 0=HPGL
+    uint8_t  _pad;
+    int16_t  bmpX, bmpY;    // atlas tile origin (raster patterns)
+    int16_t  bmpW, bmpH;    // atlas tile size  (raster patterns)
+    uint32_t hpglOff;
+    uint16_t hpglLen;
+    uint16_t _pad2;
+};
+static_assert(sizeof(ApDefRecord) == 64, "ApDefRecord size");
 #pragma pack(pop)
 
 // ---- intermediate (parse-time) structures -----------------------------------
 
 struct Cond { QByteArray attr; QByteArray value; };
 
-struct LineStyle {
-    uint8_t pattern = 0;
-    uint8_t width   = 1;
-    uint8_t r = 0, g = 0, b = 0;
-    bool operator==(const LineStyle& o) const {
-        return pattern==o.pattern && width==o.width &&
-               r==o.r && g==o.g && b==o.b;
-    }
-};
-inline uint qHash(const LineStyle& s, uint seed = 0) {
-    return ::qHash(uint32_t(s.pattern) | (uint32_t(s.width)<<8) |
-                   (uint32_t(s.r)<<16) | (uint32_t(s.g)<<24)) ^
-           ::qHash(s.b, seed);
-}
-
-struct FillStyle {
-    uint8_t r = 0, g = 0, b = 0, a = 255;
-    bool operator==(const FillStyle& o) const {
-        return r==o.r && g==o.g && b==o.b && a==o.a;
-    }
-};
-inline uint qHash(const FillStyle& s, uint seed = 0) {
-    return ::qHash(uint32_t(s.r) | (uint32_t(s.g)<<8) |
-                   (uint32_t(s.b)<<16) | (uint32_t(s.a)<<24), seed);
-}
-
 struct Lup {
     QByteArray objClass;
     int        geomType = 0;   // 0 Point, 1 Line, 2 Area
     int        dispCat  = 1;   // 0 base, 1 standard, 2 other
     QByteArray table;          // "Paper", "Simplified", "Plain", "Symbolized", "Lines"
-    QString    instruction;    // raw S-52 instruction; not written to the binary
+    QString    instruction;    // raw S-52 instruction (stored in string blob)
     QVector<Cond> conds;
-    QByteArray symName;        // first SY() symbol; empty if none
-    uint8_t    rotMode = 0;    // 0=none, 1=rotate by ORIENT
-    int        lineStyleIdx = -1;   // index into the dedup'd LineStyle pool, or -1
-    int        fillStyleIdx = -1;   // index into the dedup'd FillStyle pool, or -1
+};
+
+struct VecDef {                // a baked HPGL line-style or pattern
+    QByteArray name;
+    QByteArray hpgl;
+    uint8_t r = 0, g = 0, b = 0, a = 255;
+    int vecW = 0, vecH = 0, pivotX = 0, pivotY = 0, originX = 0, originY = 0;
+    int minDist = 0, maxDist = 0;
+    uint8_t fillType = 0;      // patterns only
+    uint8_t spacing  = 0;      // patterns only
+    // Raster pattern (atlas tile) form: filled in when a pattern carries a
+    // <bitmap>/<graphics-location> instead of (or alongside) HPGL.
+    bool hasBitmap = false;
+    int bmpX = 0, bmpY = 0, bmpW = 0, bmpH = 0;
 };
 
 // ---- helpers ----------------------------------------------------------------
@@ -189,107 +194,10 @@ static void padCopy(char* dst, int dstSize, const QByteArray& src) {
     std::memcpy(dst, src.constData(), static_cast<std::size_t>(n));
 }
 
-// Parse the first SY() call in an S-52 instruction. Returns the symbol name
-// and, if a second argument is present, classifies it as a rotation source.
-// Supported rotation sources:
-//   "ORIENT" -> rotMode 1 (rotate by the feature's ORIENT attribute, degrees)
-// Anything else (numeric literals, 'OBJNAM' text refs, etc.) -> rotMode 0.
-struct SyParse { QByteArray name; uint8_t rotMode = 0; };
-static SyParse firstSY(const QString& instruction) {
-    static const QRegularExpression re(QStringLiteral(R"(SY\(([^)]+)\))"));
-    const auto m = re.match(instruction);
-    SyParse out;
-    if (!m.hasMatch()) return out;
-    const QStringList parts = m.captured(1).split(',');
-    out.name = parts.value(0).trimmed().toLatin1();
-    if (parts.size() > 1 && parts.at(1).trimmed() == QLatin1String("ORIENT"))
-        out.rotMode = 1;
-    return out;
-}
-
 // Packed 0x00RRGGBB so we can use plain uint32_t in QtCore-only code.
 static inline uint32_t packRgb(int r, int g, int b) {
     return (uint32_t(r & 0xFF) << 16) | (uint32_t(g & 0xFF) << 8) |
             uint32_t(b & 0xFF);
-}
-
-// Resolve the line style for an S-52 instruction.  Prefers LS(pattern,width,
-// color-token); when absent but LC(...) is present (Line Complex — a symbol
-// stamped along the line, e.g. restricted-area patterned boundaries) emits a
-// pragmatic fallback of DASH, width 2, CHMGF (light magenta — the universal
-// "soft warning boundary" colour used by S-52 for restricted/anchorage/TSS
-// areas).  Implementing LC fully would mean stroking the atlas symbol along
-// the path; the fallback captures the visual intent at typical zoom levels.
-// Returns false when neither LS nor LC is present, or when LS's colour token
-// is unknown.
-static bool firstLS(const QString& instruction,
-                    const QHash<QByteArray, uint32_t>& colors,
-                    LineStyle& out) {
-    static const QRegularExpression reLS(QStringLiteral(R"(LS\(([^)]+)\))"));
-    static const QRegularExpression reLC(QStringLiteral(R"(LC\(([^)]+)\))"));
-
-    const auto mLS = reLS.match(instruction);
-    if (mLS.hasMatch()) {
-        const QStringList parts = mLS.captured(1).split(',');
-        if (parts.size() >= 3) {
-            const QString patStr = parts.at(0).trimmed();
-            const QByteArray colTok = parts.at(2).trimmed().toLatin1();
-            const auto it = colors.constFind(colTok);
-            if (it != colors.constEnd()) {
-                if      (patStr == QLatin1String("SOLD")) out.pattern = 0;
-                else if (patStr == QLatin1String("DASH")) out.pattern = 1;
-                else if (patStr == QLatin1String("DOTT")) out.pattern = 2;
-                else                                      out.pattern = 0;
-                out.width = static_cast<uint8_t>(
-                    std::max(1, parts.at(1).trimmed().toInt()));
-                const uint32_t rgb = it.value();
-                out.r = static_cast<uint8_t>((rgb >> 16) & 0xFF);
-                out.g = static_cast<uint8_t>((rgb >>  8) & 0xFF);
-                out.b = static_cast<uint8_t>( rgb        & 0xFF);
-                return true;
-            }
-        }
-    }
-
-    // No usable LS — fall back to a generic LC representation if present.
-    if (reLC.match(instruction).hasMatch()) {
-        const auto it = colors.constFind(QByteArrayLiteral("CHMGF"));
-        const uint32_t rgb = (it != colors.constEnd()) ? it.value() : 0xD3A6E9u;
-        out.pattern = 1;   // DASH
-        out.width   = 2;
-        out.r = static_cast<uint8_t>((rgb >> 16) & 0xFF);
-        out.g = static_cast<uint8_t>((rgb >>  8) & 0xFF);
-        out.b = static_cast<uint8_t>( rgb        & 0xFF);
-        return true;
-    }
-    return false;
-}
-
-// Parse the first AC() call in an S-52 instruction into a FillStyle.
-// Syntax: AC(color-token[, transparency-factor]).
-// The S-52 transparency factor τ runs 0..4:
-//   0 opaque, 1 ~25%, 2 ~50%, 3 ~75%, 4 fully transparent.
-// We map it to an 8-bit alpha (255 * (1 - τ/4)), so an absent factor → 255.
-// Returns false when no AC() is present or its colour token is unknown.
-static bool firstAC(const QString& instruction,
-                    const QHash<QByteArray, uint32_t>& colors,
-                    FillStyle& out) {
-    static const QRegularExpression re(QStringLiteral(R"(AC\(([^)]+)\))"));
-    const auto m = re.match(instruction);
-    if (!m.hasMatch()) return false;
-    const QStringList parts = m.captured(1).split(',');
-    if (parts.isEmpty()) return false;
-    const QByteArray colTok = parts.at(0).trimmed().toLatin1();
-    const auto it = colors.constFind(colTok);
-    if (it == colors.constEnd()) return false;
-    int tau = 0;
-    if (parts.size() > 1) tau = std::clamp(parts.at(1).trimmed().toInt(), 0, 4);
-    const uint32_t rgb = it.value();
-    out.r = static_cast<uint8_t>((rgb >> 16) & 0xFF);
-    out.g = static_cast<uint8_t>((rgb >>  8) & 0xFF);
-    out.b = static_cast<uint8_t>( rgb        & 0xFF);
-    out.a = static_cast<uint8_t>(255 - (tau * 255) / 4);
-    return true;
 }
 
 static int geomFromType(const QString& t) {
@@ -305,43 +213,66 @@ static int catFromDisp(const QString& c) {
     return 1;   // Standard (default)
 }
 
-// Static fallback lookups for object classes whose S-52 lookups are
-// dominated by conditional symbology (CS) procedures we don't execute.
-// Each entry is inserted *only* if the class has no no-condition default
-// already kept for its geometry — so any direct SY() default from the XML
-// always wins.  Entries with a condAttr/condValue become conditional
-// lookups so best-match selection can pick between them by feature
-// attribute (e.g. a light's COLOUR).
-//
-// `dashedBoundary` adds a fallback LS(DASH, 2, CHMGF) line style alongside
-// the symbol, suitable for restricted/regulated areas whose Symbolized
-// boundaries would otherwise rely on LC() (not yet implemented).
-struct Fallback {
-    const char* obj;
-    const char* sym;
-    int  geom;             // 0 Point, 2 Area
-    bool dashedBoundary;
-    const char* condAttr;  // nullptr -> no condition (class default)
-    const char* condValue;
-};
-static const Fallback kFallbacks[] = {
-    // LIGHTS — synthetic best-match for CS(LIGHTS05) we don't execute.  S-57
-    // COLOUR values: 1=white, 3=red, 4=green, 6=yellow.  Maps to the colour
-    // variants OpenCPN bakes into the atlas; multi-colour lights (e.g. "3,4")
-    // don't match any single-value rule and fall to the magenta default.
-    { "LIGHTS", "LIGHTS11", 0, false, "COLOUR", "3"     },   // red
-    { "LIGHTS", "LIGHTS12", 0, false, "COLOUR", "4"     },   // green
-    { "LIGHTS", "LIGHTS13", 0, false, "COLOUR", "1"     },   // white
-    { "LIGHTS", "LIGHTS13", 0, false, "COLOUR", "6"     },   // yellow
-    { "LIGHTS", "LIGHTS14", 0, false, nullptr,  nullptr },   // default magenta
+// Resolve a line-style / pattern <color-ref> to RGB.  Every line-style and
+// pattern in chartsymbols.xml uses a single pen: a 6-char string of one pen-key
+// char + a 5-char colour token (e.g. "ACHMGD" = key 'A' -> token "CHMGD").
+static void resolveColorRef(const QByteArray& ref,
+                            const QHash<QByteArray, uint32_t>& colors,
+                            uint8_t& r, uint8_t& g, uint8_t& b) {
+    r = g = b = 0;
+    if (ref.size() < 6) return;
+    const QByteArray tok = ref.mid(1, 5);
+    const auto it = colors.constFind(tok);
+    if (it == colors.constEnd()) return;
+    const uint32_t rgb = it.value();
+    r = uint8_t((rgb >> 16) & 0xFF);
+    g = uint8_t((rgb >>  8) & 0xFF);
+    b = uint8_t( rgb        & 0xFF);
+}
 
-    { "UWTROC", "UWTROC03", 0, false, nullptr,  nullptr },   // underwater rock
-    // Restricted Area: features without CATREA fall through to CS(RESARE02)
-    // and otherwise render with no symbol or boundary.  ENTRES61 (entry-
-    // restricted glyph) + dashed magenta boundary mirrors what OpenCPN draws
-    // for the common "Regulated Navigation Area" RESARE features.
-    { "RESARE", "ENTRES61", 2, true,  nullptr,  nullptr },
+// Attributes referenced by conditional-symbology (CS) procedures but not always
+// present in a lookup condition.  The runtime CS engine reads these, so the
+// loader must make them available on each feature.  (Acronyms only; values are
+// read per feature.)  Kept in sync with the procedures in sym_atlas.cpp.
+static const char* const kCsAttrs[] = {
+    // LIGHTS05
+    "COLOUR", "CATLIT", "LITCHR", "SIGGRP", "SIGPER", "SECTR1", "SECTR2",
+    "VALNMR", "HEIGHT", "LITVIS", "EXCLIT", "ORIENT", "STATUS",
+    // TOPMAR01 / DAYMAR
+    "TOPSHP",
+    // RESTRN01 / RESARE02
+    "RESTRN", "CATREA",
+    // OBSTRN04 / UWTROC / WRECKS02
+    "VALSOU", "WATLEV", "CATOBS", "EXPSOU", "QUASOU", "NATSUR", "CATWRK",
+    // DEPARE01/02 / DEPCNT02
+    "DRVAL1", "DRVAL2", "VALDCO", "QUAPOS",
+    // SLCONS03
+    "CATSLC", "CONDTN",
+    // Generic text source
+    "OBJNAM",
 };
+
+// Pull every S-57 attribute acronym referenced by a TX()/TE() text command in
+// an instruction, so the loader reads them for the label to render.
+//   TX(ATTRIB,...)              -> "ATTRIB"
+//   TE('format','A1,A2,...',..) -> "A1","A2"
+static void collectTextAttrs(const QString& instr, QSet<QByteArray>& out) {
+    static const QRegularExpression reTX(QStringLiteral(R"(TX\(\s*([A-Za-z0-9_]+))"));
+    static const QRegularExpression reTE(QStringLiteral(R"(TE\(\s*'[^']*'\s*,\s*'([^']*)')"));
+    auto it = reTX.globalMatch(instr);
+    while (it.hasNext()) {
+        const QByteArray a = it.next().captured(1).trimmed().toLatin1();
+        if (a.size() >= 5) out.insert(a.left(6));
+    }
+    auto jt = reTE.globalMatch(instr);
+    while (jt.hasNext()) {
+        const QStringList attrs = jt.next().captured(1).split(',');
+        for (const QString& s : attrs) {
+            const QByteArray a = s.trimmed().toLatin1();
+            if (a.size() >= 5) out.insert(a.left(6));
+        }
+    }
+}
 
 // ---- main -------------------------------------------------------------------
 
@@ -358,20 +289,23 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // ---- parse symbols + lookups --------------------------------------------
+    // ---- parse symbols + lookups + colours + line-styles + patterns ---------
 
     QVector<SymRecord> syms;
     QMap<QByteArray, int> symIndexByName;   // symbol name -> index in syms
     QVector<Lup> lups;
+    QVector<VecDef> lineDefs;               // LC line-complex defs
+    QVector<VecDef> patDefs;                // AP area-pattern defs
 
-    // Color tokens (e.g. "TRFCD" -> magenta) used by LS() instructions, packed
-    // as 0x00RRGGBB.  Resolved eagerly from the DAY_BRIGHT colour table; the
-    // night/dusk variants would need a runtime toggle we don't have yet.
+    // DAY_BRIGHT colour table (token -> 0x00RRGGBB).  Resolved eagerly; used to
+    // bake LC/AP pen colours and emitted whole for runtime LS()/AC() resolution.
     QHash<QByteArray, uint32_t> colors;
+    QVector<QByteArray> colorOrder;         // preserve file order for output
 
     QXmlStreamReader xml(&xmlFile);
     bool inSymbols = false, inLookups = false, inBitmap = false;
     bool inDayColorTable = false;
+    bool inLineStyles = false, inPatterns = false;
 
     struct {
         QByteArray name; int16_t ax=0, ay=0, w=0, h=0, px=0, py=0;
@@ -382,6 +316,8 @@ int main(int argc, char** argv) {
         QByteArray objClass; QString type, table, disp, instruction;
         QVector<Cond> conds;
     } look;
+
+    VecDef vd;   // current line-style / pattern being parsed
 
     while (!xml.atEnd()) {
         xml.readNext();
@@ -398,10 +334,13 @@ int main(int argc, char** argv) {
                 const int r = a.value(QStringLiteral("r")).toInt();
                 const int g = a.value(QStringLiteral("g")).toInt();
                 const int b = a.value(QStringLiteral("b")).toInt();
+                if (!colors.contains(name)) colorOrder.append(name);
                 colors.insert(name, packRgb(r, g, b));
             }
-            else if (tag == u"symbols") inSymbols = true;
-            else if (tag == u"lookups") inLookups = true;
+            else if (tag == u"symbols")     inSymbols = true;
+            else if (tag == u"lookups")     inLookups = true;
+            else if (tag == u"line-styles") inLineStyles = true;
+            else if (tag == u"patterns")    inPatterns = true;
             else if (inSymbols) {
                 if      (tag == u"symbol") sym = {};
                 else if (tag == u"name")   sym.name = xml.readElementText().trimmed().toLatin1();
@@ -420,6 +359,47 @@ int main(int argc, char** argv) {
                     sym.py = static_cast<int16_t>(xml.attributes().value(QStringLiteral("y")).toInt());
                 }
             }
+            else if (inLineStyles || inPatterns) {
+                // line-style / pattern parsing.  HPGL and color-ref are siblings
+                // of <vector>; pivot/origin/distance are children of <vector>
+                // (and, for raster patterns, of <bitmap>).  inBitmap routes the
+                // shared child tags to the raster tile rather than the vector.
+                if      (tag == u"line-style" || tag == u"pattern") vd = {};
+                else if (tag == u"name")      vd.name = xml.readElementText().trimmed().toLatin1();
+                else if (tag == u"HPGL")      vd.hpgl = xml.readElementText().trimmed().toLatin1();
+                else if (tag == u"color-ref") {
+                    const QByteArray ref = xml.readElementText().trimmed().toLatin1();
+                    resolveColorRef(ref, colors, vd.r, vd.g, vd.b);
+                }
+                else if (tag == u"filltype")  vd.fillType = (xml.readElementText().trimmed() == QLatin1String("L")) ? 1 : 0;
+                else if (tag == u"spacing")   vd.spacing  = (xml.readElementText().trimmed() == QLatin1String("S")) ? 1 : 0;
+                else if (tag == u"bitmap") {
+                    vd.hasBitmap = true;
+                    vd.bmpW = xml.attributes().value(QStringLiteral("width")).toInt();
+                    vd.bmpH = xml.attributes().value(QStringLiteral("height")).toInt();
+                    inBitmap = true;
+                }
+                else if (tag == u"graphics-location") {
+                    vd.bmpX = xml.attributes().value(QStringLiteral("x")).toInt();
+                    vd.bmpY = xml.attributes().value(QStringLiteral("y")).toInt();
+                }
+                else if (tag == u"vector") {
+                    vd.vecW = xml.attributes().value(QStringLiteral("width")).toInt();
+                    vd.vecH = xml.attributes().value(QStringLiteral("height")).toInt();
+                }
+                else if (tag == u"distance") {
+                    vd.minDist = xml.attributes().value(QStringLiteral("min")).toInt();
+                    vd.maxDist = xml.attributes().value(QStringLiteral("max")).toInt();
+                }
+                else if (tag == u"pivot" && !inBitmap) {
+                    vd.pivotX = xml.attributes().value(QStringLiteral("x")).toInt();
+                    vd.pivotY = xml.attributes().value(QStringLiteral("y")).toInt();
+                }
+                else if (tag == u"origin" && !inBitmap) {
+                    vd.originX = xml.attributes().value(QStringLiteral("x")).toInt();
+                    vd.originY = xml.attributes().value(QStringLiteral("y")).toInt();
+                }
+            }
             else if (inLookups) {
                 if (tag == u"lookup") {
                     look = {};
@@ -433,10 +413,7 @@ int main(int argc, char** argv) {
                     // e.g. "BOYSHP4" or "COLOUR3,4,3".  When the entry is just
                     // the 6-char acronym (or acronym + whitespace), it is a
                     // *presence* marker — the lookup applies when the feature
-                    // carries that attribute at all (e.g. ORIENT for rotated
-                    // arrows, OBJNAM for labels).  Encoded with value "*" so
-                    // the runtime can distinguish "attribute present" from
-                    // "attribute equals empty string".
+                    // carries that attribute at all.  Encoded with value "*".
                     QByteArray raw = xml.readElementText().toLatin1();
                     raw.replace(' ', "");
                     if (raw.size() >= 6) {
@@ -454,7 +431,9 @@ int main(int argc, char** argv) {
             if      (tag == u"color-table") inDayColorTable = false;
             else if (tag == u"symbols")     inSymbols = false;
             else if (tag == u"lookups")     inLookups = false;
-            else if (inSymbols && tag == u"bitmap") inBitmap = false;
+            else if (tag == u"line-styles") inLineStyles = false;
+            else if (tag == u"patterns")    inPatterns = false;
+            else if ((inSymbols || inLineStyles || inPatterns) && tag == u"bitmap") inBitmap = false;
             else if (inSymbols && tag == u"symbol") {
                 if (!sym.name.isEmpty() && sym.hasLoc && sym.w > 0 && sym.h > 0) {
                     if (!symIndexByName.contains(sym.name)) {
@@ -468,18 +447,22 @@ int main(int argc, char** argv) {
                     }
                 }
             }
+            else if (inLineStyles && tag == u"line-style") {
+                if (!vd.name.isEmpty() && !vd.hpgl.isEmpty()) lineDefs.append(vd);
+            }
+            else if (inPatterns && tag == u"pattern") {
+                if (!vd.name.isEmpty() && (!vd.hpgl.isEmpty() || vd.hasBitmap))
+                    patDefs.append(vd);
+            }
             else if (inLookups && tag == u"lookup") {
                 Lup l;
-                l.objClass = look.objClass;
-                l.geomType = geomFromType(look.type);
-                l.dispCat  = catFromDisp(look.disp);
-                l.table    = look.table.toLatin1();
-                l.conds    = look.conds;
-                const SyParse sy = firstSY(look.instruction);
-                l.symName    = sy.name;
-                l.rotMode    = sy.rotMode;
-                l.instruction = look.instruction;   // for LS() resolution below
-                if (!l.objClass.isEmpty())
+                l.objClass    = look.objClass;
+                l.geomType    = geomFromType(look.type);
+                l.dispCat     = catFromDisp(look.disp);
+                l.table       = look.table.toLatin1();
+                l.conds       = look.conds;
+                l.instruction = look.instruction;
+                if (!l.objClass.isEmpty() && !l.instruction.isEmpty())
                     lups.append(l);
             }
         }
@@ -493,153 +476,66 @@ int main(int argc, char** argv) {
     }
 
     // ---- select the preferred table per (class, geomType) -------------------
-    //
-    // Point: prefer "Paper", else "Simplified".
-    // Line:  "Lines" (the only line table).
-    // Area:  prefer "Symbolized", else "Plain".
+    //   Point: prefer "Paper", else "Simplified".
+    //   Line:  "Lines" (the only line table).
+    //   Area:  prefer "Symbolized", else "Plain".
     auto preferredTable = [](int geom, const QSet<QByteArray>& tablesPresent) -> QByteArray {
-        if (geom == 0) {   // Point
+        if (geom == 0) {
             if (tablesPresent.contains("Paper"))      return "Paper";
             if (tablesPresent.contains("Simplified")) return "Simplified";
-        } else if (geom == 1) {   // Line
+        } else if (geom == 1) {
             if (tablesPresent.contains("Lines"))      return "Lines";
-        } else if (geom == 2) {   // Area
+        } else if (geom == 2) {
             if (tablesPresent.contains("Symbolized")) return "Symbolized";
             if (tablesPresent.contains("Plain"))      return "Plain";
         }
         return {};
     };
 
-    // Gather, per (class|geom), the set of tables present.
     QMap<QByteArray, QSet<QByteArray>> tablesByKey;
     auto keyOf = [](const QByteArray& cls, int geom) {
         return cls + "|" + QByteArray::number(geom);
     };
-    for (const Lup& l : lups) {
+    for (const Lup& l : lups)
         tablesByKey[keyOf(l.objClass, l.geomType)].insert(l.table);
-    }
 
-    // Dedup'd LineStyle pool. Many lookups share the same LS() (e.g. dozens
-    // of "SOLD,1,CHGRD" outlines), so pooling keeps the binary compact.
-    QVector<LineStyle> lineStylePool;
-    QHash<LineStyle, int> lineStyleIdx;
-    auto internLineStyle = [&](const LineStyle& s) -> int {
-        const auto it = lineStyleIdx.constFind(s);
-        if (it != lineStyleIdx.constEnd()) return it.value();
-        const int idx = lineStylePool.size();
-        lineStylePool.append(s);
-        lineStyleIdx.insert(s, idx);
-        return idx;
-    };
-
-    QVector<FillStyle> fillStylePool;
-    QHash<FillStyle, int> fillStyleIdx;
-    auto internFillStyle = [&](const FillStyle& s) -> int {
-        const auto it = fillStyleIdx.constFind(s);
-        if (it != fillStyleIdx.constEnd()) return it.value();
-        const int idx = fillStylePool.size();
-        fillStylePool.append(s);
-        fillStyleIdx.insert(s, idx);
-        return idx;
-    };
-
-    // Keep lookups in the preferred table that produce at least one of:
-    //   - a resolvable symbol (points + symbolized areas)
-    //   - a line style  (line features + area outlines)
-    //   - a fill style  (area-color washes like TSEZNE, RAPIDS, RUNWAY)
-    // Lookups with none are dropped (e.g. CS-only point lookups that don't
-    // resolve to an atlas tile).
+    // Keep every lookup in the preferred table (all carry a non-empty
+    // instruction, executed at runtime).
     QVector<Lup> kept;
-    QSet<QByteArray> emittedPointClasses;
-    for (Lup l : lups) {
+    for (const Lup& l : lups) {
         const QByteArray want =
             preferredTable(l.geomType, tablesByKey[keyOf(l.objClass, l.geomType)]);
         if (want.isEmpty() || l.table != want) continue;
-
-        const bool haveSym = !l.symName.isEmpty() &&
-                             symIndexByName.contains(l.symName);
-
-        LineStyle ls{};
-        const bool haveLine = firstLS(l.instruction, colors, ls);
-        if (haveLine) l.lineStyleIdx = internLineStyle(ls);
-
-        FillStyle fs{};
-        const bool haveFill = (l.geomType == 2) &&
-                              firstAC(l.instruction, colors, fs);
-        if (haveFill) l.fillStyleIdx = internFillStyle(fs);
-
-        if (!haveSym) l.symName.clear();   // unresolved/missing: don't carry it
-
-        if (!haveSym && !haveLine && !haveFill) continue;
         kept.append(l);
-        if (l.geomType == 0 && haveSym) emittedPointClasses.insert(l.objClass);
-    }
-
-    // Append CS-only fallbacks for classes that ended up with no no-condition
-    // default in `kept`.  A direct SY() default from the XML always wins; this
-    // only fills the gap when the XML's default is a CS(...) procedure (which
-    // we can't execute) and every conditional lookup failed to match.
-    QSet<QByteArray> hasDefault;
-    for (const Lup& l : kept)
-        if (l.conds.isEmpty())
-            hasDefault.insert(keyOf(l.objClass, l.geomType));
-
-    LineStyle dashMagenta{};
-    {
-        const auto it = colors.constFind(QByteArrayLiteral("CHMGF"));
-        const uint32_t rgb = (it != colors.constEnd()) ? it.value() : 0xD3A6E9u;
-        dashMagenta.pattern = 1;   // DASH
-        dashMagenta.width   = 2;
-        dashMagenta.r = static_cast<uint8_t>((rgb >> 16) & 0xFF);
-        dashMagenta.g = static_cast<uint8_t>((rgb >>  8) & 0xFF);
-        dashMagenta.b = static_cast<uint8_t>( rgb        & 0xFF);
-    }
-
-    int fallbacksAdded = 0;
-    for (const auto& fb : kFallbacks) {
-        const QByteArray obj(fb.obj);
-        const QByteArray symn(fb.sym);
-        if (hasDefault.contains(keyOf(obj, fb.geom))) continue;
-        if (!symIndexByName.contains(symn))           continue;
-        Lup l;
-        l.objClass = obj;
-        l.geomType = fb.geom;
-        l.dispCat  = 1;
-        l.symName  = symn;
-        if (fb.condAttr) {
-            Cond c;
-            c.attr  = fb.condAttr;
-            c.value = fb.condValue;
-            l.conds.append(c);
-        }
-        if (fb.dashedBoundary)
-            l.lineStyleIdx = internLineStyle(dashMagenta);
-        kept.append(l);
-        ++fallbacksAdded;
     }
 
     // Stable group by (class, geom) so each class's lookups are contiguous, and
-    // within a group put more-specific (more conditions) first — purely for
-    // deterministic, readable output; the runtime re-scores anyway.
+    // within a group put more-specific (more conditions) first.
     std::stable_sort(kept.begin(), kept.end(), [](const Lup& a, const Lup& b) {
         if (a.objClass != b.objClass) return a.objClass < b.objClass;
         if (a.geomType != b.geomType) return a.geomType < b.geomType;
         return a.conds.size() > b.conds.size();
     });
 
-    // ---- build condition pool + relevant-attribute set ----------------------
-    QVector<CondRecord> condPool;
+    // ---- relevant-attribute set --------------------------------------------
     QSet<QByteArray> attrSet;
-    bool needsOrient = false;
     for (const Lup& l : kept) {
         for (const Cond& c : l.conds) attrSet.insert(c.attr);
-        if (l.rotMode == 1) needsOrient = true;
+        collectTextAttrs(l.instruction, attrSet);   // TX()/TE() sources
+        if (l.instruction.contains(QStringLiteral("ORIENT")))
+            attrSet.insert(QByteArrayLiteral("ORIENT"));
     }
-    // ORIENT is read at runtime to drive rotation for SY(...,ORIENT) lookups,
-    // even when no condition tests it.  Make sure the loader reads it.
-    if (needsOrient) attrSet.insert(QByteArrayLiteral("ORIENT"));
+    for (const char* a : kCsAttrs) attrSet.insert(QByteArray(a));
     QList<QByteArray> attrList = attrSet.values();
     std::sort(attrList.begin(), attrList.end());
+
+    // ---- assemble the string blob (instructions + HPGL) ---------------------
+    QByteArray strBlob;
+    auto internStr = [&](const QByteArray& s, uint32_t& off, uint16_t& len) {
+        off = static_cast<uint32_t>(strBlob.size());
+        len = static_cast<uint16_t>(std::min<int>(s.size(), 0xFFFF));
+        strBlob.append(s.constData(), len);
+    };
 
     // ---- write binary -------------------------------------------------------
     QFile out(QString::fromLocal8Bit(argv[2]));
@@ -648,26 +544,18 @@ int main(int argc, char** argv) {
         return 1;
     }
 
-    // Build LupRecords (and fill condPool as we go).
+    // Build LupRecords (filling condPool + string blob as we go).
+    QVector<CondRecord> condPool;
     QVector<LupRecord> lupRecs;
     lupRecs.reserve(kept.size());
     for (const Lup& l : kept) {
         LupRecord lr{};
         padCopy(lr.objClass, sizeof(lr.objClass), l.objClass);
-        lr.geomType = static_cast<uint8_t>(l.geomType);
-        lr.dispCat  = static_cast<uint8_t>(l.dispCat);
-        lr.nConds   = static_cast<uint8_t>(std::min<int>(static_cast<int>(l.conds.size()), 255));
-        lr.rotMode  = l.rotMode;
+        lr.geomType  = static_cast<uint8_t>(l.geomType);
+        lr.dispCat   = static_cast<uint8_t>(l.dispCat);
+        lr.nConds    = static_cast<uint8_t>(std::min<int>(static_cast<int>(l.conds.size()), 255));
         lr.condStart = static_cast<uint16_t>(condPool.size());
-        lr.symIdx    = l.symName.isEmpty()
-                       ? uint16_t(0xFFFF)
-                       : static_cast<uint16_t>(symIndexByName.value(l.symName, 0xFFFF));
-        lr.lineStyleIdx = (l.lineStyleIdx < 0)
-                       ? uint16_t(0xFFFF)
-                       : static_cast<uint16_t>(l.lineStyleIdx);
-        lr.fillStyleIdx = (l.fillStyleIdx < 0)
-                       ? uint16_t(0xFFFF)
-                       : static_cast<uint16_t>(l.fillStyleIdx);
+        internStr(l.instruction.toLatin1(), lr.instrOff, lr.instrLen);
         for (int i = 0; i < lr.nConds; ++i) {
             CondRecord cr{};
             padCopy(cr.attr,  sizeof(cr.attr),  l.conds[i].attr);
@@ -677,14 +565,45 @@ int main(int argc, char** argv) {
         lupRecs.append(lr);
     }
 
+    // Build LC / AP definition records (HPGL into the string blob).
+    QVector<LcDefRecord> lcRecs;
+    for (const VecDef& d : lineDefs) {
+        LcDefRecord r{};
+        padCopy(r.name, sizeof(r.name), d.name);
+        r.r = d.r; r.g = d.g; r.b = d.b; r.a = 255;
+        r.vecW = uint16_t(d.vecW); r.vecH = uint16_t(d.vecH);
+        r.pivotX = uint16_t(d.pivotX); r.pivotY = uint16_t(d.pivotY);
+        r.originX = uint16_t(d.originX); r.originY = uint16_t(d.originY);
+        internStr(d.hpgl, r.hpglOff, r.hpglLen);
+        lcRecs.append(r);
+    }
+    QVector<ApDefRecord> apRecs;
+    for (const VecDef& d : patDefs) {
+        ApDefRecord r{};
+        padCopy(r.name, sizeof(r.name), d.name);
+        r.r = d.r; r.g = d.g; r.b = d.b; r.a = 255;
+        r.vecW = uint16_t(d.vecW); r.vecH = uint16_t(d.vecH);
+        r.pivotX = uint16_t(d.pivotX); r.pivotY = uint16_t(d.pivotY);
+        r.originX = uint16_t(d.originX); r.originY = uint16_t(d.originY);
+        r.minDist = uint16_t(d.minDist); r.maxDist = uint16_t(d.maxDist);
+        r.fillType = d.fillType; r.spacing = d.spacing;
+        r.hasBitmap = d.hasBitmap ? 1 : 0;
+        r.bmpX = int16_t(d.bmpX); r.bmpY = int16_t(d.bmpY);
+        r.bmpW = int16_t(d.bmpW); r.bmpH = int16_t(d.bmpH);
+        if (!d.hpgl.isEmpty()) internStr(d.hpgl, r.hpglOff, r.hpglLen);
+        apRecs.append(r);
+    }
+
     Header hdr{};
-    hdr.magic[0]='S'; hdr.magic[1]='Y'; hdr.magic[2]='M'; hdr.magic[3]='\x05';
-    hdr.symCount  = static_cast<uint32_t>(syms.size());
-    hdr.lupCount  = static_cast<uint32_t>(lupRecs.size());
-    hdr.condCount = static_cast<uint32_t>(condPool.size());
-    hdr.attrCount = static_cast<uint32_t>(attrList.size());
-    hdr.lineCount = static_cast<uint32_t>(lineStylePool.size());
-    hdr.fillCount = static_cast<uint32_t>(fillStylePool.size());
+    hdr.magic[0]='S'; hdr.magic[1]='Y'; hdr.magic[2]='M'; hdr.magic[3]='\x06';
+    hdr.symCount   = static_cast<uint32_t>(syms.size());
+    hdr.lupCount   = static_cast<uint32_t>(lupRecs.size());
+    hdr.condCount  = static_cast<uint32_t>(condPool.size());
+    hdr.attrCount  = static_cast<uint32_t>(attrList.size());
+    hdr.colorCount = static_cast<uint32_t>(colorOrder.size());
+    hdr.lcCount    = static_cast<uint32_t>(lcRecs.size());
+    hdr.apCount    = static_cast<uint32_t>(apRecs.size());
+    hdr.strBytes   = static_cast<uint32_t>(strBlob.size());
 
     out.write(reinterpret_cast<const char*>(&hdr), sizeof(hdr));
     out.write(reinterpret_cast<const char*>(syms.constData()),
@@ -698,26 +617,30 @@ int main(int argc, char** argv) {
         padCopy(ar.acronym, sizeof(ar.acronym), a);
         out.write(reinterpret_cast<const char*>(&ar), sizeof(ar));
     }
-    for (const LineStyle& s : lineStylePool) {
-        LineStyleRecord lr{};
-        lr.pattern = s.pattern; lr.width = s.width;
-        lr.r = s.r; lr.g = s.g; lr.b = s.b;
-        out.write(reinterpret_cast<const char*>(&lr), sizeof(lr));
+    for (const QByteArray& tok : colorOrder) {
+        ColorRecord cr{};
+        padCopy(cr.token, sizeof(cr.token), tok);
+        const uint32_t rgb = colors.value(tok);
+        cr.r = uint8_t((rgb >> 16) & 0xFF);
+        cr.g = uint8_t((rgb >>  8) & 0xFF);
+        cr.b = uint8_t( rgb        & 0xFF);
+        cr.a = 255;
+        out.write(reinterpret_cast<const char*>(&cr), sizeof(cr));
     }
-    for (const FillStyle& s : fillStylePool) {
-        FillStyleRecord fr{};
-        fr.r = s.r; fr.g = s.g; fr.b = s.b; fr.a = s.a;
-        out.write(reinterpret_cast<const char*>(&fr), sizeof(fr));
-    }
+    out.write(reinterpret_cast<const char*>(lcRecs.constData()),
+              lcRecs.size() * static_cast<qsizetype>(sizeof(LcDefRecord)));
+    out.write(reinterpret_cast<const char*>(apRecs.constData()),
+              apRecs.size() * static_cast<qsizetype>(sizeof(ApDefRecord)));
+    out.write(strBlob.constData(), strBlob.size());
     out.close();
 
     std::fprintf(stdout,
-        "gen_symbols: %d syms, %d lookups (%d fallbacks), %d conds, %d attrs, %d lines, %d fills\n",
+        "gen_symbols: %d syms, %d lookups, %d conds, %d attrs, "
+        "%d colors, %d lines(LC), %d patterns(AP), %d str bytes\n",
         static_cast<int>(syms.size()), static_cast<int>(lupRecs.size()),
-        fallbacksAdded, static_cast<int>(condPool.size()),
-        static_cast<int>(attrList.size()),
-        static_cast<int>(lineStylePool.size()),
-        static_cast<int>(fillStylePool.size()));
+        static_cast<int>(condPool.size()), static_cast<int>(attrList.size()),
+        static_cast<int>(colorOrder.size()), static_cast<int>(lcRecs.size()),
+        static_cast<int>(apRecs.size()), static_cast<int>(strBlob.size()));
     std::fprintf(stdout, "gen_symbols: wrote %s (%lld bytes)\n",
                  argv[2], (long long)QFileInfo(out).size());
     return 0;

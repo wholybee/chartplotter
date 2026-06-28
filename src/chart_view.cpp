@@ -204,6 +204,30 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
         return simpBuf;
     };
 
+    // Emit the TX()/TE() labels a SymHit produced at scene position `pos`. When
+    // the instruction carried no text but the feature has an OBJNAM, fall back
+    // to a single name label (the pre-S-52-text behaviour) so named objects keep
+    // their label.
+    auto pushHitTexts = [&](const SymHit& hit, QPointF pos, int scaleMin,
+                            const std::string& fallbackName) {
+        if (!hit.texts.empty()) {
+            for (const SymText& t : hit.texts) {
+                BuiltText bt;
+                bt.pos = pos; bt.text = t.text; bt.scaleMin = scaleMin;
+                bt.hjust = t.hjust; bt.vjust = t.vjust;
+                bt.xoffs = t.xoffs; bt.yoffs = t.yoffs;
+                bt.color = QColor(t.r, t.g, t.b);
+                bt.pointSize = t.pointSize;
+                bc.texts.push_back(std::move(bt));
+            }
+        } else if (!fallbackName.empty()) {
+            BuiltText bt;
+            bt.pos = pos; bt.text = QString::fromStdString(fallbackName);
+            bt.scaleMin = scaleMin;
+            bc.texts.push_back(std::move(bt));
+        }
+    };
+
     for (const Feature& f : feats) {
         const bool doClip = clipBox.valid() && !clipBox.contains(f.bbox);
 
@@ -254,10 +278,11 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
                         QByteArray::fromStdString(f.objClass), g, f.attrs);
                 }
 
-                // When the area carries an AC() fill we need closed polygons
-                // (Sutherland-Hodgman ring clip + closeSubpath); otherwise the
-                // existing polyline clip is correct for outline-only paths.
-                const bool fillArea = (f.kind == FeatureKind::OtherArea) && hit.hasFill;
+                // When the area carries an AC() fill or an AP() pattern we need
+                // closed polygons (Sutherland-Hodgman ring clip + closeSubpath);
+                // otherwise the existing polyline clip is correct for outlines.
+                const bool fillArea = (f.kind == FeatureKind::OtherArea) &&
+                                      (hit.hasFill || hit.apIndex >= 0);
 
                 const std::vector<std::vector<Pt>>* rings = &f.rings;
                 if (doClip) {
@@ -280,11 +305,13 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
                 if (use.empty()) break;
 
                 BuiltPath bp;
-                bp.path   = buildPathFromRings(use, fillArea);
-                bp.bounds = bp.path.boundingRect();
-                bp.z      = zb + f.zorder;
-                bp.filled = fillArea;
-                if (fillArea)
+                bp.path    = buildPathFromRings(use, fillArea);
+                bp.bounds  = bp.path.boundingRect();
+                bp.z       = zb + f.zorder;
+                bp.filled  = hit.hasFill;   // AC() wash (AP pattern overlays it)
+                bp.apIndex = (f.kind == FeatureKind::OtherArea) ? hit.apIndex : -1;
+                bp.lcIndex = hit.lcIndex;
+                if (hit.hasFill)
                     bp.brush = QColor(hit.fill.r, hit.fill.g, hit.fill.b, hit.fill.a);
                 bp.hasPen = true;
                 if (hit.hasLine) {
@@ -294,34 +321,33 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
                                 : (hit.line.pattern == SymLineStyle::Dot)  ? Qt::DotLine
                                 : Qt::SolidLine;
                 }
-                else if (fillArea)                                { bp.hasPen = false; }   // fill-only area
-                else if (f.kind == FeatureKind::Coastline)        { bp.penColor = QColor(64, 51, 31);        bp.penWidth = 1.4; }
-                else if (f.kind == FeatureKind::DepthContour)     { bp.penColor = QColor(115, 153, 199);     bp.penWidth = 0.8; }
+                // A complex line (LC) replaces the plain outline; keep just a
+                // faint guide so the boundary still reads if the motif is sparse.
+                else if (hit.lcIndex >= 0)                        { bp.penColor = QColor(120, 120, 130, 90);  bp.penWidth = 0.6; }
+                else if (hit.hasFill && bp.apIndex < 0)           { bp.hasPen = false; }   // fill-only area
+                else if (f.kind == FeatureKind::Coastline)        { bp.penColor = QColor(64, 51, 31);         bp.penWidth = 1.4; }
+                else if (f.kind == FeatureKind::DepthContour)     { bp.penColor = QColor(115, 153, 199);      bp.penWidth = 0.8; }
                 else if (f.kind == FeatureKind::OtherArea)        { bp.penColor = QColor(102, 102, 115, 150); bp.penWidth = 0.7; }
-                else                                              { bp.penColor = QColor(102, 102, 128);     bp.penWidth = 0.8; }
+                else                                              { bp.penColor = QColor(102, 102, 128);      bp.penWidth = 0.8; }
                 bp.isDepthContour = (f.kind == FeatureKind::DepthContour);
                 bc.paths.push_back(std::move(bp));
 
-                // Area centred symbol (e.g. ACHARE anchor glyph, TSSLPT
-                // direction arrow). Placed at the polygon centroid so it
-                // stays put as the viewport pans; paint-time culling handles
-                // off-screen cases. Computed from the unclipped outer ring.
+                // Area centred symbols (e.g. ACHARE anchor glyph, TSSLPT
+                // direction arrow, restriction glyph from CS(RESTRN01)) and text
+                // labels, placed at the polygon centroid so they stay put as the
+                // viewport pans. Computed from the unclipped outer ring.
                 if (f.kind == FeatureKind::OtherArea &&
                     !f.rings.empty() && !f.rings[0].empty()) {
                     const Pt c = ringCentroid(f.rings[0]);
-                    if (hit.symIdx != SymAtlas::kNoSymbol) {
+                    const QPointF cp(c.x, -c.y);
+                    for (const SymStamp& s : hit.symbols) {
+                        if (s.symIdx == SymAtlas::kNoSymbol) continue;
                         BuiltSymbol bs;
-                        bs.pos         = QPointF(c.x, -c.y);
-                        bs.symIdx      = hit.symIdx;
-                        bs.rotationDeg = hit.rotationDeg;
-                        bs.scaleMin    = f.scaleMin;
+                        bs.pos = cp; bs.symIdx = s.symIdx;
+                        bs.rotationDeg = s.rotationDeg; bs.scaleMin = f.scaleMin;
                         bc.symbols.push_back(bs);
                     }
-                    // Named areas get their OBJNAM at the centroid, whether or
-                    // not the class also resolves to a centred symbol.
-                    if (!f.name.empty())
-                        bc.texts.push_back(
-                            { QPointF(c.x, -c.y), QString::fromStdString(f.name), f.scaleMin });
+                    pushHitTexts(hit, cp, f.scaleMin, f.name);
                 }
                 break;
             }
@@ -339,19 +365,26 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
                 if (f.rings.empty() || f.rings[0].empty()) break;
                 if (doClip && !pointInRect(f.rings[0][0], clipBox)) break;
                 const QPointF pos(f.rings[0][0].x, -f.rings[0][0].y);
-                BuiltSymbol bs;
-                bs.pos = pos;
-                bs.scaleMin = f.scaleMin;
-                if (atlas) {
-                    const SymHit hit = atlas->symbolForFeature(
+                SymHit hit;
+                if (atlas)
+                    hit = atlas->symbolForFeature(
                         QByteArray::fromStdString(f.objClass),
                         SymGeom::Point, f.attrs);
-                    bs.symIdx      = hit.symIdx;
-                    bs.rotationDeg = hit.rotationDeg;
+                // One BuiltSymbol per SY() stamp (lights add a flare, buoys add
+                // a topmark, etc.). With no atlas / no resolved symbol, emit a
+                // single dot-fallback marker.
+                if (hit.symbols.empty()) {
+                    BuiltSymbol bs; bs.pos = pos; bs.scaleMin = f.scaleMin;
+                    bc.symbols.push_back(bs);
+                } else {
+                    for (const SymStamp& s : hit.symbols) {
+                        BuiltSymbol bs;
+                        bs.pos = pos; bs.symIdx = s.symIdx;
+                        bs.rotationDeg = s.rotationDeg; bs.scaleMin = f.scaleMin;
+                        bc.symbols.push_back(bs);
+                    }
                 }
-                bc.symbols.push_back(bs);
-                if (!f.name.empty())
-                    bc.texts.push_back({ pos, QString::fromStdString(f.name), f.scaleMin });
+                pushHitTexts(hit, pos, f.scaleMin, f.name);
                 break;
             }
         }
@@ -1765,7 +1798,70 @@ void ChartView::paintEvent(QPaintEvent*) {
               [](const BuiltCell* a, const BuiltCell* b) { return a->band < b->band; });
     for (const BuiltCell* c : order) drawPaths(*c);
 
-    // 2) Soundings / symbols at constant on-screen size, in device space.
+    // Quilt clips mapped into device space: geometry from a partially-covered
+    // cell is suppressed where a finer band overlays it (the finer cell draws
+    // its own there). Computed once, reused by the pattern/line-complex pass and
+    // the sounding/symbol/text passes below.
+    QHash<QString, QPainterPath> deviceClip;
+    for (const BuiltCell* c : order) {
+        const auto it = drawClip_.constFind(c->path);
+        if (it == drawClip_.constEnd()) continue;
+        QTransform t = cam;
+        if (c->drawOffsetX != 0.0) t.translate(c->drawOffsetX, 0.0);
+        deviceClip.insert(c->path, t.map(*it));
+    }
+
+    // 1.5) S-52 complex symbology at constant on-screen size, in device space:
+    //      AP() area patterns (a motif tiled inside the area) and LC() complex
+    //      lines (a motif stamped along the path). Both render through the atlas
+    //      from the baked HPGL/raster definitions. Skipped mid-gesture, like the
+    //      point overlays, so a pan/zoom frame stays cheap.
+    if (symAtlas_.isLoaded() && !interacting_) {
+        p.resetTransform();   // device-space clips/anchors below
+        const QRectF visDev = rect().adjusted(-48, -48, 48, 48);
+        for (const BuiltCell* c : order) {
+            const double off = c->drawOffsetX;
+            QTransform t = cam;
+            if (off != 0.0) t.translate(off, 0.0);
+            const QRectF visFrame = vis.translated(-off, 0.0);   // cull in cell frame
+            const auto dcIt = deviceClip.constFind(c->path);
+            const bool clipped = (dcIt != deviceClip.constEnd());
+            const QPointF anchor = t.map(QPointF(0.0, 0.0));      // stable tiling origin
+
+            for (const BuiltPath& bp : c->paths) {
+                if (bp.apIndex < 0 && bp.lcIndex < 0) continue;
+                if (!bp.bounds.intersects(visFrame)) continue;
+                if (clipped) { p.save(); p.setClipPath(*dcIt); }
+                if (bp.apIndex >= 0) {
+                    const QPainterPath dev = t.map(bp.path);
+                    if (dev.boundingRect().intersects(visDev))
+                        symAtlas_.fillAreaPattern(p, bp.apIndex, dev, anchor,
+                                                  static_cast<float>(symbolScale_));
+                }
+                if (bp.lcIndex >= 0) {
+                    // Break the path into device-space polylines (one per
+                    // subpath) and stamp the line-complex along each.
+                    QPolygonF poly;
+                    auto flush = [&]() {
+                        if (poly.size() >= 2)
+                            symAtlas_.drawLineComplex(p, bp.lcIndex, poly,
+                                                      static_cast<float>(symbolScale_));
+                        poly.clear();
+                    };
+                    const int n = bp.path.elementCount();
+                    for (int i = 0; i < n; ++i) {
+                        const QPainterPath::Element e = bp.path.elementAt(i);
+                        if (e.isMoveTo()) flush();
+                        poly << t.map(QPointF(e.x, e.y));
+                    }
+                    flush();
+                }
+                if (clipped) p.restore();
+            }
+        }
+    }
+
+    // 2) Soundings / symbols / text at constant on-screen size, in device space.
     //
     // These are the dominant per-frame cost at high detail: every sounding is a
     // drawText (CPU glyph rasterization) and every symbol a pixmap blit, and a
@@ -1783,19 +1879,6 @@ void ChartView::paintEvent(QPaintEvent*) {
         // and symbols) whose SCAMIN is smaller than this are dropped. Computed
         // once here from the current zoom and the user's bias slider.
         const double scaminDenom = scaminEffectiveDenominator();
-
-        // Quilt clips mapped into device space, so soundings and symbols from a
-        // partially-covered cell are suppressed where a finer band overlays it
-        // (the finer cell draws its own there). Computed once, reused by both
-        // the sounding and symbol passes below.
-        QHash<QString, QPainterPath> deviceClip;
-        for (const BuiltCell* c : order) {
-            const auto it = drawClip_.constFind(c->path);
-            if (it == drawClip_.constEnd()) continue;
-            QTransform t = cam;
-            if (c->drawOffsetX != 0.0) t.translate(c->drawOffsetX, 0.0);
-            deviceClip.insert(c->path, t.map(*it));
-        }
         if (showSoundings_) {
             QFont f = p.font(); f.setPointSizeF(8.0); p.setFont(f);
             // White soundings in vector-overlay mode read better over dark
@@ -1890,15 +1973,14 @@ void ChartView::paintEvent(QPaintEvent*) {
             }
         }
         if (showText_) {
-            // Object-name labels (OBJNAM), constant on-screen size. Offset to the
-            // upper-right of the object and drawn with a light halo so they stay
-            // legible over busy chart fill. SCAMIN-declutter and the quilt clip
-            // apply exactly as for symbols.
-            QFont f = p.font(); f.setPointSizeF(8.0); p.setFont(f);
-            const QFontMetricsF fm(f);
-            const double asc = fm.ascent();
+            // Text labels from TX()/TE() (object names, light characters, vertical
+            // clearances, …) at constant on-screen size, drawn with a light halo
+            // so they stay legible over busy chart fill. Placement follows the
+            // S-52 hjust/vjust/xoffs/yoffs the instruction specified; SCAMIN-
+            // declutter and the quilt clip apply exactly as for symbols.
             const QColor halo(255, 255, 255, 230);
-            const QColor ink(40, 40, 40);
+            QFont f = p.font();
+            int curSize = -1;
             for (const BuiltCell* c : order) {
                 const auto dcIt = deviceClip.constFind(c->path);
                 const bool clipped = (dcIt != deviceClip.constEnd());
@@ -1908,14 +1990,33 @@ void ChartView::paintEvent(QPaintEvent*) {
                     if (!scaminPasses(t.scaleMin, scaminDenom)) continue;
                     const QPointF d = cam.map(QPointF(t.pos.x() + off, t.pos.y()));
                     if (!screen.contains(d)) continue;
-                    const QPointF at(d.x() + 5.0, d.y() - 4.0 + asc);
+
+                    if (int(t.pointSize) != curSize) {
+                        curSize = t.pointSize;
+                        f.setPointSizeF(curSize); p.setFont(f);
+                    }
+                    const QFontMetricsF fm(f);
+                    const double tw = fm.horizontalAdvance(t.text);
+                    const double cw = fm.averageCharWidth();
+                    const double th = fm.height();
+                    const double px = d.x() + t.xoffs * cw;
+                    const double py = d.y() + t.yoffs * th;
+                    // Horizontal: 1=centre, 2=right (pivot at right end), 3=left.
+                    const double tx = (t.hjust == 2) ? px - tw
+                                    : (t.hjust == 3) ? px
+                                                     : px - tw / 2.0;
+                    // Vertical (to baseline): 1=bottom, 2=centre, 3=top.
+                    const double base = (t.vjust == 3) ? py + fm.ascent()
+                                      : (t.vjust == 1) ? py - fm.descent()
+                                                       : py + fm.ascent() - th / 2.0;
+                    const QPointF at(tx, base);
                     // Cheap halo: white at the four neighbours, then ink on top.
                     p.setPen(halo);
                     p.drawText(at + QPointF(-1, 0), t.text);
                     p.drawText(at + QPointF( 1, 0), t.text);
                     p.drawText(at + QPointF( 0,-1), t.text);
                     p.drawText(at + QPointF( 0, 1), t.text);
-                    p.setPen(ink);
+                    p.setPen(t.color);
                     p.drawText(at, t.text);
                 }
                 if (clipped) p.restore();

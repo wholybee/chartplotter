@@ -8,6 +8,8 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cmath>
+#include <cstdio>
 #include <string>
 #include <vector>
 
@@ -37,8 +39,27 @@ std::string normalizedFieldValue(OGRFeatureH feat, int idx) {
             return std::to_string(OGR_F_GetFieldAsInteger(feat, idx));
         case OFTInteger64:
             return std::to_string(OGR_F_GetFieldAsInteger64(feat, idx));
-        case OFTReal:
-            return std::to_string(static_cast<long long>(OGR_F_GetFieldAsDouble(feat, idx)));
+        case OFTReal: {
+            // Integer-valued reals print without decimals (keeps enumerated
+            // codes clean for exact-string lookup matching); fractional values
+            // keep their decimals so TX()/TE() labels show e.g. a 12.5 m
+            // vertical clearance rather than a truncated "12". No lookup
+            // condition tests a real-valued attribute, so this can't affect
+            // best-match selection.
+            const double v = OGR_F_GetFieldAsDouble(feat, idx);
+            if (v == std::floor(v) && std::fabs(v) < 1e15)
+                return std::to_string(static_cast<long long>(v));
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%.3f", v);
+            std::string s(buf);
+            const auto dot = s.find('.');
+            if (dot != std::string::npos) {
+                const auto last = s.find_last_not_of('0');
+                if (last != std::string::npos) s.erase(last + 1);
+                if (!s.empty() && s.back() == '.') s.pop_back();
+            }
+            return s;
+        }
         case OFTIntegerList: {
             int n = 0;
             const int* v = OGR_F_GetFieldAsIntegerList(feat, idx, &n);

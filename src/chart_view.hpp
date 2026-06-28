@@ -86,6 +86,10 @@ struct BuiltPath {
     qreal  penWidth = 1.0;
     Qt::PenStyle penStyle = Qt::SolidLine;   // SolidLine / DashLine / DotLine
     bool   isDepthContour = false;
+    // S-52 complex symbology resolved at build time, rendered at constant on-
+    // screen size in device space (see paintEvent). -1 when absent.
+    int    apIndex = -1;       // AP() area-pattern fill (tiled motif)
+    int    lcIndex = -1;       // LC() complex line (motif stamped along the path)
 };
 
 // A whole cell, clipped to a region and ready to draw. drawOffsetX shifts it by a
@@ -113,13 +117,19 @@ struct BuiltSymbol {
     int      scaleMin = 0;   // S-57 SCAMIN (0 = none); paint-time declutter floor
 };
 
-// A text label (S-57 OBJNAM) drawn at constant on-screen size next to its
-// object. Resolved at cell-build time; SCAMIN-declutter and the Text toggle are
-// applied at paint time, like symbols.
+// A text label drawn at constant on-screen size next to its object. Resolved at
+// cell-build time from a TX()/TE() instruction (or the bare OBJNAM); SCAMIN-
+// declutter and the Text toggle apply at paint time, like symbols.
+//   hjust 1=centre 2=right 3=left   vjust 1=bottom 2=centre 3=top
+// xoffs/yoffs are in nominal character-box units (≈ font width/height).
 struct BuiltText {
     QPointF pos;             // scene position of the object the label annotates
     QString text;
     int     scaleMin = 0;    // S-57 SCAMIN (0 = none)
+    quint8  hjust = 3, vjust = 2;
+    int     xoffs = 0, yoffs = 0;
+    QColor  color = QColor(40, 40, 40);
+    quint8  pointSize = 8;
 };
 
 struct BuiltCell {
