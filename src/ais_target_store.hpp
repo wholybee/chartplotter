@@ -7,8 +7,13 @@
 
 class QTimer;
 
-// AIS transponder class. Class A (SOLAS vessels) reports more than Class B.
-enum class AisClass { Unknown, A, B };
+// AIS transponder class / target kind.
+//   A / B        — vessels (Class A = SOLAS, reports more than Class B).
+//   AtoN         — Aid to Navigation (buoy, beacon, lighthouse; msg 21).
+//   SarAircraft  — Search-and-rescue aircraft position report (msg 9).
+//   Sart         — distress beacon: AIS-SART / MOB / EPIRB-AIS (msg 1 from a
+//                  970/972/974-range MMSI).
+enum class AisClass { Unknown, A, B, AtoN, SarAircraft, Sart };
 
 // Per-target freshness: a contact ages out of the display when it stops being
 // heard. (Distinct from ownship NavFreshness — AIS uses minutes, not seconds.)
@@ -19,6 +24,14 @@ QString aisNavStatusName(int code);
 // Human-readable label for an AIS ship & cargo type code (best-effort
 // categorisation; falls back to the numeric code).
 QString aisShipTypeName(int code);
+// Human-readable label for an AIS target class ("Class A", "Aid to Navigation",
+// "SAR aircraft", "AIS-SART", ...); empty for AisClass::Unknown.
+QString aisClassName(AisClass cls);
+// Human-readable name for an AtoN aid-type code (0..31, ITU-R M.1371 Table 75).
+QString aisAtonTypeName(int code);
+// For a distress-beacon MMSI, the device kind ("AIS-SART", "AIS-MOB",
+// "AIS-EPIRB"); empty for any other MMSI.
+QString aisDistressKind(quint32 mmsi);
 
 // Format a TCPA (seconds) as "00h 00m 00s", dropping the hours or minutes field
 // whenever that field's value is zero (seconds are always shown). A negative
@@ -65,11 +78,17 @@ struct AisTarget {
     std::optional<double> draughtMeters;   // Class A
     AisDimensions dimensions;
 
+    // Aid to Navigation (Class AtoN, msg 21).
+    std::optional<int> atonType;           // aid-type code 0..31
+    bool atonVirtual    = false;           // virtual aid (no physical structure)
+    bool atonOffPosition = false;          // reported off its charted position
+
     // Dynamic.
     std::optional<double> latitudeDeg, longitudeDeg;
     std::optional<double> cogDegTrue, sogKnots;
     std::optional<double> headingDegTrue;
     std::optional<double> rotDegPerMin;    // rate of turn (+ = starboard)
+    std::optional<double> altitudeMeters;  // SAR aircraft altitude (msg 9)
     AisNavStatus navStatus = AisNavStatus::Undefined;
 
     // Computed by a collision component (not from AIS messages).
@@ -100,6 +119,7 @@ struct AisPositionReport {
     std::optional<double> cogDegTrue, sogKnots;
     std::optional<double> headingDegTrue;
     std::optional<double> rotDegPerMin;
+    std::optional<double> altitudeMeters;   // SAR aircraft (msg 9)
     AisNavStatus navStatus = AisNavStatus::Undefined;
 };
 
@@ -110,6 +130,10 @@ struct AisStaticData {
     std::optional<int>    shipType, imoNumber;
     std::optional<double> draughtMeters;
     AisDimensions dimensions;
+    // Aid to Navigation (msg 21) identity, published alongside its position.
+    std::optional<int>  atonType;
+    std::optional<bool> atonVirtual;
+    std::optional<bool> atonOffPosition;
 };
 
 // Stable API AIS sources (e.g. an AIS decoder plugin) call to publish targets.

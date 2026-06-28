@@ -46,6 +46,65 @@ QString aisShipTypeName(int code) {
     return QStringLiteral("Type %1").arg(code);
 }
 
+QString aisClassName(AisClass cls) {
+    switch (cls) {
+        case AisClass::A:           return QStringLiteral("Class A");
+        case AisClass::B:           return QStringLiteral("Class B");
+        case AisClass::AtoN:        return QStringLiteral("Aid to Navigation");
+        case AisClass::SarAircraft: return QStringLiteral("SAR aircraft");
+        case AisClass::Sart:        return QStringLiteral("Distress beacon");
+        case AisClass::Unknown:     break;
+    }
+    return QString();
+}
+
+QString aisAtonTypeName(int code) {
+    switch (code) {
+        case 0:  return QStringLiteral("Aid, type unspecified");
+        case 1:  return QStringLiteral("Reference point");
+        case 2:  return QStringLiteral("RACON");
+        case 3:  return QStringLiteral("Fixed off-shore structure");
+        case 5:  return QStringLiteral("Light, without sectors");
+        case 6:  return QStringLiteral("Light, with sectors");
+        case 7:  return QStringLiteral("Leading light front");
+        case 8:  return QStringLiteral("Leading light rear");
+        case 9:  return QStringLiteral("Beacon, cardinal N");
+        case 10: return QStringLiteral("Beacon, cardinal E");
+        case 11: return QStringLiteral("Beacon, cardinal S");
+        case 12: return QStringLiteral("Beacon, cardinal W");
+        case 13: return QStringLiteral("Beacon, port hand");
+        case 14: return QStringLiteral("Beacon, starboard hand");
+        case 15: return QStringLiteral("Beacon, preferred channel port");
+        case 16: return QStringLiteral("Beacon, preferred channel starboard");
+        case 17: return QStringLiteral("Beacon, isolated danger");
+        case 18: return QStringLiteral("Beacon, safe water");
+        case 19: return QStringLiteral("Beacon, special mark");
+        case 20: return QStringLiteral("Cardinal mark N");
+        case 21: return QStringLiteral("Cardinal mark E");
+        case 22: return QStringLiteral("Cardinal mark S");
+        case 23: return QStringLiteral("Cardinal mark W");
+        case 24: return QStringLiteral("Port hand mark");
+        case 25: return QStringLiteral("Starboard hand mark");
+        case 26: return QStringLiteral("Preferred channel port");
+        case 27: return QStringLiteral("Preferred channel starboard");
+        case 28: return QStringLiteral("Isolated danger");
+        case 29: return QStringLiteral("Safe water");
+        case 30: return QStringLiteral("Special mark");
+        case 31: return QStringLiteral("Light vessel / LANBY / rig");
+        case 4:  return QStringLiteral("Reserved (%1)").arg(code);
+        default: return QStringLiteral("Aid type %1").arg(code);
+    }
+}
+
+QString aisDistressKind(quint32 mmsi) {
+    switch (mmsi / 1000000) {
+        case 970: return QStringLiteral("AIS-SART");
+        case 972: return QStringLiteral("AIS-MOB");
+        case 974: return QStringLiteral("AIS-EPIRB");
+        default:  return QString();
+    }
+}
+
 QString aisFormatTcpa(double seconds) {
     const bool  neg   = seconds < 0;
     const qint64 total = qRound64(neg ? -seconds : seconds);
@@ -84,6 +143,11 @@ const AisTarget* AisTargetStore::target(quint32 mmsi) const {
 AisTarget& AisTargetStore::touch(quint32 mmsi, AisClass cls, const QString& source) {
     AisTarget& t = targets_[mmsi];   // inserts a default target if new
     t.mmsi = mmsi;
+    // Distress beacons (AIS-SART 970, MOB 972, EPIRB-AIS 974) transmit ordinary
+    // Class A position reports; reclassify by MMSI so they get the SART symbol
+    // regardless of which transport decoded them.
+    if (cls != AisClass::Unknown && !aisDistressKind(mmsi).isEmpty())
+        cls = AisClass::Sart;
     if (cls != AisClass::Unknown) t.cls = cls;
     t.source = source;
     t.lastUpdateUtc = QDateTime::currentDateTimeUtc();
@@ -101,6 +165,7 @@ void AisTargetStore::publishAisPosition(const AisPositionReport& r, const QStrin
     applyIf(t.sogKnots,       r.sogKnots);
     applyIf(t.headingDegTrue, r.headingDegTrue);
     applyIf(t.rotDegPerMin,   r.rotDegPerMin);
+    applyIf(t.altitudeMeters, r.altitudeMeters);
     if (r.navStatus != AisNavStatus::Undefined) t.navStatus = r.navStatus;
     emit targetUpdated(r.mmsi);
 }
@@ -115,6 +180,9 @@ void AisTargetStore::publishAisStatic(const AisStaticData& d, const QString& sou
     applyIf(t.imoNumber,     d.imoNumber);
     applyIf(t.draughtMeters, d.draughtMeters);
     if (d.dimensions.known()) t.dimensions = d.dimensions;
+    applyIf(t.atonType, d.atonType);
+    if (d.atonVirtual)     t.atonVirtual     = *d.atonVirtual;
+    if (d.atonOffPosition) t.atonOffPosition = *d.atonOffPosition;
     emit targetUpdated(d.mmsi);
 }
 

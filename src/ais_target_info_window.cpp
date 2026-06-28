@@ -33,14 +33,6 @@ QString fmtLon(double v)    { return units::formatLongitude(v); }
 QString fmtMeters(double v) { return QString::number(v, 'f', 1) + QStringLiteral(" m"); }
 QString fmtNm(double meters){ return QString::number(meters / 1852.0, 'f', 2); }
 
-QString fmtClass(AisClass c) {
-    switch (c) {
-        case AisClass::A: return QStringLiteral("A");
-        case AisClass::B: return QStringLiteral("B");
-        case AisClass::Unknown: break;
-    }
-    return QStringLiteral("?");
-}
 } // namespace
 
 AisTargetInfoWindow::AisTargetInfoWindow(quint32 mmsi, const AisTargetStore* store,
@@ -243,8 +235,17 @@ void AisTargetInfoWindow::refresh() {
     } else {
         nameLabel_->setText(QStringLiteral("MMSI %1").arg(mmsi_));
     }
-    if (t.cls != AisClass::Unknown) sub << QStringLiteral("Class %1").arg(fmtClass(t.cls));
-    if (t.shipType)                 sub << aisShipTypeName(*t.shipType);
+    // Class / kind. For a distress beacon, name the specific device (SART vs MOB
+    // vs EPIRB) from the MMSI rather than the generic class label.
+    QString clsLabel = aisClassName(t.cls);
+    if (t.cls == AisClass::Sart) {
+        const QString kind = aisDistressKind(mmsi_);
+        if (!kind.isEmpty()) clsLabel = kind;
+    }
+    if (!clsLabel.isEmpty()) sub << clsLabel;
+    // Type descriptor: AtoN aid type, otherwise the ship & cargo type.
+    if (t.cls == AisClass::AtoN) { if (t.atonType) sub << aisAtonTypeName(*t.atonType); }
+    else if (t.shipType)         sub << aisShipTypeName(*t.shipType);
     subtitleLabel_->setText(sub.join(QStringLiteral("  ·  ")));
     subtitleLabel_->setVisible(!sub.isEmpty());
 
@@ -265,6 +266,7 @@ void AisTargetInfoWindow::refresh() {
     if (t.sogKnots)       metrics.push_back({QStringLiteral("SOG"),  QString::number(*t.sogKnots, 'f', 1), QStringLiteral("kn")});
     if (t.cogDegTrue)     metrics.push_back({QStringLiteral("COG"),  fmtAngle(*t.cogDegTrue),               QStringLiteral("°T")});
     if (t.headingDegTrue) metrics.push_back({QStringLiteral("HDG"),  fmtAngle(*t.headingDegTrue),           QStringLiteral("°T")});
+    if (t.altitudeMeters) metrics.push_back({QStringLiteral("ALT"),  QString::number(*t.altitudeMeters, 'f', 0), QStringLiteral("m")});
     if (t.rangeMeters)    metrics.push_back({QStringLiteral("DIST"), fmtNm(*t.rangeMeters),                 QStringLiteral("nm")});
     if (t.cpaMeters)      metrics.push_back({QStringLiteral("CPA"),  fmtNm(*t.cpaMeters),                   QStringLiteral("nm")});
     if (t.tcpaSeconds)    metrics.push_back({QStringLiteral("TCPA"), aisFormatTcpa(*t.tcpaSeconds),         QString()});
@@ -286,6 +288,13 @@ void AisTargetInfoWindow::refresh() {
                   QString::number(*t.rotDegPerMin, 'f', 1) + QStringLiteral(" °/min"));
     if (t.navStatus != AisNavStatus::Undefined && t.cls == AisClass::A)
         addDetail(QStringLiteral("Nav status"), aisNavStatusName(int(t.navStatus)), true);
+    if (t.cls == AisClass::AtoN) {
+        addDetail(QStringLiteral("Aid"),
+                  t.atonVirtual ? QStringLiteral("Virtual") : QStringLiteral("Real"));
+        addDetail(QStringLiteral("Position"),
+                  t.atonOffPosition ? QStringLiteral("Off position")
+                                    : QStringLiteral("On position"));
+    }
     if (!t.destination.isEmpty())
         addDetail(QStringLiteral("Destination"), t.destination, true);
     if (t.latitudeDeg)  addDetail(QStringLiteral("Lat"), fmtLat(*t.latitudeDeg));

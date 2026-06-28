@@ -93,9 +93,22 @@ plugin) — and handles:
   the sequential message id).
 - **6-bit ASCII payload** unpacking with typed bit-field readers.
 - The common message types: **1/2/3** (Class A position), **5** (Class A static
-  & voyage), **18/19** (Class B position; 19 also carries static), **24** (Class
-  B static, Parts A & B). "Not available" sentinels (lat 91°, lon 181°, COG 3600,
-  heading 511, SOG 1023, ROT −128) decode to absent fields.
+  & voyage), **9** (SAR aircraft position), **18/19** (Class B position; 19 also
+  carries static), **21** (Aid to Navigation — publishes a position *and* a
+  static report, like 19), **24** (Class B static, Parts A & B). "Not available"
+  sentinels (lat 91°, lon 181°, COG 3600, heading 511, SOG 1023, ROT −128,
+  altitude 4095) decode to absent fields.
+
+### Target kinds beyond vessels
+
+`AisClass` covers more than the Class A/B vessels: **AtoN** (aids to navigation —
+buoys, beacons, lighthouses; from msg 21, carrying an aid-type code plus
+virtual/real and off-position flags), **SarAircraft** (search-and-rescue aircraft;
+msg 9, carrying altitude and whole-knot SOG with no heading), and **Sart**
+(distress beacons: AIS-SART, MOB, and EPIRB-AIS). Distress beacons transmit
+ordinary type-1 position reports, so the **store** reclassifies any A/B target
+whose MMSI is in the 970 / 972 / 974 ranges to `Sart` — that single rule covers
+every transport (0183, N2K, SignalK), not just the AIVDM decoder.
 
 ## CpaCalculator
 
@@ -131,7 +144,13 @@ distance and (when solvable) CPA (nm) and TCPA (min).
 `AisOverlay` (`IChartOverlay`) draws each `AisTarget` with `hasPosition()` using
 the shared `vessel::drawSymbol` glyph — the same triangle / course-prediction
 line / cancellation slash as the ownship symbol, just green so the two are
-distinguishable. Targets are dimmed and crossed when their freshness is `Stale`
+distinguishable. Each target kind gets its own standard symbol: Class A a filled
+triangle, Class B an arrowhead, **AtoN** an amber diamond (hollow for a virtual
+aid), **SAR aircraft** a blue plane silhouette oriented along its track, and a
+**distress beacon** (SART/MOB/EPIRB) a red cross-in-circle. AtoN and distress
+symbols are orientation-independent (drawn upright); only vessels and SAR
+aircraft point along heading/COG. CPA danger flagging applies to Class A/B
+vessels only. Targets are dimmed and crossed when their freshness is `Stale`
 (default ≥ 6 min since the last message); `Lost` targets are already gone from
 the store, so the overlay never has to draw them. The predictor length tracks
 the ownship one (a single user-configurable value, kept in sync).
@@ -156,3 +175,7 @@ the closest-approach separation itself.
 
 - **Per-source arbitration** — currently last-writer-wins per MMSI (fine for a
   single receiver); priority could be added like the nav store if needed.
+- **Native N2K / SignalK AtoN & SAR-aircraft** — these kinds are decoded from
+  AIVDM (0183) today. The equivalent NMEA 2000 PGNs (129041 AtoN, 129798 SAR
+  aircraft) and the SignalK equivalents are not yet wired up. Distress beacons
+  (SART/MOB/EPIRB) already work on every transport via the store's MMSI rule.

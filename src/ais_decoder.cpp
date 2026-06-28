@@ -88,6 +88,25 @@ void positionA(const BitField& b, IAisPublisher* pub, const QString& src) {
     pub->publishAisPosition(r, src);
 }
 
+// type 9: Standard SAR aircraft position report (168 bits). Unlike vessel
+// reports, SOG is in whole knots (not 1/10) and altitude replaces the slot a
+// Class A uses for nav status; there is no true-heading field.
+void positionSarAircraft(const BitField& b, IAisPublisher* pub, const QString& src) {
+    if (b.size() < 128) return;
+    AisPositionReport r;
+    r.mmsi = quint32(b.u(8, 30));
+    r.cls = AisClass::SarAircraft;
+    const int alt = int(b.u(38, 12));
+    if (alt != 4095) r.altitudeMeters = double(alt);     // metres; 4095 = n/a
+    const int sog = int(b.u(50, 10));
+    if (sog != 1023) r.sogKnots = double(sog);           // whole knots
+    r.longitudeDeg = lonOf(b.i(61, 28));
+    r.latitudeDeg  = latOf(b.i(89, 27));
+    const int cog = int(b.u(116, 12));
+    if (cog != 3600) r.cogDegTrue = cog / 10.0;
+    pub->publishAisPosition(r, src);
+}
+
 // type 5: Class A static & voyage (424 bits, usually 2 fragments).
 void staticA(const BitField& b, IAisPublisher* pub, const QString& src) {
     if (b.size() < 240) return;
@@ -162,6 +181,36 @@ void static24(const BitField& b, IAisPublisher* pub, const QString& src) {
     }
     pub->publishAisStatic(d, src);
 }
+
+// type 21: Aid-to-Navigation report (272..360 bits). Carries both the aid's
+// position (dynamic) and its identity (static), so we publish one of each — like
+// the type-19 extended Class B report.
+void atonReport(const BitField& b, IAisPublisher* pub, const QString& src) {
+    if (b.size() < 272) return;
+    const quint32 mmsi = quint32(b.u(8, 30));
+
+    AisPositionReport r;
+    r.mmsi = mmsi;
+    r.cls = AisClass::AtoN;
+    r.longitudeDeg = lonOf(b.i(164, 28));
+    r.latitudeDeg  = latOf(b.i(192, 27));
+    pub->publishAisPosition(r, src);
+
+    AisStaticData d;
+    d.mmsi = mmsi;
+    d.cls = AisClass::AtoN;
+    d.atonType = int(b.u(38, 5));            // 0 is a valid aid type ("default")
+    QString name = b.text(43, 120);
+    // Optional name extension (bits 272..), up to 88 bits / 14 chars, appended
+    // when the 20-char name field overflows.
+    const int extChars = (b.size() - 272) / 6;
+    if (extChars > 0) name += b.text(272, extChars * 6);
+    d.name = name;
+    d.dimensions = dims(b, 219, 228, 237, 243);
+    d.atonOffPosition = bool(b.u(259, 1));
+    d.atonVirtual     = bool(b.u(269, 1));
+    pub->publishAisStatic(d, src);
+}
 } // namespace
 
 AisDecoder::AisDecoder(IAisPublisher* publisher, QString source)
@@ -198,8 +247,10 @@ void AisDecoder::decodePayload(const QString& sixbit) {
     switch (int(b.u(0, 6))) {
         case 1: case 2: case 3: positionA(b, publisher_, source_);    break;
         case 5:                 staticA(b, publisher_, source_);      break;
+        case 9:                 positionSarAircraft(b, publisher_, source_); break;
         case 18:                positionB(b, publisher_, source_);    break;
         case 19:                positionBExt(b, publisher_, source_); break;
+        case 21:                atonReport(b, publisher_, source_);   break;
         case 24:                static24(b, publisher_, source_);     break;
         default: break;
     }
