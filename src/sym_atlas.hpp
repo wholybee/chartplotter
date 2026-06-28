@@ -158,6 +158,7 @@ private:
         QColor   color;
         double   advance = 0.0;            // repeat length (HPGL units)
         QPointF  pivot;                    // HPGL pivot (rides the line)
+        double   reach = 0.0;              // motif extent right of pivot (HPGL units)
     };
     struct ApDef {
         QImage   tile;          // pre-rendered motif (RGBA, nominal scale)

@@ -25,10 +25,10 @@
 //
 // Table selection (matches the chosen display style):
 //   Point features -> "Paper" table   (realistic buoy/beacon shapes)
-//   Area  features -> "Symbolized" table (symbolized boundaries + centred SY)
+//   Area  features -> "Plain" table   (plain dashed boundaries + centred SY)
 //   Line  features -> "Lines" table
 // If a class has no lookup in the preferred table, the alternate point table
-// ("Simplified") / area table ("Plain") is used as a fallback for that class.
+// ("Simplified") / area table ("Symbolized") is used as a fallback for that class.
 //
 // Binary layout (little-endian, packed):
 //
@@ -478,7 +478,14 @@ int main(int argc, char** argv) {
     // ---- select the preferred table per (class, geomType) -------------------
     //   Point: prefer "Paper", else "Simplified".
     //   Line:  "Lines" (the only line table).
-    //   Area:  prefer "Symbolized", else "Plain".
+    //   Area:  prefer "Plain", else "Symbolized".
+    //
+    // "Plain" is the S-52/ECDIS default boundary style: area perimeters draw as
+    // simple LS() dashed lines that scale with the zoom. "Symbolized" instead
+    // stamps a fixed-on-screen-size LC() motif along every perimeter, which on a
+    // busy chart (many overlapping caution/restricted/cable/traffic areas)
+    // clutters into a magenta mesh that doesn't shrink as you zoom out. Both
+    // tables keep the same centred SY() symbols and CS() procedures.
     auto preferredTable = [](int geom, const QSet<QByteArray>& tablesPresent) -> QByteArray {
         if (geom == 0) {
             if (tablesPresent.contains("Paper"))      return "Paper";
@@ -486,8 +493,8 @@ int main(int argc, char** argv) {
         } else if (geom == 1) {
             if (tablesPresent.contains("Lines"))      return "Lines";
         } else if (geom == 2) {
-            if (tablesPresent.contains("Symbolized")) return "Symbolized";
             if (tablesPresent.contains("Plain"))      return "Plain";
+            if (tablesPresent.contains("Symbolized")) return "Symbolized";
         }
         return {};
     };

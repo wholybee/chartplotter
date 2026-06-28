@@ -230,6 +230,13 @@ bool SymAtlas::load(const QString& binPath, const QString& pngPath) {
         def.pivot = QPointF(d.pivotX, d.pivotY);
         if (d.hpglLen && std::size_t(d.hpglOff) + d.hpglLen <= strBytes)
             def.strokes = compileHpgl(QByteArray(strBase + d.hpglOff, d.hpglLen));
+        // How far the motif's drawn content reaches to the right of the pivot, so
+        // the last stamp on a line can be dropped before it overshoots the end.
+        QRectF bb;
+        for (const auto& s : def.strokes)
+            bb = bb.isNull() ? s.path.boundingRect() : bb.united(s.path.boundingRect());
+        def.reach = bb.isNull() ? def.advance
+                                : std::max(def.advance, bb.right() - def.pivot.x());
         lcDefs_[i] = std::move(def);
         lcIndex_.insert(QByteArray(d.name), static_cast<int>(i));
     }
@@ -823,13 +830,26 @@ void SymAtlas::drawLineComplex(QPainter& p, int lcIndex,
     if (lc.strokes.empty()) return;
 
     const double s = kHpglToPx * scale;
-    const double step = std::max(2.0, lc.advance * s);   // motif repeat (px)
+    const double step  = std::max(2.0, lc.advance * s);   // motif repeat (px)
+    const double reach = std::max(step, lc.reach * s);     // motif footprint (px)
+
+    // Total on-screen length of the polyline. The motif is a fixed on-screen
+    // size, so on a short feature the last stamp would otherwise paint past the
+    // end ("too long, extending where it shouldn't" when zoomed out). Drop any
+    // stamp whose footprint wouldn't fit, and skip lines shorter than one motif
+    // entirely (the faint guide line in the vector pass still marks them).
+    double total = 0.0;
+    for (int i = 1; i < pts.size(); ++i)
+        total += std::hypot(pts[i].x() - pts[i - 1].x(), pts[i].y() - pts[i - 1].y());
+    if (total < reach) return;
+
     const QTransform saved = p.transform();
     p.resetTransform();
 
     QPen pen(lc.color); pen.setCosmetic(true);
-    double carry = 0.0;   // distance into the current motif since the last stamp
-    for (int i = 1; i < pts.size(); ++i) {
+    double next = 0.0;    // arc-length of the next stamp, measured from the start
+    double base = 0.0;    // arc-length at the start of the current segment
+    for (int i = 1; i < pts.size() && next + reach <= total + 0.5; ++i) {
         const QPointF a = pts[i - 1], b = pts[i];
         const double dx = b.x() - a.x(), dy = b.y() - a.y();
         const double len = std::hypot(dx, dy);
@@ -837,8 +857,8 @@ void SymAtlas::drawLineComplex(QPainter& p, int lcIndex,
         const double ang = std::atan2(dy, dx) * 180.0 / M_PI;
         const double ux = dx / len, uy = dy / len;
 
-        double along = step - carry;
-        while (along <= len) {
+        while (next <= base + len && next + reach <= total + 0.5) {
+            const double along = next - base;
             const QPointF pos(a.x() + ux * along, a.y() + uy * along);
             QTransform t;
             t.translate(pos.x(), pos.y());
@@ -851,9 +871,9 @@ void SymAtlas::drawLineComplex(QPainter& p, int lcIndex,
                 else { pen.setWidthF(std::max(1.0, stroke.width * scale)); p.setPen(pen); p.setBrush(Qt::NoBrush); }
                 p.drawPath(stroke.path);
             }
-            along += step;
+            next += step;
         }
-        carry = len - (along - step);
+        base += len;
     }
     p.setTransform(saved);
 }

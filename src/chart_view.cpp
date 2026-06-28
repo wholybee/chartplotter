@@ -311,6 +311,7 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
                 bp.filled  = hit.hasFill;   // AC() wash (AP pattern overlays it)
                 bp.apIndex = (f.kind == FeatureKind::OtherArea) ? hit.apIndex : -1;
                 bp.lcIndex = hit.lcIndex;
+                bp.scaleMin = f.scaleMin;   // SCAMIN floor for the LC/AP overlay pass
                 if (hit.hasFill)
                     bp.brush = QColor(hit.fill.r, hit.fill.g, hit.fill.b, hit.fill.a);
                 bp.hasPen = true;
@@ -1816,7 +1817,14 @@ void ChartView::paintEvent(QPaintEvent*) {
     //      lines (a motif stamped along the path). Both render through the atlas
     //      from the baked HPGL/raster definitions. Skipped mid-gesture, like the
     //      point overlays, so a pan/zoom frame stays cheap.
-    if (symAtlas_.isLoaded() && !interacting_) {
+    //
+    // Gated like the point overlays below: hidden once the zoom passes the
+    // point-LOD threshold (pointLodVisible_) and per-feature by SCAMIN. Without
+    // this the constant-size motifs (cables, ferry routes, etc.) keep drawing
+    // when zoomed out, cluttering the display and overshooting the shrunken
+    // feature endpoints. scaminDenom is shared with the sounding/symbol pass.
+    const double scaminDenom = scaminEffectiveDenominator();
+    if (symAtlas_.isLoaded() && pointLodVisible_ && !interacting_) {
         p.resetTransform();   // device-space clips/anchors below
         const QRectF visDev = rect().adjusted(-48, -48, 48, 48);
         for (const BuiltCell* c : order) {
@@ -1830,6 +1838,7 @@ void ChartView::paintEvent(QPaintEvent*) {
 
             for (const BuiltPath& bp : c->paths) {
                 if (bp.apIndex < 0 && bp.lcIndex < 0) continue;
+                if (!scaminPasses(bp.scaleMin, scaminDenom)) continue;
                 if (!bp.bounds.intersects(visFrame)) continue;
                 if (clipped) { p.save(); p.setClipPath(*dcIt); }
                 if (bp.apIndex >= 0) {
@@ -1875,10 +1884,8 @@ void ChartView::paintEvent(QPaintEvent*) {
     if (pointLodVisible_ && (!interacting_ || !hideSymbolsWhilePanning_)) {
         const QRectF screen = rect().adjusted(-24, -24, 24, 24);
 
-        // SCAMIN declutter threshold for this frame: point objects (soundings
-        // and symbols) whose SCAMIN is smaller than this are dropped. Computed
-        // once here from the current zoom and the user's bias slider.
-        const double scaminDenom = scaminEffectiveDenominator();
+        // SCAMIN declutter threshold (computed above, shared with the LC/AP
+        // pass): point objects whose SCAMIN is smaller than this are dropped.
         if (showSoundings_) {
             QFont f = p.font(); f.setPointSizeF(8.0); p.setFont(f);
             // White soundings in vector-overlay mode read better over dark

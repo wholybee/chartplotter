@@ -90,6 +90,7 @@ struct BuiltPath {
     // screen size in device space (see paintEvent). -1 when absent.
     int    apIndex = -1;       // AP() area-pattern fill (tiled motif)
     int    lcIndex = -1;       // LC() complex line (motif stamped along the path)
+    int    scaleMin = 0;       // S-57 SCAMIN (0 = none); paint-time declutter floor
 };
 
 // A whole cell, clipped to a region and ready to draw. drawOffsetX shifts it by a
