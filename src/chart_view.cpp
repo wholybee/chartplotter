@@ -467,6 +467,19 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
         if (currentView(lon, lat, scale)) emit viewChanged(lon, lat, scale);
     });
 
+    // Repaint governor: data-driven repaint requests (ownship fixes, AIS target
+    // updates, route/nav changes, plugin overlays) are coalesced here so a fast
+    // NMEA/AIS feed drives at most ~16 repaints/sec rather than one full chart
+    // re-raster per message — the dominant source of idle CPU. Interactive
+    // pan/zoom keep calling update() directly for an immediate frame.
+    repaintTimer_ = new QTimer(this);
+    repaintTimer_->setSingleShot(true);
+    repaintTimer_->setInterval(60);     // ~16 Hz
+    connect(repaintTimer_, &QTimer::timeout, this, [this] {
+        repaintPending_ = false;
+        update();
+    });
+
     // Touch zoom buttons (lower-right, just left of the scale bar). Circular,
     // translucent so they sit nicely over the chart. Auto-repeat lets the user
     // hold to keep zooming on a phone/tablet. Colours follow the OS theme so the
@@ -844,7 +857,7 @@ bool ChartView::recenterOnOwnship() {
     scy_ = -proj::latToY(ownship_.latitudeDeg.value);
     normalizeCenter();
     scheduleUpdate();             // refresh cells/basemap (debounced)
-    update();
+    requestRepaint();            // coalesced: follow mode recenters at fix rate
     return true;
 }
 
@@ -901,6 +914,24 @@ BBox ChartView::shiftX(const BBox& b, double dx) {
 
 void ChartView::scheduleUpdate() {
     if (ppm_ > 0.0) updateTimer_->start();   // cells need a catalog; basemap doesn't
+}
+
+void ChartView::requestRepaint() {
+    // May be called off the GUI thread (e.g. a plugin data callback via
+    // CoreApi::requestChartRepaint). QTimer must be touched on its own thread, so
+    // marshal there first; the queued call re-enters on the GUI thread.
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, [this] { requestRepaint(); },
+                                  Qt::QueuedConnection);
+        return;
+    }
+    // Coalesce: if a repaint is already scheduled within the current window this
+    // request folds into it. The single-shot interval caps the data-driven
+    // repaint rate however fast messages arrive. paintEvent clears the flag, so
+    // any frame (including an interactive one) satisfies a pending request.
+    if (repaintPending_) return;
+    repaintPending_ = true;
+    repaintTimer_->start();
 }
 
 bool ChartView::computeViewBoxes(BBox& view, BBox& wanted, BBox& keep, int& target) const {
@@ -1724,6 +1755,12 @@ void ChartView::beginInteraction() {
 // ---- painting --------------------------------------------------------------
 
 void ChartView::paintEvent(QPaintEvent*) {
+    // This frame satisfies any pending coalesced repaint request; cancel the
+    // governor so a data update arriving mid pan/zoom doesn't fire a second,
+    // redundant paint right after this one.
+    repaintPending_ = false;
+    if (repaintTimer_) repaintTimer_->stop();
+
     QPainter p(this);
     p.fillRect(rect(), QColor(204, 224, 242));
 
@@ -2057,7 +2094,9 @@ void ChartView::setOwnship(const OwnshipState& s) {
     ownshipFreshness_ = s.latitudeDeg.freshness;
     // When following, keep the boat centered as it moves. recenterOnOwnship()
     // repaints on success; otherwise repaint here for the symbol's new position.
-    if (!(autoFollow_ && recenterOnOwnship())) update();
+    // Coalesced: ownship fixes arrive at the GPS rate, so this must not force a
+    // full chart re-raster per fix.
+    if (!(autoFollow_ && recenterOnOwnship())) requestRepaint();
 }
 
 void ChartView::addOverlay(IChartOverlay* overlay) {
