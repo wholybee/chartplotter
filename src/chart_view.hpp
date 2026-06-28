@@ -390,6 +390,17 @@ private:
 
     void drawOwnship(QPainter& p, const QTransform& cam);
     void drawScaleBar(QPainter& p);   // lower-right scale bar, in device pixels
+
+    // Static chart layer (Fix 2: pixmap cache). renderStatic draws the basemap +
+    // raster + ENC cells + complex symbology + soundings/symbols/text through the
+    // given camera into p; vis is the scene rect to cull against and deviceRect is
+    // the painter's device rect (for the constant-on-screen-size point/label culls
+    // — the cache pixmap, not the widget). renderStaticCache renders that into the
+    // offscreen staticCache_; invalidateChart marks the cache stale and repaints.
+    void renderStatic(QPainter& p, const QTransform& cam,
+                      const QRectF& vis, const QRectF& deviceRect);
+    void renderStaticCache();
+    void invalidateChart();
     // Touch-friendly zoom: same step as the wheel, anchored at the screen
     // centre (no cursor on touch devices).
     void zoomBy(double factor);
@@ -460,6 +471,21 @@ private:
     BBox    basemapClipBox_;          // region basemap_ was built for (k=0 frame)
     double  basemapBuiltPpm_ = 0.0;   // zoom basemap_ was simplified for
     bool    basemapBuilding_ = false;
+
+    // Static-chart pixmap cache (Fix 2). The basemap+raster+cells+points layer is
+    // rendered once into an oversized pixmap (the viewport plus a keepArea-sized
+    // margin) and blitted beneath the dynamic overlays each frame, so moving
+    // overlays (ownship, AIS, routes) and in-margin pans don't re-rasterize the
+    // chart. It is re-rendered only when settled and the camera has left the
+    // cached region, the zoom/size changed, or staticDirty_ was set by a content
+    // change (new cell, toggle, …). Mid-gesture the last cache is blitted shifted
+    // (or scaled for zoom) and refreshed on settle.
+    QPixmap    staticCache_;
+    QTransform cacheCam_;                  // scene -> cache-pixel transform
+    double     cacheScx_ = 0.0, cacheScy_ = 0.0, cachePpm_ = -1.0;
+    int        cacheW_ = 0, cacheH_ = 0;   // widget size the cache was built for
+    int        cacheMX_ = 0, cacheMY_ = 0; // pixel margin each side of the viewport
+    bool       staticDirty_ = true;        // cache content needs re-rendering
 
     // Symbol atlas (prebaked from chartsymbols.xml + rastersymbols-day.png).
     // Loaded once at construction; immutable after that, safe to query from
