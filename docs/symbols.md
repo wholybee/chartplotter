@@ -7,9 +7,13 @@ S-57 is the IHO data format for Electronic Navigational Charts (ENCs). S-52 is
 the companion standard that says *how* to draw each feature — the colours,
 boundary patterns, lighted-buoy flares, restricted-area glyphs. S-52 is
 expensive to license and complex to implement end-to-end. This app takes a
-pragmatic shortcut: it reuses **OpenCPN's GPL `chartsymbols.xml` + atlas PNG**
-and implements just enough of the S-52 look-up-table (LUP) selection algorithm
-to render correct symbols, line styles, area fills, and rotations.
+pragmatic shortcut: it borrows the **S-52 lookup tables, colour palette, and
+HPGL line/pattern definitions from OpenCPN's `chartsymbols.xml`** and implements
+just enough of the S-52 look-up-table (LUP) selection algorithm to render
+correct symbols, line styles, area fills, and rotations. The **sprite atlas
+those rules point at is generated from the non-GPL IHO S-101 symbol library** —
+a drop-in replacement for OpenCPN's GPL atlas (see
+[Atlas provenance](#atlas-provenance-generated-from-s-101)).
 
 The result isn't ECDIS-compliant — but visually it matches OpenCPN on the same
 charts for the great majority of features. The instruction set now covers
@@ -22,13 +26,13 @@ symbology procedures (`CS`)** that reach ENC chart features — see
 data/                         build tree                          runtime
 +--------------------+   gen   +------------+   load   +--------------+
 | chartsymbols.xml   | ------> | symbols.bin| -------> |   SymAtlas   |
-| (GPL, OpenCPN)     |         | (packed    |          |  LUP engine  |
+| rules: OpenCPN GPL |         | (packed    |          |  LUP engine  |
 | 1015 sym defs +    |         |  binary    |          +--------------+
 | 2k+ lookups        |         |  ~150 KB)  |                 ^
 +--------------------+         +------------+          per-feature query
 | rastersymbols-     |    copy                         (objClass, geom,
 |   day.png          | --------------------------+     attribute list)
-| (sprite atlas)     |                           |
+| S-101, non-GPL     |                           |
 +--------------------+                           v
                                             +---------+
                                             | Painter |
@@ -38,18 +42,56 @@ data/                         build tree                          runtime
 
 ## The two source files
 
-Both come from the OpenCPN project (GPL v2) and live under `data/`:
+Both live under `data/`, but they no longer share one origin — which is the
+whole point of the licensing work in [Atlas provenance](#atlas-provenance-generated-from-s-101):
 
-| File | Role |
-|------|------|
-| `data/chartsymbols.xml` | Vector/raster symbol definitions, lookup tables, colour palettes. Read at build time only. |
-| `data/rastersymbols-day.png` | Sprite atlas — every symbol pre-rasterised into a single PNG. Read at runtime, kept resident as a `QPixmap`. |
-| `data/rastersymbols-dusk.png`, `data/rastersymbols-dark.png` | Same atlas at dusk/night colour temperatures. Bundled but not yet switched at runtime. |
+| File | Role | Origin |
+|------|------|--------|
+| `data/chartsymbols.xml` | Lookup tables, colour palette, HPGL line/pattern + vector defs, and the `<bitmap>` atlas coordinates. Read at build time only. | OpenCPN (GPL v2); only the `<bitmap>` coordinates are regenerated to match the repacked atlas. |
+| `data/rastersymbols-day.png` | Sprite atlas — every symbol pre-rasterised into one PNG. Read at runtime, kept resident as a `QPixmap`. | Generated from the IHO S-101 SVG library. |
+| `data/rastersymbols-dusk.png`, `data/rastersymbols-dark.png` | Same atlas at dusk/night colour temperatures. Bundled but not yet switched at runtime. | Same S-101 build, dusk/night palettes. |
 
-OpenCPN distributes both so the symbology engine can either rasterise vectors
-or blit pre-baked tiles. We use the **pre-baked tiles**: faster at runtime
-(one `drawPixmap` per symbol, no path construction) and the colours are baked
-in correctly.
+The atlas is consumed as **pre-baked tiles**: faster at runtime (one
+`drawPixmap` per symbol, no path construction) and the colours are baked in per
+scheme. `gen_symbols` still reads the XML's lookup/colour/HPGL content at build
+time; only the bitmap coordinates moved when the atlas was repacked.
+
+## Atlas provenance: generated from S-101
+
+The three `rastersymbols-*.png` atlases used to be OpenCPN's own GPL-v2 sprite
+sheets, shipped verbatim. They are now **regenerated from the official IHO S-101
+SVG symbol library** by a separate build pipeline (the S-57→S-101 project, run
+via its `build/build_all.sh`) and dropped into `data/` as a **drop-in
+replacement** — `gen_symbols`, `symbols.bin`, `SymAtlas`, the LUP matcher, and
+all runtime code are untouched. The driver is licensing: OpenCPN's atlas is
+GPL-v2, incompatible with Apple App Store distribution; IHO S-101 is not GPL.
+
+The pipeline reproduces every legacy bitmap name, pivot, and on-screen size, so
+the renderer can't tell the difference. Of the **1091 bitmap tiles** (1023
+unique names) it emits:
+
+* **837 are rendered from S-101 vector art** — a same-named S-101 SVG, or a
+  family *recipe* that recolours/composes S-101 shapes (buoys, beacons, towers,
+  topmarks, soundings, lights, daymarks). Each is rasterised per colour scheme
+  through the matching `*SvgStyle.css` and scaled to the legacy pixel size.
+* **254 are carried over** as the exact legacy pixels — families with no S-101
+  equivalent (inland notice marks, app/UI overlay marks, a few edge-case
+  dangers) plus the HPGL `<pattern>` tiles.
+
+The atlas stays **1500×1200** with one shared layout across all three schemes,
+and `chartsymbols.xml` is edited surgically: only `<bitmap>` `width`/`height`,
+`<pivot>`, and `<graphics-location>` change — lookups, colour tables,
+line-styles, patterns, and vectors are byte-identical. The recipe step also
+corrects places where S-101 reused an S-52 name for a *different* symbol (e.g. a
+buoy colour that would otherwise render wrong), so those collisions never reach
+the chart.
+
+> **Licensing status (snapshot).** The shipped atlas pixels are now ~77% non-GPL
+> (837/1091); the remaining 254 carry-overs are the GPL content still to be
+> re-sourced. Separately, **`chartsymbols.xml` itself is still OpenCPN GPL** —
+> its lookup rules, colour table, and HPGL vector/line/pattern programs (all
+> baked into `symbols.bin`) are a distinct App Store exposure that the atlas
+> work does not address.
 
 ## Build-time tool: `gen_symbols`
 
@@ -465,8 +507,8 @@ How a feature becomes pixels:
 
 ```
 data/
-  chartsymbols.xml          GPL OpenCPN source — build time only
-  rastersymbols-day.png     atlas — runtime
+  chartsymbols.xml          OpenCPN GPL rules + regenerated bitmap coords (build time only)
+  rastersymbols-day.png     atlas — generated from S-101, non-GPL (runtime)
   rastersymbols-dusk.png
   rastersymbols-dark.png
 
