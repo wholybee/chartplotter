@@ -30,8 +30,15 @@ inline double distanceNm(double lat1, double lon1, double lat2, double lon2) {
     const double p1 = lat1 * D2R, p2 = lat2 * D2R;
     const double dphi = (lat2 - lat1) * D2R;
     const double dl   = (lon2 - lon1) * D2R;
-    const double a = std::sin(dphi / 2) * std::sin(dphi / 2)
-                   + std::cos(p1) * std::cos(p2) * std::sin(dl / 2) * std::sin(dl / 2);
+    double a = std::sin(dphi / 2) * std::sin(dphi / 2)
+             + std::cos(p1) * std::cos(p2) * std::sin(dl / 2) * std::sin(dl / 2);
+    // Clamp to [0, 1]. For near-antipodal points (a route on the far side of the
+    // globe from the boat) floating-point rounding can push `a` a hair past 1,
+    // making sqrt(1 - a) the square root of a negative number — i.e. NaN. That
+    // NaN then poisons every value derived from this distance (range, cross-track
+    // error), and crashes the navigation display the moment it tries to paint a
+    // marker at a NaN coordinate.
+    a = std::clamp(a, 0.0, 1.0);
     const double c = 2.0 * std::atan2(std::sqrt(a), std::sqrt(1.0 - a));
     return kEarthRadiusNm * c;
 }

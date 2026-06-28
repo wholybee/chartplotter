@@ -10,6 +10,7 @@
 #include <QPolygonF>
 #include <QtMath>
 #include <algorithm>
+#include <cmath>
 
 // ---- CDI graphic -----------------------------------------------------------
 //
@@ -164,8 +165,11 @@ void CdiWidget::paintEvent(QPaintEvent*) {
     p.drawEllipse(C, 3.0, 3.0);
 
     // Cross-track needle: vertical line that slides toward the side to steer.
-    if (haveFix) {
-        const double mag = std::min(n.xteNm / kCdiFullScaleNm, 1.0) * half;
+    // Guard against a non-finite XTE: drawing at a NaN/Inf coordinate crashes the
+    // raster paint engine. (The source of any such value is clamped upstream in
+    // geonav::distanceNm; this is belt-and-suspenders so bad data can never paint.)
+    if (haveFix && std::isfinite(n.xteNm)) {
+        const double mag = std::clamp(n.xteNm / kCdiFullScaleNm, 0.0, 1.0) * half;
         const double dir = (n.steerDirection == QLatin1Char('L')) ? -1.0 : 1.0;
         const double nx  = C.x() + dir * mag;
         const double nh  = R * 0.58;

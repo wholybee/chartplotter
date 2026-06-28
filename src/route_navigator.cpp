@@ -53,7 +53,15 @@ void RouteNavigator::startRoute(qint64 routeId, int destIndex) {
     active_ = true;
     timer_->start();
     recompute();
-    if (!wasActive) emit activeChanged(true);
+    // Announce activation only if recompute() left us active. It can complete the
+    // route on the very first tick — e.g. the boat already lies beyond the final
+    // waypoint (its along-track projection is past the route's end) — in which
+    // case it has already called stop() and emitted activeChanged(false).
+    // Emitting activeChanged(true) here regardless would contradict that stop and
+    // fight the menu's "Navigating" toggle: setChecked re-emits toggled, the host
+    // routes it back through onNavigatingToggled -> resume() -> startRoute(), and
+    // the active/inactive states ping-pong recursively until the stack overflows.
+    if (active_ && !wasActive) emit activeChanged(true);
 }
 
 void RouteNavigator::resume() {
