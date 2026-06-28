@@ -8,8 +8,10 @@
 //
 // Owns the AIS concern so the NMEA-0183 sentence layer doesn't have to: it
 // handles multi-fragment reassembly, 6-bit ASCII payload unpacking, and the
-// common message types (1/2/3 Class A position, 5 Class A static, 18/19 Class B
-// position, 24 Class B static). It is transport-agnostic — fed raw VDM/VDO
+// common message types (1/2/3 Class A position, 5 Class A static, 9 SAR aircraft
+// position, 18/19 Class B position, 21 Aid-to-Navigation, 24 Class B static).
+// Distress beacons (AIS-SART/MOB/EPIRB) arrive as type-1 reports and are sorted
+// out by MMSI in the store. It is transport-agnostic — fed raw VDM/VDO
 // lines by whoever owns the connection (today the NMEA 0183 plugin), publishing
 // through IAisPublisher.
 class AisDecoder {

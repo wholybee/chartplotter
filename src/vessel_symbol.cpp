@@ -79,6 +79,60 @@ void drawSymbol(QPainter& p, const QPointF& pos,
         } else {
             p.drawEllipse(QPointF(0, 0), 7.0, 7.0);
         }
+    } else if (s.shape == SymbolStyle::Shape::Diamond) {
+        // AtoN: an upright diamond with a centre dot. Orientation-independent
+        // (the caller passes no heading); a virtual aid is drawn hollow because
+        // its style carries a transparent fill.
+        QPen edge(strokeColor); edge.setWidthF(1.4);
+        edge.setJoinStyle(Qt::MiterJoin);
+        p.setPen(edge);
+        p.setBrush(stale ? s.staleFill : s.fill);
+        QPolygonF diamond;
+        diamond << QPointF(0, -11) << QPointF(8, 0) << QPointF(0, 11) << QPointF(-8, 0);
+        p.drawPolygon(diamond);
+        p.setBrush(strokeColor);
+        p.setPen(Qt::NoPen);
+        p.drawEllipse(QPointF(0, 0), 2.0, 2.0);
+    } else if (s.shape == SymbolStyle::Shape::Aircraft) {
+        // SAR aircraft: a top-down plane silhouette pointing along heading/COG
+        // (a circle when neither is known).
+        QPen edge(strokeColor); edge.setWidthF(1.2);
+        edge.setJoinStyle(Qt::RoundJoin);
+        p.setBrush(stale ? s.staleFill : s.fill);
+        p.setPen(edge);
+        if (headingDeg) {
+            QPainterPath plane;
+            plane.moveTo(0, -13);          // nose
+            plane.lineTo(1.6, -3);         // right fuselage shoulder
+            plane.lineTo(11, 2);           // right wing tip (leading)
+            plane.lineTo(11, 4);           // right wing tip (trailing)
+            plane.lineTo(1.6, 3.5);        // back to fuselage
+            plane.lineTo(1.6, 8);          // rear fuselage
+            plane.lineTo(5, 11);           // right tailplane tip
+            plane.lineTo(5, 12);
+            plane.lineTo(0, 10);           // tail centre (notch)
+            plane.lineTo(-5, 12);          // left tailplane
+            plane.lineTo(-5, 11);
+            plane.lineTo(-1.6, 8);
+            plane.lineTo(-1.6, 3.5);
+            plane.lineTo(-11, 4);          // left wing tip
+            plane.lineTo(-11, 2);
+            plane.lineTo(-1.6, -3);        // left fuselage shoulder
+            plane.closeSubpath();
+            p.drawPath(plane);
+        } else {
+            p.drawEllipse(QPointF(0, 0), 7.0, 7.0);
+        }
+    } else if (s.shape == SymbolStyle::Shape::SartCross) {
+        // Distress beacon (AIS-SART / MOB / EPIRB): the IEC cross-in-circle, in
+        // an alarming colour. Orientation-independent.
+        QPen ring(strokeColor); ring.setWidthF(2.0);
+        p.setPen(ring);
+        p.setBrush(stale ? s.staleFill : s.fill);
+        const double rad = 9.0;
+        p.drawEllipse(QPointF(0, 0), rad, rad);
+        p.drawLine(QPointF(0, -rad), QPointF(0, rad));     // cross: vertical
+        p.drawLine(QPointF(-rad, 0), QPointF(rad, 0));     // cross: horizontal
     } else {
         // Class A / ownship: solid filled triangle (or circle when heading unknown).
         QPolygonF tri;

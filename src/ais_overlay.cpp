@@ -128,17 +128,58 @@ void AisOverlay::paint(QPainter& p, const ChartViewport& vp) {
         QColor(70, 0, 0),
         QColor(20, 20, 20, 220)
     };
+    // AtoN: amber diamond. A virtual aid is drawn hollow (transparent fill).
+    static const vessel::SymbolStyle kAtoN{
+        vessel::SymbolStyle::Shape::Diamond,
+        QColor(245, 190, 40),                 // current fill (amber)
+        QColor(180, 155, 80, 200),            // stale fill (dimmed)
+        QColor(70, 50, 0),                    // outline (current)
+        QColor(70, 50, 0),                    // outline (stale)
+        QColor(20, 20, 20, 220)
+    };
+    static const vessel::SymbolStyle kAtoNVirtual{
+        vessel::SymbolStyle::Shape::Diamond,
+        QColor(0, 0, 0, 0),                   // hollow — virtual aid has no body
+        QColor(0, 0, 0, 0),
+        QColor(210, 165, 35),                 // amber outline (current)
+        QColor(160, 135, 75),                 // amber outline (stale)
+        QColor(20, 20, 20, 220)
+    };
+    // SAR aircraft: blue plane silhouette.
+    static const vessel::SymbolStyle kSarAircraft{
+        vessel::SymbolStyle::Shape::Aircraft,
+        QColor(40, 120, 210),                 // current fill (blue)
+        QColor(130, 160, 195, 200),           // stale fill (dimmed)
+        QColor(0, 25, 70),                    // outline (current)
+        QColor(0, 25, 70),                    // outline (stale)
+        QColor(20, 20, 20, 220)
+    };
+    // Distress beacon (AIS-SART / MOB / EPIRB): red cross-in-circle.
+    static const vessel::SymbolStyle kSart{
+        vessel::SymbolStyle::Shape::SartCross,
+        QColor(225, 35, 35, 70),              // translucent red fill
+        QColor(205, 120, 120, 70),
+        QColor(225, 35, 35),                  // red cross / ring (current)
+        QColor(205, 120, 120),                // dimmed (stale)
+        QColor(20, 20, 20, 220)
+    };
 
     for (const AisTarget& t : store_->targets()) {
         if (!t.hasPosition()) continue;
         const QPointF pos = vp.geoToScreen(*t.latitudeDeg, *t.longitudeDeg);
 
-        // Heading: prefer reported heading, fall back to COG.
+        // Heading: prefer reported heading, fall back to COG. Aids to Navigation
+        // and distress beacons are not oriented, so they stay upright.
         std::optional<double> headingDeg;
-        if (t.headingDegTrue) headingDeg = *t.headingDegTrue;
-        else if (t.cogDegTrue) headingDeg = *t.cogDegTrue;
+        if (t.cls != AisClass::AtoN && t.cls != AisClass::Sart) {
+            if (t.headingDegTrue)  headingDeg = *t.headingDegTrue;
+            else if (t.cogDegTrue) headingDeg = *t.cogDegTrue;
+        }
 
-        const bool danger = isDangerous(t);
+        // CPA danger flagging is for vessels under way — a fixed aid or a SAR
+        // asset is never treated as a collision threat.
+        const bool danger = (t.cls == AisClass::A || t.cls == AisClass::B)
+                            && isDangerous(t);
         if (danger) {
             drawDangerHighlight(p, pos, vesselScale_);
             // CPA encounter graphics need a future encounter (TCPA still
@@ -159,13 +200,24 @@ void AisOverlay::paint(QPainter& p, const ChartViewport& vp) {
             }
         }
 
-        const vessel::SymbolStyle& style = danger
-            ? (t.cls == AisClass::B ? kAisBDanger : kAisADanger)
-            : (t.cls == AisClass::B ? kAisB       : kAisA);
+        const vessel::SymbolStyle* style = nullptr;
+        switch (t.cls) {
+            case AisClass::AtoN:
+                style = t.atonVirtual ? &kAtoNVirtual : &kAtoN; break;
+            case AisClass::SarAircraft:
+                style = &kSarAircraft; break;
+            case AisClass::Sart:
+                style = &kSart; break;
+            case AisClass::B:
+                style = danger ? &kAisBDanger : &kAisB; break;
+            case AisClass::A:
+            case AisClass::Unknown:
+                style = danger ? &kAisADanger : &kAisA; break;
+        }
         vessel::drawSymbol(p, pos, headingDeg,
                            t.sogKnots.value_or(0.0),
                            predMinutes_, vp.pixelsPerMetre(),
-                           t.freshness == AisFreshness::Stale, style,
+                           t.freshness == AisFreshness::Stale, *style,
                            vesselScale_);
     }
 }

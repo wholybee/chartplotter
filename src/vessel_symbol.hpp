@@ -23,7 +23,13 @@ struct SymbolStyle {
     // BoatHull       — ownship: a simplified top-down boat silhouette (curved
     //                  bow, full beam, transom stern) so it reads differently
     //                  from the AIS target wedges.
-    enum class Shape { FilledTriangle, Chevron, BoatHull };
+    // Diamond        — AtoN: an upright diamond with a centre dot (the standard
+    //                  AIS aid-to-navigation symbol). Drawn hollow for a virtual
+    //                  aid by passing a transparent fill. Ignores heading.
+    // Aircraft       — SAR aircraft: a top-down plane silhouette along heading.
+    // SartCross      — distress beacon (AIS-SART / MOB / EPIRB): a cross inside a
+    //                  circle, the IEC distress symbol. Ignores heading.
+    enum class Shape { FilledTriangle, Chevron, BoatHull, Diamond, Aircraft, SartCross };
 
     Shape  shape    = Shape::FilledTriangle;
     QColor fill;        // bright fill (FilledTriangle only)
