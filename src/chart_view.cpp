@@ -751,6 +751,7 @@ void ChartView::clearAll() {
     bboxByPath_.clear();
     cache_.clear();
     pointLodVisible_ = true;
+    staticDirty_ = true;     // dropped cells: the cached chart is now stale
 }
 
 void ChartView::onCatalogFinished(bool ok, const QString&) {
@@ -1047,6 +1048,10 @@ void ChartView::updateVisibleCells() {
         i = j;
     }
 
+    // The active set / quilt clips were just recomputed; the cached static layer
+    // must re-render even if the camera is unchanged (e.g. cells arriving async).
+    staticDirty_ = true;
+
     // Wanted set = contributing cells whose footprint reaches the tighter wanted
     // area (the 0.5x margin that triggers loading, as before).
     wanted_.clear();
@@ -1196,7 +1201,7 @@ void ChartView::onCellBuilt(BuiltCell bc, quint64 gen, double drawOffsetX) {
     bc.drawOffsetX = drawOffsetX;
     storeCell(std::move(bc));
     emit statusChanged(QStringLiteral("%1 cell(s) shown").arg(loaded_.size()));
-    update();
+    invalidateChart();
 }
 
 void ChartView::storeCell(BuiltCell bc) {
@@ -1218,7 +1223,7 @@ void ChartView::updatePointLOD() {
     const bool show = effWidthM < 20000.0;
     if (show == pointLodVisible_) return;
     pointLodVisible_ = show;
-    update();
+    invalidateChart();
 }
 
 // ---- basemap (GSHHG land/lakes underlay) ----------------------------------
@@ -1237,6 +1242,7 @@ void ChartView::reloadBasemap() {
     basemapTier_.clear();
     tierLoading_.clear();
     basemap_.clear();
+    staticDirty_ = true;     // basemap dropped: cached chart is stale
     basemapClipBox_ = BBox();
     basemapBuiltPpm_ = 0.0;
     if (availableTiers_.isEmpty()) { update(); return; }
@@ -1386,24 +1392,24 @@ void ChartView::onBasemapBuilt(std::vector<BuiltCell> cells, FeatureCache::Featu
     basemapBuilding_ = false;
     if (feats != basemapFeats_) return;     // data was reloaded while building
     basemap_ = std::move(cells);
-    update();
+    invalidateChart();
 }
 
 void ChartView::setShowSoundings(bool on) {
     if (on == showSoundings_) return;
-    showSoundings_ = on; update();
+    showSoundings_ = on; invalidateChart();
 }
 void ChartView::setShowSymbols(bool on) {
     if (on == showSymbols_) return;
-    showSymbols_ = on; update();
+    showSymbols_ = on; invalidateChart();
 }
 void ChartView::setShowText(bool on) {
     if (on == showText_) return;
-    showText_ = on; update();
+    showText_ = on; invalidateChart();
 }
 void ChartView::setShowDepthContours(bool on) {
     if (on == showDepthContours_) return;
-    showDepthContours_ = on; update();
+    showDepthContours_ = on; invalidateChart();
 }
 
 void ChartView::setHideSymbolsWhilePanning(bool on) {
@@ -1413,12 +1419,12 @@ void ChartView::setHideSymbolsWhilePanning(bool on) {
 
 void ChartView::setShowRasterCharts(bool on) {
     if (on == showRasterCharts_) return;
-    showRasterCharts_ = on; update();
+    showRasterCharts_ = on; invalidateChart();
 }
 
 void ChartView::setVectorOverlay(bool on) {
     if (on == vectorOverlay_) return;
-    vectorOverlay_ = on; update();
+    vectorOverlay_ = on; invalidateChart();
 }
 
 // ---- raster (MBTiles) layer ------------------------------------------------
@@ -1438,7 +1444,7 @@ void ChartView::setRasterChartFolders(const QStringList& dirs) {
     // it would clobber a saved view that the parallel raster path had restored.
     userInteracted_ = false;
     emit rasterSetFolders(dirs, rasterGen_);
-    update();
+    invalidateChart();
 }
 
 void ChartView::onRasterDiscovered(const QVector<MbtilesMeta>& charts, quint64 gen) {
@@ -1462,7 +1468,7 @@ void ChartView::onRasterDiscovered(const QVector<MbtilesMeta>& charts, quint64 g
         }
     }
     emit rasterChartsChanged(charts.size());
-    update();
+    invalidateChart();
 }
 
 void ChartView::onRasterTileReady(int chartId, int z, int x, int y,
@@ -1478,7 +1484,7 @@ void ChartView::onRasterTileReady(int chartId, int z, int x, int y,
     } else {
         tileCache_.insert(k, QPixmap::fromImage(img));
     }
-    update();
+    invalidateChart();
 }
 
 void ChartView::requestRasterTile(const RasterTileKey& k) {
@@ -1622,7 +1628,7 @@ void ChartView::setChartDetailLevel(double level) {
     chartDetailLevel_ = level;
     updatePointLOD();   // symbol visibility threshold depends on detail level
     scheduleUpdate();   // cell band selection also depends on detail level
-    update();           // re-thin soundings now, before the debounced rebuild
+    invalidateChart();  // rebuild cache: detail changes bands and point LOD
 }
 
 void ChartView::setChartScaminLevel(double level) {
@@ -1632,7 +1638,7 @@ void ChartView::setChartScaminLevel(double level) {
     scaminLevel_ = level;
     // SCAMIN is filtered entirely at paint time, so a bias change is a repaint —
     // no cell rebuild or band/LOD recompute needed.
-    update();
+    invalidateChart();
 }
 
 double ChartView::displayScaleDenominator() const {
@@ -1689,7 +1695,7 @@ void ChartView::setSymbolScale(double scale) {
     if (scale > 3.0) scale = 3.0;
     if (scale == symbolScale_) return;
     symbolScale_ = scale;
-    update();
+    invalidateChart();
 }
 
 void ChartView::setVesselScale(double scale) {
@@ -1702,7 +1708,7 @@ void ChartView::setVesselScale(double scale) {
 
 void ChartView::setDepthUnit(DepthUnit u) {
     if (u == depthUnit_) return;
-    depthUnit_ = u; update();   // soundings are relabelled on repaint
+    depthUnit_ = u; invalidateChart();   // soundings relabelled: rebuild cache
 }
 
 void ChartView::setDistanceUnit(DistanceUnit u) {
@@ -1772,12 +1778,99 @@ void ChartView::paintEvent(QPaintEvent*) {
         return;
     }
 
-    p.setRenderHint(QPainter::Antialiasing, !interacting_);
+    // Serve the static chart from the offscreen cache. It is reusable when the
+    // zoom and widget size are unchanged and the view has panned no further than
+    // the cached margin; then the frame is just a blit plus the dynamic overlays.
+    const double dxPx = (scx_ - cacheScx_) * ppm_;
+    const double dyPx = (scy_ - cacheScy_) * ppm_;
+    const bool sizeMatch = (cacheW_ == width() && cacheH_ == height());
+    const bool reusable = !staticDirty_ && !staticCache_.isNull()
+                          && ppm_ == cachePpm_ && sizeMatch
+                          && std::abs(dxPx) <= cacheMX_ && std::abs(dyPx) <= cacheMY_;
+    // Re-render only when settled: mid-gesture we blit the last cache (shifted, or
+    // scaled for a zoom) and let the settle frame (aaTimer_) refresh it, so a pan
+    // or zoom never pays the full chart raster per frame.
+    if (!reusable && !interacting_) renderStaticCache();
 
+    if (!staticCache_.isNull()) {
+        // Map cache-pixel space to the live camera. Equal zoom -> pure translation
+        // (crisp); different zoom (mid-gesture placeholder) -> scaled blit.
+        const QTransform blit = cacheCam_.inverted() * cameraTransform();
+        p.save();
+        p.setRenderHint(QPainter::SmoothPixmapTransform, ppm_ != cachePpm_);
+        p.setTransform(blit);
+        p.drawPixmap(0, 0, staticCache_);
+        p.restore();
+    }
+
+    // Dynamic overlays at the live camera, composited over the cached chart every
+    // frame (these move independently of the chart, so they are never cached).
     const QTransform cam = cameraTransform();
-    const QRectF vis = QRectF(scx_ - (width()  / 2.0) / ppm_,
-                              scy_ - (height() / 2.0) / ppm_,
-                              width() / ppm_, height() / ppm_);
+    p.setRenderHint(QPainter::Antialiasing, true);   // smooth the moving overlays
+    drawOwnship(p, cam);            // 3) ownship glyph (top of the chart stack)
+    drawScaleBar(p);               // 4) scale bar (lower-right)
+    // 5) Plugin overlays, in device coordinates. They use the viewport snapshot
+    // for geographic placement and don't know how the canvas is implemented.
+    if (!overlays_.empty()) {
+        ChartViewport vp;
+        vp.sceneToScreen = cam;
+        vp.ppm           = ppm_;
+        vp.size          = size();
+        vp.worldWidthM   = worldWidthM();
+        vp.centerSceneX  = scx_;
+        p.resetTransform();
+        for (IChartOverlay* o : overlays_) o->paint(p, vp);
+    }
+}
+
+// Render the static chart into the offscreen cache at the current camera, with a
+// margin around the viewport so small pans blit straight from it. Called only
+// when settled (never mid-gesture). Sizes the pixmap to device pixels.
+void ChartView::renderStaticCache() {
+    const qreal dpr = devicePixelRatioF() > 0.0 ? devicePixelRatioF() : 1.0;
+    const int W = width(), H = height();
+    if (W <= 0 || H <= 0) return;
+    // Quarter-viewport margin each side == 1.5x the viewport, matching the
+    // keepArea the cells are loaded for (no geometry exists beyond it to cache).
+    const int mx = W / 4, my = H / 4;
+    cacheMX_ = mx; cacheMY_ = my;
+    cacheW_ = W; cacheH_ = H;
+    cacheScx_ = scx_; cacheScy_ = scy_; cachePpm_ = ppm_;
+
+    const int pw = W + 2 * mx, ph = H + 2 * my;
+    const QSize devSize(int(std::lround(pw * dpr)), int(std::lround(ph * dpr)));
+    if (staticCache_.size() != devSize) staticCache_ = QPixmap(devSize);
+    staticCache_.setDevicePixelRatio(dpr);
+    staticCache_.fill(QColor(204, 224, 242));
+
+    // Cache camera: same centre/zoom as the view, but the oversized pixmap's
+    // centre maps to the view centre so the margin is symmetric.
+    QTransform cc;
+    cc.translate(pw / 2.0, ph / 2.0);
+    cc.scale(ppm_, ppm_);
+    cc.translate(-scx_, -scy_);
+    cacheCam_ = cc;
+
+    const QRectF visCache(scx_ - (pw / 2.0) / ppm_, scy_ - (ph / 2.0) / ppm_,
+                          pw / ppm_, ph / ppm_);
+    QPainter cp(&staticCache_);
+    renderStatic(cp, cc, visCache, QRectF(0, 0, pw, ph));
+    staticDirty_ = false;
+}
+
+void ChartView::invalidateChart() {
+    staticDirty_ = true;
+    update();
+}
+
+// The static chart layer. Formerly the body of paintEvent; now it always renders
+// the settled look (antialiased, point overlays shown) because the result is
+// cached and blitted during gestures rather than re-rendered per frame. `cam`,
+// `vis` and `deviceRect` are supplied by renderStaticCache (oversized for the
+// margin) instead of being read from the widget.
+void ChartView::renderStatic(QPainter& p, const QTransform& cam,
+                             const QRectF& vis, const QRectF& deviceRect) {
+    p.setRenderHint(QPainter::Antialiasing, true);
 
     QPen pen; pen.setCosmetic(true);
     // Draw one cell's vector geometry, shifted by its wrap offset.
@@ -1861,9 +1954,9 @@ void ChartView::paintEvent(QPaintEvent*) {
     // when zoomed out, cluttering the display and overshooting the shrunken
     // feature endpoints. scaminDenom is shared with the sounding/symbol pass.
     const double scaminDenom = scaminEffectiveDenominator();
-    if (symAtlas_.isLoaded() && pointLodVisible_ && !interacting_) {
+    if (symAtlas_.isLoaded() && pointLodVisible_) {
         p.resetTransform();   // device-space clips/anchors below
-        const QRectF visDev = rect().adjusted(-48, -48, 48, 48);
+        const QRectF visDev = deviceRect.adjusted(-48, -48, 48, 48);
         for (const BuiltCell* c : order) {
             const double off = c->drawOffsetX;
             QTransform t = cam;
@@ -1916,10 +2009,11 @@ void ChartView::paintEvent(QPaintEvent*) {
     // they snap back when the gesture settles (aaTimer_ clears interacting_ and
     // repaints, the same mechanism that restores antialiasing).
     p.resetTransform();
-    // Point overlays show when the zoom allows them (pointLodVisible_), except
-    // during a gesture if the user opted to hide them for a faster moving frame.
-    if (pointLodVisible_ && (!interacting_ || !hideSymbolsWhilePanning_)) {
-        const QRectF screen = rect().adjusted(-24, -24, 24, 24);
+    // Point overlays show when the zoom allows them (pointLodVisible_). They are
+    // baked into the cache at the settled look and blitted during gestures, so
+    // there is no per-frame point cost to gate on interaction here.
+    if (pointLodVisible_) {
+        const QRectF screen = deviceRect.adjusted(-24, -24, 24, 24);
 
         // SCAMIN declutter threshold (computed above, shared with the LC/AP
         // pass): point objects whose SCAMIN is smaller than this are dropped.
@@ -2066,25 +2160,6 @@ void ChartView::paintEvent(QPaintEvent*) {
                 if (clipped) p.restore();
             }
         }
-    }
-
-    // 3) Ownship overlay (top of stack).
-    drawOwnship(p, cam);
-
-    // 4) Scale bar (lower-right), drawn last so it sits above everything.
-    drawScaleBar(p);
-
-    // 5) Plugin overlays, in device coordinates. They use the viewport snapshot
-    // for geographic placement and don't know how the canvas is implemented.
-    if (!overlays_.empty()) {
-        ChartViewport vp;
-        vp.sceneToScreen = cam;
-        vp.ppm           = ppm_;
-        vp.size          = size();
-        vp.worldWidthM   = worldWidthM();
-        vp.centerSceneX  = scx_;
-        p.resetTransform();
-        for (IChartOverlay* o : overlays_) o->paint(p, vp);
     }
 }
 
