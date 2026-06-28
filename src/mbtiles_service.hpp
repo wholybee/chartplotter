@@ -1,6 +1,7 @@
 #pragma once
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QImage>
 #include <memory>
@@ -21,10 +22,10 @@ public:
     ~MbtilesService() override;
 
 public slots:
-    // Rescan a chart folder for *.mbtiles (recursive). Opens the raster ones,
-    // emits discovered() with their metadata. `gen` becomes the current
-    // generation; later tile requests must match it.
-    void setFolder(const QString& dir, quint64 gen);
+    // Rescan one or more chart folders for *.mbtiles (recursive). Opens the
+    // raster ones, emits discovered() with their combined metadata. `gen`
+    // becomes the current generation; later tile requests must match it.
+    void setFolders(const QStringList& dirs, quint64 gen);
 
     // Fetch + decode one XYZ tile. Replies via tileReady() (null QImage = the
     // tile is absent or failed to decode). Ignored if `gen` is stale.

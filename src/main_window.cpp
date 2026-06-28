@@ -60,6 +60,7 @@
 #include <QScreen>
 #include <QFileDialog>
 #include <QDir>
+#include <QStringList>
 #include <QEvent>
 #include <QMouseEvent>
 #include <QCloseEvent>
@@ -290,7 +291,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(sideMenu_, &SideMenu::zoomToChartsRequested,    view_, &ChartView::zoomToCharts);
     connect(sideMenu_, &SideMenu::autoFollowToggled,        view_, &ChartView::setAutoFollow);
     connect(view_, &ChartView::autoFollowChanged,           sideMenu_, &SideMenu::setAutoFollowChecked);
-    connect(sideMenu_, &SideMenu::chartSetSelected,         this,  &MainWindow::onChartSetSelected);
+    connect(sideMenu_, &SideMenu::chartSetToggled,          this,  &MainWindow::onChartSetToggled);
     connect(sideMenu_, &SideMenu::manageChartSetsRequested, this,  &MainWindow::manageChartSets);
     connect(sideMenu_, &SideMenu::basemapFolderRequested,   this,  &MainWindow::chooseBasemapFolder);
     connect(sideMenu_, &SideMenu::editUnitsRequested,       this,  &MainWindow::editUnits);
@@ -396,12 +397,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     statusBar()->addPermanentWidget(statusMid_);
     statusBar()->addPermanentWidget(statusRight_);
 
-    const QString saved = settings_->chartDirectory();
-    if (!saved.isEmpty() && QDir(saved).exists()) {
+    const QStringList selected = settings_->selectedDirectories();
+    bool anyExist = false;
+    for (const QString& d : selected)
+        if (QDir(d).exists()) { anyExist = true; break; }
+    if (anyExist) {
         if (settings_->hasSavedView())
             view_->setInitialView(settings_->viewLon(), settings_->viewLat(),
                                   settings_->viewScale());
-        startScan(saved);
+        rescanSelected();
     }
 }
 
@@ -441,24 +445,28 @@ void MainWindow::positionAddButton() {
     if (!sideMenu_ || !sideMenu_->isOpen()) addButton_->raise();
 }
 
-void MainWindow::onChartSetSelected(const QString& dir) {
-    // Tapping a set loads it; tapping the active set again re-scans it. Keep the
-    // current pan/zoom across the switch rather than fitting to the new set.
+void MainWindow::onChartSetToggled(const QString& dir) {
+    // Tapping a set adds it to (or removes it from) the active selection; all
+    // selected sets are then (re)loaded together. Keep the current pan/zoom
+    // across the change rather than refitting to the new combined coverage.
+    QStringList sel = settings_->selectedDirectories();
+    if (sel.contains(dir)) sel.removeAll(dir);
+    else                   sel.append(dir);
     view_->keepCurrentViewOnNextLoad();
-    settings_->setChartDirectory(dir);
-    startScan(dir);
+    settings_->setSelectedDirectories(sel);
+    rescanSelected();
 }
 
 void MainWindow::manageChartSets() {
-    const bool hadActive = !settings_->chartDirectory().isEmpty();
+    const bool hadSelection = !settings_->selectedDirectories().isEmpty();
     ChartSetsDialog dlg(settings_->chartSets(), this);
     if (dlg.exec() == QDialog::Accepted) {
         settings_->setChartSets(dlg.chartSets());
-        // If there was no active set before and the user just added the first
-        // one, activate it automatically so they don't close the menu to an
-        // empty chart with no indication of what to do next.
-        if (!hadActive && !dlg.chartSets().isEmpty())
-            onChartSetSelected(dlg.chartSets().first().directory);
+        // If nothing was selected before and the user just added the first set,
+        // activate it automatically so they don't close the menu to an empty
+        // chart with no indication of what to do next.
+        if (!hadSelection && !dlg.chartSets().isEmpty())
+            onChartSetToggled(dlg.chartSets().first().directory);
     }
 }
 
@@ -1267,24 +1275,48 @@ void MainWindow::publishOwnshipToView() {
     if (view_) view_->setOwnship(navStore_->ownship());
 }
 
-void MainWindow::startScan(const QString& dir) {
+void MainWindow::rescanSelected() {
     if (catalog_->isScanning()) return;
-    root_ = dir;
+    const QStringList selected = settings_->selectedDirectories();
+
     encScanDone_ = false;
     encScanOk_ = false;
     encScanMsg_.clear();
     rasterCount_ = 0;
-    // Pick a registered chart-source plugin (e.g. CM93) that claims this folder;
-    // nullptr falls back to the built-in ENC/S-57 reader. The catalog and view
-    // must agree on the backend, so set both before the scan starts.
-    IChartSource* src = chartSources_.pick(dir);
-    catalog_->setSource(src);
-    view_->setChartSource(src);
-    statusLeft_->setText(dir + QStringLiteral("   —   scanning…"));
+
+    // Pick the active vector backend: the source of the first selected set that
+    // resolves to a plugin (e.g. CM93), else the built-in ENC/S-57 reader
+    // (nullptr). The catalog and view share one backend, so vector sets that
+    // need a *different* one can't be quilted together — those are skipped with a
+    // note. (Raster is backend-independent and loads from every selected set.)
+    IChartSource* activeSrc = nullptr;
+    for (const QString& d : selected) {
+        if (IChartSource* s = chartSources_.pick(d)) { activeSrc = s; break; }
+    }
+    QStringList vectorDirs;
+    QStringList skipped;
+    for (const QString& d : selected) {
+        if (chartSources_.pick(d) == activeSrc) vectorDirs << d;
+        else                                    skipped << QDir(d).dirName();
+    }
+
+    catalog_->setSource(activeSrc);
+    view_->setChartSource(activeSrc);
+
+    // Status prefix summarising the active selection.
+    if (selected.isEmpty())        root_ = QStringLiteral("No chart sets selected");
+    else if (selected.size() == 1) root_ = selected.first();
+    else root_ = QStringLiteral("%1 chart sets").arg(selected.size());
+    QString status = root_ + QStringLiteral("   —   scanning…");
+    if (!skipped.isEmpty())
+        status += QStringLiteral("   (different chart backend skipped: %1)")
+                      .arg(skipped.join(QStringLiteral(", ")));
+    statusLeft_->setText(status);
     statusMid_->clear();
-    catalog_->startScan(dir);
-    // The raster layer scans the same folder for *.mbtiles, in parallel.
-    view_->setRasterChartFolder(dir);
+
+    catalog_->startScan(vectorDirs);
+    // The raster layer scans every selected folder for *.mbtiles, in parallel.
+    view_->setRasterChartFolders(selected);
 }
 
 void MainWindow::onScanProgress(int done, int total) {

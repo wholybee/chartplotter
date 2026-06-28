@@ -523,7 +523,7 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
     mbThread_  = new QThread(this);
     mbService_ = new MbtilesService;          // no parent: moved to the worker
     mbService_->moveToThread(mbThread_);
-    connect(this, &ChartView::rasterSetFolder,   mbService_, &MbtilesService::setFolder);
+    connect(this, &ChartView::rasterSetFolders,  mbService_, &MbtilesService::setFolders);
     connect(this, &ChartView::rasterRequestTile, mbService_, &MbtilesService::requestTile);
     connect(mbService_, &MbtilesService::discovered, this, &ChartView::onRasterDiscovered);
     connect(mbService_, &MbtilesService::tileReady,  this, &ChartView::onRasterTileReady);
@@ -745,7 +745,7 @@ void ChartView::onCatalogFinished(bool ok, const QString&) {
     clearAll();
     haveCatalog_ = ok && catalog_ && catalog_->bounds().valid();
     // NB: do NOT reset userInteracted_ here. It was already reset at scan start
-    // (setRasterChartFolder), and the raster discovery runs in parallel: if it
+    // (setRasterChartFolders), and the raster discovery runs in parallel: if it
     // finished first it may have already restored the saved view (setting
     // userInteracted_), and resetting now would let the auto-fit below clobber it.
 
@@ -1392,7 +1392,7 @@ void ChartView::setVectorOverlay(bool on) {
 
 // ---- raster (MBTiles) layer ------------------------------------------------
 
-void ChartView::setRasterChartFolder(const QString& dir) {
+void ChartView::setRasterChartFolders(const QStringList& dirs) {
     // New generation invalidates any in-flight discovery / tile replies.
     ++rasterGen_;
     rasterCharts_.clear();
@@ -1401,12 +1401,12 @@ void ChartView::setRasterChartFolder(const QString& dir) {
     tileInFlight_.clear();
     tileAbsent_.clear();
     // A folder change is a fresh start: allow the next discovery (or the ENC
-    // catalog) to frame the charts. Guards against the old folder's view
+    // catalog) to frame the charts. Guards against the old folders' view
     // lingering over a new, geographically distant chart set. This is the single
     // per-scan reset of the flag — onCatalogFinished must not reset it again, or
     // it would clobber a saved view that the parallel raster path had restored.
     userInteracted_ = false;
-    emit rasterSetFolder(dir, rasterGen_);
+    emit rasterSetFolders(dirs, rasterGen_);
     update();
 }
 

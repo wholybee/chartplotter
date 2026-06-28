@@ -48,7 +48,7 @@ protected:
     void closeEvent(QCloseEvent* e) override;
 
 private slots:
-    void onChartSetSelected(const QString& dir);
+    void onChartSetToggled(const QString& dir);
     void manageChartSets();
     void chooseBasemapFolder();
     void editUnits();
@@ -82,7 +82,7 @@ private slots:
     void onViewStatus(const QString& text);
 
 private:
-    void startScan(const QString& dir);
+    void rescanSelected();       // (re)load all currently-selected chart sets
     void refreshChartStatus();   // compose status from ENC + raster results
     void positionMenuButton();
 

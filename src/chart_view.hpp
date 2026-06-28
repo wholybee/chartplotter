@@ -197,10 +197,11 @@ public:
     // Intended for an imagery MBTiles base (e.g. satellite). Repaint only.
     void setVectorOverlay(bool on);
 
-    // Point the raster-chart layer at a folder: it is scanned (recursively, on a
-    // worker thread) for *.mbtiles files, which are drawn beneath the ENC vector
-    // cells. Pass the same folder used for the ENC chart set. Empty clears it.
-    void setRasterChartFolder(const QString& dir);
+    // Point the raster-chart layer at one or more folders: each is scanned
+    // (recursively, on a worker thread) for *.mbtiles files, which are drawn
+    // beneath the ENC vector cells. Pass the active chart-set folders. Empty
+    // clears the layer.
+    void setRasterChartFolders(const QStringList& dirs);
     // Detail-level bias, in fractional bands. 0 = nominal mapping from visible
     // width to band; positive pulls in higher-detail cells (more detail on
     // screen); negative backs off. Range -2.0..+2.0.
@@ -278,7 +279,7 @@ signals:
     void objectsPicked(const QList<ChartObjectInfo>& objects, const QPoint& globalPos);
 
     // To the MBTiles worker thread (queued). Not for external use.
-    void rasterSetFolder(const QString& dir, quint64 gen);
+    void rasterSetFolders(const QStringList& dirs, quint64 gen);
     void rasterRequestTile(int chartId, int z, int x, int y, quint64 gen);
 
 protected:

@@ -11,31 +11,35 @@ MbtilesService::MbtilesService(QObject* parent) : QObject(parent) {
 
 MbtilesService::~MbtilesService() = default;
 
-void MbtilesService::setFolder(const QString& dir, quint64 gen) {
+void MbtilesService::setFolders(const QStringList& dirs, quint64 gen) {
     gen_ = gen;
     readers_.clear();
 
-    QVector<MbtilesMeta> charts;
-    if (!dir.isEmpty()) {
-        QStringList files;
+    // Gather *.mbtiles across every folder, then open in a stable order so the
+    // chartId (index into the combined list) is deterministic.
+    QStringList files;
+    for (const QString& dir : dirs) {
+        if (dir.isEmpty()) continue;
         QDirIterator it(dir, QStringList{QStringLiteral("*.mbtiles")},
                         QDir::Files, QDirIterator::Subdirectories);
         while (it.hasNext()) files << it.next();
-        files.sort();
+    }
+    files.removeDuplicates();
+    files.sort();
 
-        for (const QString& path : files) {
-            auto reader = std::make_unique<MbtilesReader>();
-            QString err;
-            if (!reader->open(path, err)) continue;   // unreadable: skip silently
+    QVector<MbtilesMeta> charts;
+    for (const QString& path : files) {
+        auto reader = std::make_unique<MbtilesReader>();
+        QString err;
+        if (!reader->open(path, err)) continue;   // unreadable: skip silently
 
-            if (!reader->meta().isRaster()) {
-                emit message(QStringLiteral("Skipped vector MBTiles (unsupported): %1")
-                                 .arg(QFileInfo(path).fileName()));
-                continue;
-            }
-            charts.push_back(reader->meta());
-            readers_.push_back(std::move(reader));     // index == chartId
+        if (!reader->meta().isRaster()) {
+            emit message(QStringLiteral("Skipped vector MBTiles (unsupported): %1")
+                             .arg(QFileInfo(path).fileName()));
+            continue;
         }
+        charts.push_back(reader->meta());
+        readers_.push_back(std::move(reader));     // index == chartId
     }
 
     emit discovered(charts, gen);

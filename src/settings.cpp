@@ -4,7 +4,8 @@
 #include <cmath>
 
 namespace {
-constexpr auto kChartDir  = "charts/directory";
+constexpr auto kChartDir  = "charts/directory";   // legacy single active dir
+constexpr auto kSelected  = "charts/selected";    // directories of active sets
 constexpr auto kChartSets = "charts/sets";
 constexpr auto kSoundings = "display/showSoundings";
 constexpr auto kSymbols   = "display/showSymbols";
@@ -49,6 +50,7 @@ constexpr auto kDangAnchoredKn  = "ships/dangerAnchoredSogKn";
 Settings::Settings(QObject* parent) : QObject(parent) {
     QSettings s;
     chartDir_          = s.value(QLatin1String(kChartDir)).toString();
+    selectedDirs_      = s.value(QLatin1String(kSelected)).toStringList();
     showSoundings_     = s.value(QLatin1String(kSoundings), true).toBool();
     showSymbols_       = s.value(QLatin1String(kSymbols),   true).toBool();
     showText_          = s.value(QLatin1String(kText),      true).toBool();
@@ -115,6 +117,13 @@ Settings::Settings(QObject* parent) : QObject(parent) {
         if (cs.name.isEmpty()) cs.name = chartDir_;
         chartSets_.push_back(cs);
         saveChartSets();
+    }
+
+    // Migrate the single-active-directory selection to the multi-select list: if
+    // nothing is selected yet but a chart directory was remembered, pre-select it.
+    if (selectedDirs_.isEmpty() && !chartDir_.isEmpty()) {
+        selectedDirs_ << chartDir_;
+        QSettings().setValue(QLatin1String(kSelected), selectedDirs_);
     }
 }
 
@@ -323,11 +332,15 @@ void Settings::setBasemapDirectory(const QString& dir) {
     emit basemapDirectoryChanged(dir);
 }
 
-void Settings::setChartDirectory(const QString& dir) {
-    if (dir == chartDir_) return;
-    chartDir_ = dir;
-    QSettings().setValue(QLatin1String(kChartDir), dir);
-    emit chartDirectoryChanged(dir);
+void Settings::setSelectedDirectories(const QStringList& dirs) {
+    // De-duplicate while preserving order.
+    QStringList unique;
+    for (const QString& d : dirs)
+        if (!d.isEmpty() && !unique.contains(d)) unique << d;
+    if (unique == selectedDirs_) return;
+    selectedDirs_ = unique;
+    QSettings().setValue(QLatin1String(kSelected), selectedDirs_);
+    emit selectedDirectoriesChanged(selectedDirs_);
 }
 
 void Settings::setShowSoundings(bool on) {

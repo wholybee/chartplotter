@@ -23,19 +23,26 @@ int ChartCatalog::bandFromPath(const QString& path) {
     return 0;
 }
 
-void ChartCatalog::startScan(const QString& root) {
+void ChartCatalog::startScan(const QStringList& roots) {
     if (scanning_.load()) return;
     scanning_.store(true);
-    root_ = root;
+    roots_ = roots;
 
-    // Per-root cache file in the app data dir (computed here, on the UI thread).
+    // One per-root cache file in the app data dir, keyed by the root's hash so
+    // each folder keeps its own footprint cache regardless of the others.
+    // (Computed here, on the UI thread.)
     QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     QDir().mkpath(dir + "/catalog_cache");
-    QByteArray h = QCryptographicHash::hash(root.toUtf8(), QCryptographicHash::Sha1).toHex();
-    QString cachePath = dir + "/catalog_cache/" + QString::fromLatin1(h) + ".json";
+    QStringList cachePaths;
+    cachePaths.reserve(roots.size());
+    for (const QString& root : roots) {
+        QByteArray h = QCryptographicHash::hash(root.toUtf8(), QCryptographicHash::Sha1).toHex();
+        cachePaths << dir + "/catalog_cache/" + QString::fromLatin1(h) + ".json";
+    }
 
-    QString r = root;
-    (void)QtConcurrent::run([this, r, cachePath]() { runScan(r, cachePath); });
+    QStringList r = roots;
+    QStringList c = cachePaths;
+    (void)QtConcurrent::run([this, r, c]() { runScan(r, c); });
 }
 
 namespace {
@@ -122,87 +129,98 @@ BBox projectExtent(double minLon, double minLat, double maxLon, double maxLat) {
 
 } // namespace
 
-void ChartCatalog::runScan(QString root, QString cachePath) {
+void ChartCatalog::runScan(QStringList roots, QStringList cachePaths) {
     // A registered chart source (e.g. CM93 plugin) supplies cells directly; the
     // built-in *.000/GDAL path below is bypassed. The source owns its own
-    // footprint caching, so the JSON cache (cachePath) is unused in that case.
-    if (source_) { runScanFromSource(std::move(root)); return; }
+    // footprint caching, so the JSON caches are unused in that case.
+    if (source_) { runScanFromSource(std::move(roots)); return; }
 
-    std::vector<CellRecord> recs;
-    BBox bounds;
-
-    // 1) Enumerate base cells (*.000), recursively.
-    QStringList files;
-    QDirIterator it(root, QDir::Files, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        const QString f = it.next();
-        if (QFileInfo(f).suffix().compare(QStringLiteral("000"), Qt::CaseInsensitive) == 0)
-            files << f;
+    // 1) Enumerate base cells (*.000) across every root, recursively. Track which
+    //    cache file each root's files belong to so per-root caching is preserved.
+    struct RootFiles { int rootIdx; QStringList files; };
+    std::vector<RootFiles> perRoot;
+    int total = 0;
+    for (int i = 0; i < roots.size(); ++i) {
+        QStringList files;
+        QDirIterator it(roots[i], QDir::Files, QDirIterator::Subdirectories);
+        while (it.hasNext()) {
+            const QString f = it.next();
+            if (QFileInfo(f).suffix().compare(QStringLiteral("000"), Qt::CaseInsensitive) == 0)
+                files << f;
+        }
+        files.sort();
+        total += files.size();
+        perRoot.push_back({i, std::move(files)});
     }
-    files.sort();
 
-    const int total = files.size();
     if (total == 0) {
         cells_.clear();
         bounds_ = BBox{};
         scanning_.store(false);
-        emit finished(false, QStringLiteral("No ENC cells (*.000) found under:\n") + root);
+        emit finished(false, QStringLiteral("No ENC cells (*.000) found under:\n")
+                             + roots.join(QStringLiteral("\n")));
         return;
     }
 
-    // 2) Resolve each footprint, using the disk cache where the file is unchanged.
-    QHash<QString, CacheEntry> cache = loadCache(cachePath);
-    QHash<QString, CacheEntry> updated;
-
+    // 2) Resolve each footprint, using each root's disk cache where the file is
+    //    unchanged. Aggregate cells and the overall bounds across all roots.
+    std::vector<CellRecord> recs;
+    BBox bounds;
     int done = 0;
-    for (const QString& path : files) {
-        CellRecord r;
-        r.path = path;
-        r.band = bandFromPath(path);
+    for (const RootFiles& rf : perRoot) {
+        const QString& cachePath = cachePaths[rf.rootIdx];
+        QHash<QString, CacheEntry> cache = loadCache(cachePath);
+        QHash<QString, CacheEntry> updated;
 
-        const QFileInfo fi(path);
-        const qint64 sz = fi.size();
-        const qint64 mt = fi.lastModified().toSecsSinceEpoch();
+        for (const QString& path : rf.files) {
+            CellRecord r;
+            r.path = path;
+            r.band = bandFromPath(path);
 
-        CacheEntry e;
-        auto cached = cache.constFind(path);
-        bool ok = false;
-        if (cached != cache.constEnd() && cached->size == sz && cached->mtime == mt) {
-            e = *cached;
-            ok = true;
-        } else {
-            e.size = sz; e.mtime = mt;
-            std::string err;
-            // Prefer the real M_COVR coverage footprint; its rings double as the
-            // bbox. Fall back to the plain extent box (no coverage rings) when a
-            // cell has no usable M_COVR.
-            if (chart::computeCellCoverage(path.toStdString(), e.coverage, e.bbox, err)) {
+            const QFileInfo fi(path);
+            const qint64 sz = fi.size();
+            const qint64 mt = fi.lastModified().toSecsSinceEpoch();
+
+            CacheEntry e;
+            auto cached = cache.constFind(path);
+            bool ok = false;
+            if (cached != cache.constEnd() && cached->size == sz && cached->mtime == mt) {
+                e = *cached;
                 ok = true;
             } else {
-                double minLon, minLat, maxLon, maxLat;
-                if (chart::computeCellExtentLonLat(path.toStdString(),
-                                                   minLon, minLat, maxLon, maxLat, err)) {
-                    e.bbox = projectExtent(minLon, minLat, maxLon, maxLat);
-                    e.coverage.clear();
+                e.size = sz; e.mtime = mt;
+                std::string err;
+                // Prefer the real M_COVR coverage footprint; its rings double as
+                // the bbox. Fall back to the plain extent box (no coverage rings)
+                // when a cell has no usable M_COVR.
+                if (chart::computeCellCoverage(path.toStdString(), e.coverage, e.bbox, err)) {
                     ok = true;
+                } else {
+                    double minLon, minLat, maxLon, maxLat;
+                    if (chart::computeCellExtentLonLat(path.toStdString(),
+                                                       minLon, minLat, maxLon, maxLat, err)) {
+                        e.bbox = projectExtent(minLon, minLat, maxLon, maxLat);
+                        e.coverage.clear();
+                        ok = true;
+                    }
                 }
             }
+
+            if (ok) {
+                r.bbox = e.bbox;
+                r.coverage = e.coverage;
+                r.extentValid = r.bbox.valid();
+                if (r.extentValid) bounds.expand(r.bbox);
+                updated.insert(path, e);
+            }
+            recs.push_back(std::move(r));
+
+            if ((++done % 8) == 0 || done == total)
+                emit progress(done, total);
         }
 
-        if (ok) {
-            r.bbox = e.bbox;
-            r.coverage = e.coverage;
-            r.extentValid = r.bbox.valid();
-            if (r.extentValid) bounds.expand(r.bbox);
-            updated.insert(path, e);
-        }
-        recs.push_back(std::move(r));
-
-        if ((++done % 8) == 0 || done == total)
-            emit progress(done, total);
+        saveCache(cachePath, updated);
     }
-
-    saveCache(cachePath, updated);
 
     cells_  = std::move(recs);
     bounds_ = bounds;
@@ -210,32 +228,42 @@ void ChartCatalog::runScan(QString root, QString cachePath) {
     emit finished(true, QStringLiteral("%1 cell(s) cataloged").arg(total));
 }
 
-void ChartCatalog::runScanFromSource(QString root) {
+void ChartCatalog::runScanFromSource(QStringList roots) {
+    // Catalog every root through the source and adopt its cells as CellRecords
+    // (the opaque id becomes the cell path/key the rest of the pipeline uses).
+    // Band, bbox and coverage come straight from the source — no GDAL, no
+    // filename band parsing. All roots here share source_ by construction.
     std::vector<ChartSourceCell> srcCells;
     QString err;
-    // Forward the source's progress to our progress() signal. This runs on the
-    // scan worker thread; the connection to the UI is queued.
-    const bool ok = source_->catalog(root, srcCells, err,
-        [this](int done, int total) { emit progress(done, total); });
-    if (!ok) {
-        cells_.clear();
-        bounds_ = BBox{};
-        scanning_.store(false);
-        emit finished(false, err.isEmpty()
-            ? (QStringLiteral("Chart source could not catalog:\n") + root) : err);
-        return;
+    for (const QString& root : roots) {
+        std::vector<ChartSourceCell> rootCells;
+        QString rootErr;
+        // Forward the source's progress to our progress() signal. Runs on the
+        // scan worker thread; the connection to the UI is queued. (Per-root
+        // progress; the source has no notion of the combined total.)
+        const bool ok = source_->catalog(root, rootCells, rootErr,
+            [this](int done, int total) { emit progress(done, total); });
+        if (!ok) {
+            if (err.isEmpty())
+                err = rootErr.isEmpty()
+                    ? (QStringLiteral("Chart source could not catalog:\n") + root)
+                    : rootErr;
+            continue;   // one bad root shouldn't sink the others
+        }
+        for (ChartSourceCell& c : rootCells)
+            srcCells.push_back(std::move(c));
     }
+
     if (srcCells.empty()) {
         cells_.clear();
         bounds_ = BBox{};
         scanning_.store(false);
-        emit finished(false, QStringLiteral("No charts found under:\n") + root);
+        emit finished(false, err.isEmpty()
+            ? (QStringLiteral("No charts found under:\n") + roots.join(QStringLiteral("\n")))
+            : err);
         return;
     }
 
-    // Adopt the source's cells as CellRecords (its opaque id becomes the cell
-    // path/key the rest of the pipeline uses). Band, bbox and coverage come
-    // straight from the source — no GDAL, no filename band parsing.
     std::vector<CellRecord> recs;
     recs.reserve(srcCells.size());
     BBox bounds;

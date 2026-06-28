@@ -155,10 +155,10 @@ SideMenu::SideMenu(Settings* settings, QWidget* parent)
         if (!open_) setVisible(false);   // hide overlay once the slide-out ends
     });
 
-    // Keep the chart-set list (and its active highlight) current.
+    // Keep the chart-set list (and its active highlights) current.
     connect(settings_, &Settings::chartSetsChanged, this, &SideMenu::rebuildChartSets);
-    connect(settings_, &Settings::chartDirectoryChanged,
-            this, [this](const QString&) { rebuildChartSets(); });
+    connect(settings_, &Settings::selectedDirectoriesChanged,
+            this, [this](const QStringList&) { rebuildChartSets(); });
 
     if (parent) parent->installEventFilter(this);
 }
@@ -477,9 +477,9 @@ void SideMenu::rebuildChartSets() {
         return;
     }
 
-    const QString active = settings_->chartDirectory();
+    const QStringList& selected = settings_->selectedDirectories();
     for (const ChartSet& cs : sets) {
-        const bool isActive = (cs.directory == active);
+        const bool isActive = selected.contains(cs.directory);
         auto* b = makeAction((isActive ? QStringLiteral("✓  ")    // check mark
                                         : QStringLiteral("     ")) + cs.name);
         b->setToolTip(cs.directory);
@@ -488,9 +488,10 @@ void SideMenu::rebuildChartSets() {
                 QStringLiteral("QPushButton{ color:%1; font-weight:600; }")
                     .arg(theme::menu().accent));
         const QString dir = cs.directory;
+        // Multi-select: tapping toggles this set in/out of the active selection.
+        // Keep the menu open so several sets can be toggled in one visit.
         connect(b, &QPushButton::clicked, this, [this, dir] {
-            emit chartSetSelected(dir);
-            if (autoHide_) closeMenu();
+            emit chartSetToggled(dir);
         });
         chartSetsBox_->addWidget(b);
     }

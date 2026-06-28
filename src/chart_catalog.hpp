@@ -1,6 +1,7 @@
 #pragma once
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <atomic>
 #include <vector>
 #include "chart_loader.hpp"
@@ -35,13 +36,14 @@ public:
     // Set on the UI thread before startScan(); read by the scan worker.
     void setSource(IChartSource* src) { source_ = src; }
 
-    // Begins an asynchronous scan. Ignored if a scan is already running.
-    void startScan(const QString& root);
+    // Begins an asynchronous scan of one or more chart-set roots, aggregating
+    // their cells into a single catalog. Ignored if a scan is already running.
+    void startScan(const QStringList& roots);
 
     bool isScanning() const { return scanning_.load(); }
     const std::vector<CellRecord>& cells() const { return cells_; }   // valid after finished(true)
     BBox bounds() const { return bounds_; }
-    QString root() const { return root_; }
+    QStringList roots() const { return roots_; }
 
     // Parse the navigational-purpose digit from an ENC cell filename.
     static int bandFromPath(const QString& path);
@@ -51,12 +53,13 @@ signals:
     void finished(bool ok, const QString& message);
 
 private:
-    void runScan(QString root, QString cachePath);   // worker-thread body
-    void runScanFromSource(QString root);            // worker-thread body (plugin)
+    // worker-thread bodies. cachePaths[i] is the disk cache for roots[i].
+    void runScan(QStringList roots, QStringList cachePaths);
+    void runScanFromSource(QStringList roots);
 
     std::vector<CellRecord> cells_;
     BBox    bounds_;
-    QString root_;
+    QStringList roots_;
     std::atomic<bool> scanning_{false};
     IChartSource* source_ = nullptr;   // null = built-in ENC reader
 };

@@ -24,8 +24,11 @@ class Settings : public QObject {
 public:
     explicit Settings(QObject* parent = nullptr);
 
-    // The directory of the chart set currently loaded ("active").
-    QString chartDirectory() const { return chartDir_; }
+    // Directories of the chart sets currently selected ("active"). More than one
+    // may be active at a time; their charts combine (e.g. a raster set in one
+    // folder layered with a vector set in another). Order follows the chart-set
+    // list. Empty means nothing is loaded.
+    const QStringList& selectedDirectories() const { return selectedDirs_; }
     bool showSoundings() const { return showSoundings_; }
     bool showSymbols() const { return showSymbols_; }
     // Object text labels (S-57 OBJNAM) drawn next to point objects.
@@ -137,7 +140,7 @@ public:
     QStringList dataSourcePriority() const { return dataSourcePriority_; }
 
 public slots:
-    void setChartDirectory(const QString& dir);
+    void setSelectedDirectories(const QStringList& dirs);
     void setShowSoundings(bool on);
     void setShowSymbols(bool on);
     void setShowText(bool on);
@@ -171,7 +174,7 @@ public slots:
                            bool anchoredSafeEnabled, double anchoredSogKn);
 
 signals:
-    void chartDirectoryChanged(const QString& dir);
+    void selectedDirectoriesChanged(const QStringList& dirs);
     void showSoundingsChanged(bool on);
     void showSymbolsChanged(bool on);
     void showTextChanged(bool on);
@@ -204,7 +207,8 @@ private:
     void loadChartSets();
     void saveChartSets();
 
-    QString chartDir_;
+    QString chartDir_;            // legacy single-active dir; read only for migration
+    QStringList selectedDirs_;    // directories of the active chart sets
     bool showSoundings_ = true;
     bool showSymbols_ = true;
     bool showText_ = true;
