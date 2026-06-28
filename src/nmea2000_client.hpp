@@ -46,6 +46,11 @@ public:
     // the connection is enabled and up. Used by the navigation-output sender.
     void transmit(const N2kFrame& frame);
 
+    // Whether transmit() would actually send right now: the connection is enabled
+    // and the link is up (TCP connected, or a UDP socket exists). Drives the nav
+    // display's transmit indicator.
+    bool canTransmit() const;
+
 public slots:
     // Apply a new configuration. Tears down any existing connection and, if
     // enabled, starts a fresh one. Safe to call repeatedly.

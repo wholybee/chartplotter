@@ -115,7 +115,7 @@ N2kFrame buildRouteWp(const NavigationData& n) {
 }
 } // namespace
 
-N2kNavSender::N2kNavSender(const NavDataStore* store, Nmea2000Client* client,
+N2kNavSender::N2kNavSender(NavDataStore* store, Nmea2000Client* client,
                            QString ownSourceId, QObject* parent)
     : QObject(parent), store_(store), client_(client),
       ownSourceId_(std::move(ownSourceId)) {
@@ -127,10 +127,16 @@ N2kNavSender::N2kNavSender(const NavDataStore* store, Nmea2000Client* client,
 void N2kNavSender::onNavigationChanged() {
     if (!store_ || !client_) return;
     const NavigationData& n = store_->navigation();
-    if (!n.active) return;
-    // Loop guard: never re-transmit navigation derived from this very link.
-    if (!ownSourceId_.isEmpty()
-        && n.source.compare(ownSourceId_, Qt::CaseInsensitive) == 0) return;
+
+    // Decide whether we will actually put PGNs on the wire this tick, and publish
+    // that so the nav display's transmit indicator reflects reality: a route must
+    // be active, the loop guard must not be suppressing us, and the link must be
+    // up.
+    const bool suppressed = !ownSourceId_.isEmpty()
+        && n.source.compare(ownSourceId_, Qt::CaseInsensitive) == 0;
+    const bool transmitting = n.active && !suppressed && client_->canTransmit();
+    store_->setNavTransmitting(ownSourceId_, transmitting);
+    if (!transmitting) return;
 
     client_->transmit(buildXte(n));
     client_->transmit(buildNavData(n));

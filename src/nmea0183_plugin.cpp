@@ -44,8 +44,12 @@ void Nmea0183Plugin::initialize(ICoreApi* core) {
     // While a route is being navigated, generate APB/RMB/RMC from the nav store
     // and transmit them back out this connection (skipped if the navigation data
     // itself originated from NMEA 0183, to prevent a feedback loop).
-    navSender_ = std::make_unique<Nmea0183NavSender>(core_->navData(), client_.get(),
-                                                     QStringLiteral("nmea0183"));
+    // The sender also records this link's transmit status into the store (read by
+    // the nav display); navData() is a const view of the core's real store, so
+    // cast away const to get the mutable handle.
+    navSender_ = std::make_unique<Nmea0183NavSender>(
+        const_cast<NavDataStore*>(core_->navData()), client_.get(),
+        QStringLiteral("nmea0183"));
 
     loadConfig();
     client_->setConfig(transport_, host_, port_, enabled_);

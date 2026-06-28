@@ -36,8 +36,12 @@ void Nmea2000Plugin::initialize(ICoreApi* core) {
     // While a route is being navigated, transmit PGN 129283/129284/129285 from
     // the nav store out this connection (skipped if the navigation data itself
     // came from NMEA 2000, to prevent a feedback loop).
-    navSender_ = std::make_unique<N2kNavSender>(core_->navData(), client_.get(),
-                                                QStringLiteral("nmea2000"));
+    // The sender also records this link's transmit status into the store (read by
+    // the nav display); navData() is a const view of the core's real store, so
+    // cast away const to get the mutable handle.
+    navSender_ = std::make_unique<N2kNavSender>(
+        const_cast<NavDataStore*>(core_->navData()), client_.get(),
+        QStringLiteral("nmea2000"));
 
     loadConfig();
     client_->setConfig(transport_, format_, host_, port_, enabled_);

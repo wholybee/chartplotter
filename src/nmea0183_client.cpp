@@ -124,6 +124,12 @@ void Nmea0183Client::stop() {
     setDecoding(false);
 }
 
+bool Nmea0183Client::canTransmit() const {
+    if (transport_ == NmeaTransport::Tcp)
+        return tcp_ && tcp_->state() == QAbstractSocket::ConnectedState;
+    return udp_ != nullptr;   // a bound UDP socket can always send/broadcast
+}
+
 void Nmea0183Client::transmit(const QByteArray& sentence) {
     if (sentence.isEmpty()) return;
     bool sent = false;

@@ -37,6 +37,14 @@ void NavDataStore::clearNavigation() {
     emit navigationChanged();
 }
 
+void NavDataStore::setNavTransmitting(const QString& sourceId, bool on) {
+    if (sourceId.isEmpty()) return;
+    auto it = navTransmitting_.find(sourceId);
+    if (it != navTransmitting_.end() && it.value() == on) return;   // unchanged
+    navTransmitting_[sourceId] = on;
+    emit navTransmitStateChanged();
+}
+
 // ---- publishing ------------------------------------------------------------
 
 // Priority index of a source (0 = highest). Unknown sources rank below all

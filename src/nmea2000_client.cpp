@@ -156,6 +156,13 @@ QByteArray serializeActisenseAscii(const N2kFrame& f) {
 }
 } // namespace
 
+bool Nmea2000Client::canTransmit() const {
+    if (!enabled_) return false;
+    if (transport_ == N2kTransport::Tcp)
+        return tcp_ && tcp_->state() == QAbstractSocket::ConnectedState;
+    return udp_ != nullptr;
+}
+
 void Nmea2000Client::transmit(const N2kFrame& frame) {
     if (!enabled_) return;
     const QByteArray line = serializeActisenseAscii(frame);

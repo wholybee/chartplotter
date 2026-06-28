@@ -31,6 +31,12 @@ public:
 
     bool isDecoding() const { return decoding_; }
 
+    // Whether transmit() would actually put bytes on the wire right now: the link
+    // is up (TCP connected, or a bound UDP socket exists). Drives the nav
+    // display's transmit indicator, which must reflect real link state rather
+    // than just the loop guard.
+    bool canTransmit() const;
+
 public slots:
     // Apply a new configuration. Tears down any existing connection and, if
     // enabled, starts a fresh one. Safe to call repeatedly.

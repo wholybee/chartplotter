@@ -61,7 +61,7 @@ QString cleanId(const QString& id) {
 }
 }  // namespace
 
-Nmea0183NavSender::Nmea0183NavSender(const NavDataStore* store, Nmea0183Client* client,
+Nmea0183NavSender::Nmea0183NavSender(NavDataStore* store, Nmea0183Client* client,
                                      QString ownSourceId, QObject* parent)
     : QObject(parent), store_(store), client_(client),
       ownSourceId_(std::move(ownSourceId)) {
@@ -73,10 +73,16 @@ Nmea0183NavSender::Nmea0183NavSender(const NavDataStore* store, Nmea0183Client* 
 void Nmea0183NavSender::onNavigationChanged() {
     if (!store_ || !client_) return;
     const NavigationData& n = store_->navigation();
-    if (!n.active) return;
-    // Loop guard: never re-transmit navigation derived from this very link.
-    if (!ownSourceId_.isEmpty()
-        && n.source.compare(ownSourceId_, Qt::CaseInsensitive) == 0) return;
+
+    // Decide whether we will actually put sentences on the wire this tick, and
+    // publish that so the nav display's transmit indicator reflects reality: a
+    // route must be active, the loop guard must not be suppressing us, and the
+    // link must be up.
+    const bool suppressed = !ownSourceId_.isEmpty()
+        && n.source.compare(ownSourceId_, Qt::CaseInsensitive) == 0;
+    const bool transmitting = n.active && !suppressed && client_->canTransmit();
+    store_->setNavTransmitting(ownSourceId_, transmitting);
+    if (!transmitting) return;
 
     const OwnshipState& os = store_->ownship();
     const bool haveFix = os.latitudeDeg.valid() && os.longitudeDeg.valid();
