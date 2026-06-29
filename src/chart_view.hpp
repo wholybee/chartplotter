@@ -488,11 +488,10 @@ private:
     bool    basemapBuilding_ = false;
 
     // Static-chart pixmap cache (Fix 2). The basemap+raster+cells+points layer is
-    // rendered once into an oversized pixmap (the viewport plus a full-viewport
-    // margin on each side, still within the cell keepArea) and blitted beneath the
-    // dynamic overlays each frame, so moving overlays (ownship, AIS, routes) and
-    // in-margin pans don't re-rasterize the chart. It is re-rendered only when
-    // settled and the camera has left the
+    // rendered once into an oversized pixmap (the viewport plus a modest margin)
+    // and blitted beneath the dynamic overlays each frame, so moving overlays
+    // (ownship, AIS, routes) and in-margin pans don't re-rasterize the chart. It
+    // is re-rendered only when settled and the camera has left the
     // cached region, the zoom/size changed, or staticDirty_ was set by a content
     // change (new cell, toggle, …). Mid-gesture the last cache is blitted shifted
     // (or scaled for zoom) and refreshed on settle.

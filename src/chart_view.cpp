@@ -1044,8 +1044,8 @@ void ChartView::updateVisibleCells() {
     std::sort(cands.begin(), cands.end(),
               [](const Cand& a, const Cand& b) { return a.rec->band > b.rec->band; });
 
-    active_.clear();
-    drawClip_.clear();
+    QSet<QString> newActive;
+    QHash<QString, QPainterPath> newDrawClip;
     QPainterPath covered;                  // union of finer coverage, common frame
     covered.setFillRule(Qt::WindingFill);
 
@@ -1054,7 +1054,7 @@ void ChartView::updateVisibleCells() {
     for (const CellRecord& c : cells) {
         if (!c.extentValid || c.band != 0) continue;
         const double off = wrapOffsetFor((c.bbox.minx + c.bbox.maxx) / 2.0);
-        if (shiftX(c.bbox, off).intersects(keepArea)) active_.insert(c.path);
+        if (shiftX(c.bbox, off).intersects(keepArea)) newActive.insert(c.path);
     }
 
     for (std::size_t i = 0; i < cands.size();) {
@@ -1073,21 +1073,32 @@ void ChartView::updateVisibleCells() {
             bandUnion.addPath(cov);
 
             if (coveredByFiner.isEmpty() || !coveredByFiner.intersects(cov)) {
-                active_.insert(c.path);                 // open: contributes, no clip
+                newActive.insert(c.path);               // open: contributes, no clip
                 continue;
             }
             const QPainterPath contrib = cov.subtracted(coveredByFiner);
             if (contrib.isEmpty()) continue;            // fully hidden: drop
-            active_.insert(c.path);
-            drawClip_.insert(c.path, contrib.translated(-off, 0.0));   // cell frame
+            newActive.insert(c.path);
+            newDrawClip.insert(c.path, contrib.translated(-off, 0.0));   // cell frame
         }
         covered.addPath(bandUnion);
         i = j;
     }
 
-    // The active set / quilt clips were just recomputed; the cached static layer
-    // must re-render even if the camera is unchanged (e.g. cells arriving async).
-    staticDirty_ = true;
+    QSet<QString> oldClipped, newClipped;
+    for (auto it = drawClip_.constBegin(); it != drawClip_.constEnd(); ++it)
+        oldClipped.insert(it.key());
+    for (auto it = newDrawClip.constBegin(); it != newDrawClip.constEnd(); ++it)
+        newClipped.insert(it.key());
+
+    // Only dirty the static cache when quilt ownership actually changes. The
+    // clipped path geometry itself is bounded to keepArea, so routine pans can
+    // change its far offscreen edge without changing which cells own visible
+    // pixels; that should update future renders, not force a rerender now.
+    const bool quiltTopologyChanged = (newActive != active_) || (newClipped != oldClipped);
+    active_ = std::move(newActive);
+    drawClip_ = std::move(newDrawClip);
+    if (quiltTopologyChanged) staticDirty_ = true;
 
     // Wanted set = contributing cells whose footprint reaches the tighter wanted
     // area (the 0.5x margin that triggers loading, as before).
@@ -1124,7 +1135,11 @@ void ChartView::updateVisibleCells() {
         // by a finer band (no longer in active_) so they stop drawing.
         const bool keep = bbox.valid() && bandOk && active_.contains(path) &&
                           shiftX(bbox, off).intersects(keepArea);
-        if (!keep) { removeCell(path); continue; }
+        if (!keep) {
+            removeCell(path);
+            staticDirty_ = true;
+            continue;
+        }
 
         const BBox clipBox = loaded_[path].clipBox;           // real frame
         const BBox wantedRealFrame = shiftX(wantedArea, -off);
@@ -1867,11 +1882,10 @@ void ChartView::renderStaticCache() {
     const qreal dpr = devicePixelRatioF() > 0.0 ? devicePixelRatioF() : 1.0;
     const int W = width(), H = height();
     if (W <= 0 || H <= 0) return;
-    // Full-viewport margin each side == 3x the viewport. Cells are built out to
-    // a 1.5-viewport keepArea margin, so this stays inside already-built geometry
-    // while giving normal pans a full screen of cached pixels before any edge can
-    // show. The refresh after the pan then happens offscreen into this pixmap.
-    const int mx = W, my = H;
+    // Quarter-viewport margin each side == 1.5x the viewport, matching the
+    // original cache size. Larger aprons reduce blank-edge exposure during long
+    // pans, but they multiply every static-cache render by the apron area.
+    const int mx = W / 4, my = H / 4;
     cacheMX_ = mx; cacheMY_ = my;
     cacheW_ = W; cacheH_ = H;
     cacheScx_ = scx_; cacheScy_ = scy_; cachePpm_ = ppm_;
