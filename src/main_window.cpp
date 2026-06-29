@@ -8,6 +8,7 @@
 #include "settings.hpp"
 #include "side_menu.hpp"
 #include "chart_sets_dialog.hpp"
+#include "prepare_cache_dialog.hpp"
 #include "units_dialog.hpp"
 #include "navigation_options_dialog.hpp"
 #include "stale_thresholds_dialog.hpp"
@@ -96,15 +97,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     view_->setShowDepthContours(settings_->showDepthContours());
     view_->setShowRasterCharts(settings_->showRasterCharts());
     view_->setVectorOverlay(settings_->vectorOverlay());
-    view_->setHideSymbolsWhilePanning(settings_->hideSymbolsWhilePanning());
     connect(settings_, &Settings::showSoundingsChanged,     view_, &ChartView::setShowSoundings);
     connect(settings_, &Settings::showSymbolsChanged,       view_, &ChartView::setShowSymbols);
     connect(settings_, &Settings::showTextChanged,          view_, &ChartView::setShowText);
     connect(settings_, &Settings::showDepthContoursChanged, view_, &ChartView::setShowDepthContours);
     connect(settings_, &Settings::showRasterChartsChanged,  view_, &ChartView::setShowRasterCharts);
     connect(settings_, &Settings::vectorOverlayChanged,     view_, &ChartView::setVectorOverlay);
-    connect(settings_, &Settings::hideSymbolsWhilePanningChanged,
-            view_, &ChartView::setHideSymbolsWhilePanning);
     connect(view_, &ChartView::rasterChartsChanged, this, &MainWindow::onRasterChartsChanged);
     view_->setChartDetailLevel(settings_->chartDetailLevel());
     connect(settings_, &Settings::chartDetailLevelChanged,
@@ -293,6 +291,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(view_, &ChartView::autoFollowChanged,           sideMenu_, &SideMenu::setAutoFollowChecked);
     connect(sideMenu_, &SideMenu::chartSetToggled,          this,  &MainWindow::onChartSetToggled);
     connect(sideMenu_, &SideMenu::manageChartSetsRequested, this,  &MainWindow::manageChartSets);
+    connect(sideMenu_, &SideMenu::prepareChartCacheRequested, this, &MainWindow::prepareChartCache);
     connect(sideMenu_, &SideMenu::basemapFolderRequested,   this,  &MainWindow::chooseBasemapFolder);
     connect(sideMenu_, &SideMenu::editUnitsRequested,       this,  &MainWindow::editUnits);
     connect(sideMenu_, &SideMenu::navigationOptionsRequested, this, &MainWindow::editNavigationOptions);
@@ -468,6 +467,45 @@ void MainWindow::manageChartSets() {
         if (!hadSelection && !dlg.chartSets().isEmpty())
             onChartSetToggled(dlg.chartSets().first().directory);
     }
+}
+
+void MainWindow::prepareChartCache() {
+    if (catalog_->isScanning()) {
+        QMessageBox::information(this, QStringLiteral("Prepare Chart Cache"),
+            QStringLiteral("A chart scan is still running. Try again once "
+                           "cataloging has finished."));
+        return;
+    }
+
+    // Only the built-in ENC reader produces real file-path cell ids that the
+    // parsed-cell cache can key on. If a plugin backend (e.g. CM93) is active
+    // for the selection, there is nothing to prepare here yet.
+    IChartSource* activeSrc = nullptr;
+    for (const QString& d : settings_->selectedDirectories()) {
+        if (IChartSource* s = chartSources_.pick(d)) { activeSrc = s; break; }
+    }
+    if (activeSrc) {
+        QMessageBox::information(this, QStringLiteral("Prepare Chart Cache"),
+            QStringLiteral("The active chart set uses the \"%1\" backend, which "
+                           "is not cached yet. Only built-in ENC charts can be "
+                           "prepared.").arg(activeSrc->displayName()));
+        return;
+    }
+
+    QStringList paths;
+    paths.reserve(static_cast<int>(catalog_->cells().size()));
+    for (const CellRecord& c : catalog_->cells())
+        paths << c.path;
+
+    if (paths.isEmpty()) {
+        QMessageBox::information(this, QStringLiteral("Prepare Chart Cache"),
+            QStringLiteral("No ENC chart cells are catalogued. Select a chart "
+                           "set with ENC charts first."));
+        return;
+    }
+
+    PrepareCacheDialog dlg(paths, this);
+    dlg.exec();
 }
 
 void MainWindow::chooseBasemapFolder() {

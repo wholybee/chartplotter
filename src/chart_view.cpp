@@ -7,8 +7,13 @@
 #include "sym_atlas.hpp"
 #include "theme.hpp"
 #include "mbtiles_service.hpp"
+#include "prepared_chart_cache.hpp"
+#include "product_decoder.hpp"
+#include "product_adapter.hpp"
 
 #include <QPainter>
+#include <QElapsedTimer>
+#include <QLoggingCategory>
 #include <QPaintEvent>
 #include <QWheelEvent>
 #include <QMouseEvent>
@@ -37,6 +42,10 @@
 #include <vector>
 
 namespace {
+
+// Parsed-cell cache hit/miss + parse timing. Quiet by default; enable with
+// QT_LOGGING_RULES="chart.cache.debug=true". Folds into Stage 0 telemetry later.
+Q_LOGGING_CATEGORY(lcCache, "chart.cache")
 
 QColor fillColor(const Feature& f) {
     if (f.kind == FeatureKind::LandArea) return QColor(217, 199, 148);
@@ -1177,13 +1186,36 @@ void ChartView::dispatchLoad(const QString& path) {
         if (src) {
             // Plugin backend: the cell id is the QString path; geometry comes back
             // already projected, with S-57 object classes/attrs for symbology.
+            // (Opaque cell ids aren't cached yet — see prepared_chart_cache.hpp.)
             QString err;
             r.ok = src->loadCell(path, r.features, r.bbox, err);
             r.error = err;
         } else {
-            std::string err;
-            r.ok = chart::loadCellFeatures(p, r.features, r.bbox, err);
-            if (!r.ok) r.error = QString::fromStdString(err);
+            // Built-in GDAL path. Try the on-disk parsed-cell cache first; on a
+            // miss, parse with GDAL and write the cache for next time.
+            if (prepared_cache::load(path, r.features, r.bbox)) {
+                r.ok = true;
+                qCDebug(lcCache) << "hit" << path << r.features.size() << "features";
+            } else {
+                // Decode through the normalized product model (Stage 3): the
+                // S-57 decoder emits a ProductFeatureSet, which the compatibility
+                // adapter converts back to the legacy Feature vector the build/
+                // paint path and the parsed-cell cache still consume.
+                QElapsedTimer t;
+                t.start();
+                S57ProductDecoder decoder;
+                ProductFeatureSet pfs;
+                QString err;
+                r.ok = decoder.loadCell(path, pfs, err);
+                if (r.ok) {
+                    r.features = product_adapter::toLegacyFeatures(std::move(pfs), r.bbox);
+                    qCDebug(lcCache) << "miss" << path << "parsed in" << t.elapsed()
+                                     << "ms," << r.features.size() << "features";
+                    prepared_cache::store(path, r.features, r.bbox);
+                } else {
+                    r.error = err;
+                }
+            }
         }
         return r;
     }));
@@ -1462,11 +1494,6 @@ void ChartView::setShowText(bool on) {
 void ChartView::setShowDepthContours(bool on) {
     if (on == showDepthContours_) return;
     showDepthContours_ = on; invalidateChart();
-}
-
-void ChartView::setHideSymbolsWhilePanning(bool on) {
-    if (on == hideSymbolsWhilePanning_) return;
-    hideSymbolsWhilePanning_ = on; update();
 }
 
 void ChartView::setShowRasterCharts(bool on) {

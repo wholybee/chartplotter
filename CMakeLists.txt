@@ -64,12 +64,29 @@ add_custom_target(symbols_bin ALL
     DEPENDS "${CMAKE_CURRENT_BINARY_DIR}/symbols.bin"
 )
 
+# Stage 3 unit test: legacy <-> normalized product-model round trip. GDAL-free,
+# so it only needs the pure adapter and Qt6::Core. Registered with CTest; run
+# with `ctest -C Release`.
+enable_testing()
+add_executable(test_product_model
+    tools/test_product_model.cpp
+    src/product_adapter.cpp
+)
+set_target_properties(test_product_model PROPERTIES WIN32_EXECUTABLE FALSE)
+target_include_directories(test_product_model PRIVATE src)
+target_link_libraries(test_product_model PRIVATE Qt6::Core)
+add_test(NAME product_model_round_trip COMMAND test_product_model)
+# Qt6Core.dll must be locatable when CTest runs the test exe (see gen_symbols).
+set_tests_properties(product_model_round_trip PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
 qt_add_executable(chartviewer
     src/main.cpp
     src/main_window.cpp
     src/side_menu.cpp
     src/settings.cpp
     src/chart_sets_dialog.cpp
+    src/prepare_cache_dialog.cpp
     src/units_dialog.cpp
     src/navigation_options_dialog.cpp
     src/touch_spin_box.cpp
@@ -96,6 +113,9 @@ qt_add_executable(chartviewer
     src/chart_view.cpp
     src/chart_catalog.cpp
     src/chart_loader.cpp
+    src/prepared_chart_cache.cpp
+    src/product_adapter.cpp
+    src/product_decoder.cpp
     src/mbtiles_reader.cpp
     src/mbtiles_service.cpp
     src/nav_data_store.cpp

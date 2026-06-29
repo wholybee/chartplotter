@@ -209,9 +209,6 @@ public:
     void setShowSymbols(bool on);
     void setShowText(bool on);   // object name (OBJNAM) labels
     void setShowDepthContours(bool on);
-    // When true, soundings/symbols are skipped during a pan/zoom gesture (faster
-    // moving frame); when false they stay visible while interacting.
-    void setHideSymbolsWhilePanning(bool on);
     // Show/hide the MBTiles raster-chart layer (tracking + loading continue).
     void setShowRasterCharts(bool on);
     // Vector-overlay mode: suppress the opaque chart base — land/water area fills
@@ -518,7 +515,6 @@ private:
     bool showText_ = true;
     bool showDepthContours_ = true;
     bool vectorOverlay_ = false;      // hide base land/water fills + basemap so raster shows through
-    bool hideSymbolsWhilePanning_ = false;   // skip point overlays during a gesture
     double chartDetailLevel_ = 0.0;   // -2.0..+2.0, biases target band
     double scaminLevel_      = 0.0;   // -1.0..+1.0, biases SCAMIN declutter
     double symbolScale_      = 1.0;   // 0.5..3.0, uniform symbol scale

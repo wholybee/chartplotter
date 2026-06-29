@@ -50,6 +50,7 @@ protected:
 private slots:
     void onChartSetToggled(const QString& dir);
     void manageChartSets();
+    void prepareChartCache();
     void chooseBasemapFolder();
     void editUnits();
     void editNavigationOptions();
