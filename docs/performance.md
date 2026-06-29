@@ -25,7 +25,7 @@ noted. Companion doc: `opencpn_optimizations.md` (pipeline/disk-cache ideas).
 | 1 | **Coalesce repaints** behind one ~15–20 Hz timer; stop calling `update()` directly from data signals | idle CPU | low | high |
 | 2 | **Cache the static chart to a `QPixmap`**; composite moving overlays on top each frame | idle CPU **and** pan/zoom | medium | very high |
 | 3 | **Hoist per-frame work out of `paintEvent`** (sounding declutter, text `QFontMetrics`, cell sort) | idle CPU + every frame | low–med | high |
-| 4 | **Zoom-aware geometry simplification** (carried over; still valid) | pan/zoom, high detail | medium | high |
+| 4 | **Zoom-aware geometry simplification** — *done* (`tol = 0.5/ppm`, rebuild on ±1.6× zoom) | pan/zoom, high detail | medium | high |
 | 5 | **GPU via `QOpenGLWidget` backing** — only after 1–3; measure first | all rendering | high | medium |
 | 6 | **SENC-style on-disk parse cache + "Prepare all charts"** | cold-cell latency | medium | high (cold) |
 
@@ -176,27 +176,38 @@ the bigger refactors.
 
 ---
 
-## Finding 4 — vector geometry is simplified to the band, not the zoom (carried over)
+## Finding 4 — vector geometry simplified to the zoom, not the band — **implemented**
 
-Still valid and still the main *geometry* cost at high Detail Level.
-`simplifyToleranceM(band)` (used at `chart_view.cpp:1157`) keys vertex-merge
-tolerance to the cell's ENC usage band, not the actual viewing scale. At a
-positive Detail Level a fine-band cell is drawn with harbour-grade vertex density
-at a coastal on-screen scale, so each `drawPath` carries far more vertices than
-the screen can resolve.
+*Status: done.* Previously `simplifyToleranceM(band)` keyed the vertex-merge
+tolerance to the cell's ENC usage band, not the actual viewing scale, so at a
+positive Detail Level a fine-band cell carried harbour-grade vertex density at a
+coastal on-screen scale — far more vertices than the screen can resolve.
 
-**Fix:** bias the build tolerance by the detail level (known at build time):
-multiply by ≈ `pow(4, level)`, so detail 0 is unchanged and `+2` is ~16× coarser
-→ dramatically cheaper `drawPath`. Because cells are simplified once and cached,
-`setChartDetailLevel()` must drop built cells (`loaded_`/`building_`) so the next
-`scheduleUpdate()` re-clips at the new tolerance; `buildCell` already takes `tol`
-as a parameter, so the change is localised to `dispatchBuild`
-(`chart_view.cpp:1138`). Verify across the 180° wrap seam and with multiple bands
-in view.
+**What was tried first, and rejected.** The original plan here was to bias the
+band tolerance by `pow(4, detailLevel)`. That has a real regression: it keys the
+tolerance to the *detail setting* rather than the *on-screen scale*, so in any
+region lacking the finest bands (most regions) the finest available chart gets
+over-simplified into visibly blocky coastlines whenever detail is raised or you
+zoom in at high detail. The coarsening is only correct when the loaded band
+happens to equal the detail-biased target band.
 
-A lighter-weight variant that needs no rebuild: feed `QPainter` a cosmetic clip
-and rely on its own path flattening — but that does not cut vertex *count*, only
-rasterization, so the build-time tolerance bias is the real lever.
+**What shipped instead — zoom-aware tolerance.** `dispatchBuild` now sets
+`tol = 0.5 / ppm_` — about half a logical pixel in scene metres at the *current
+zoom* — exactly mirroring what the basemap already did (`maybeBuildBasemap`).
+Geometry is simplified to what the screen resolves regardless of band or detail
+level: a fine-band cell pulled in by +detail while zoomed out is simplified as
+coarsely as the view warrants, and the same cell zoomed in keeps full detail —
+no regression in either direction. `simplifyToleranceM` is gone.
+
+Because tolerance now tracks zoom, the loaded set must re-simplify when the zoom
+drifts. `updateVisibleCells` rebuilds the loaded cells when `ppm_` moves past
+±1.6×/0.6× of `cellsBuiltPpm_` (the same band the basemap uses), reusing the
+existing in-place re-clip path (`storeCell` replaces each cell when its worker
+finishes, so nothing blanks) and the pinned parse cache (no GDAL re-read). It
+composes with the gesture LOD and the Fix 2 cache: a zoom gesture scales the
+cached pixmap, and the rebuild happens once on settle. Detail-level changes no
+longer need a tolerance rebuild — they only change which bands load; the cells
+that remain keep their (zoom-correct) tolerance.
 
 ---
 
