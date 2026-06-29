@@ -140,6 +140,8 @@ qt_add_executable(chartviewer
     src/name_dialog.cpp
     src/vessel_symbol.cpp
     src/sym_atlas.cpp
+    src/render_resource_atlas.cpp
+    src/portrayal_engine.cpp
     src/theme.cpp
     src/nmea0183_client.cpp
 )
