@@ -441,6 +441,10 @@ private:
     QSet<QString> building_;     // clip/build running on a worker
     QSet<QString> wanted_;       // last computed wanted set
     quint64       generation_ = 0;
+    // Zoom the currently-loaded cells were simplified for (tolerance ~0.5px at this
+    // ppm). When the live zoom drifts past ~1.6x of it, updateVisibleCells rebuilds
+    // the loaded set at the new tolerance. 0 = nothing built yet. See dispatchBuild.
+    double        cellsBuiltPpm_ = 0.0;
 
     // Raster (MBTiles) chart layer. The service runs on its own thread; the view
     // caches decoded tiles keyed by (chart, z, x, y) and draws them beneath the
