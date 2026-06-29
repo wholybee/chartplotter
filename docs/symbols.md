@@ -370,7 +370,7 @@ ENC chart objects are implemented:
 
 | Procedure | Classes | What it does |
 |-----------|---------|--------------|
-| `LIGHTS05` | `LIGHTS` | Coloured flare by `COLOUR` + a compact light-character label from `LITCHR`/`SIGGRP`/`SIGPER`/`VALNMR`. |
+| `LIGHTS05` | `LIGHTS` | Coloured flare by `COLOUR` + a compact light-character label from `LITCHR`/`SIGGRP`/`SIGPER`/`VALNMR`, plus the **sector arcs + limit legs** for sectored lights (`SECTR1`/`SECTR2`). |
 | `TOPMAR01` | `TOPMAR`, `DAYMAR` | Topmark/daymark symbol by `TOPSHP` (incl. cardinal marks). |
 | `OBSTRN04` | `OBSTRN`, `UWTROC` | Obstruction/rock glyph by `WATLEV`/`VALSOU` + sounding label. |
 | `WRECKS02` | `WRECKS` | Dangerous vs non-dangerous wreck by depth/`CATWRK`/`WATLEV`. |
@@ -388,10 +388,41 @@ unit-aware code, so they never reach `runCS`. Route/own-ship procedures
 elsewhere. Any unrecognised `CS` is a no-op; the rest of the instruction (direct
 `SY`/`LS`/`AC`/text) still renders.
 
+### Light sectors
+
+A sectored S-57 `LIGHTS` feature carries the sector colour (`COLOUR`) plus the
+two limits `SECTR1`/`SECTR2`. Multiple sectors at one structure are multiple
+`LIGHTS` features sharing the same point. For each such feature `CS(LIGHTS05)`
+emits — alongside the flare — a `SymSector` carrying the arc bearings, colour
+and nominal range. `buildCell` turns each into a `BuiltLightSector` anchored at
+the light's scene point, and `renderStatic` draws it at paint time in device
+space (so the arc stays a constant on-screen size and pans with the chart).
+
+Two conventions matter:
+
+* **Bearings are "from seaward".** `SECTR1`/`SECTR2` are bearings *to* the light
+  as a mariner observes them, swept clockwise `SECTR1`→`SECTR2`. The lit water
+  lies on the reciprocal, so the chart arc is drawn around the light at
+  `SECTR + 180°` (the direction from the light to the observer).
+* **North-up, device-Y-down.** A bearing `b` (° CW from true north) maps to the
+  device unit vector `(sin b, −cos b)`. The arc is rendered as a sampled
+  polyline rather than `QPainter::drawArc`, which sidesteps Qt's angle / Y-down
+  sign conventions.
+
+Each sector draws two dashed dark-grey limit legs out to a fixed radius and a
+coloured arc at that radius — red→`LITRD`, green→`LITGN`, everything else
+(white/yellow/amber)→`LITYW`, resolved from the baked colour table. All-round
+"sectors" (limits equal, or a full 360°) carry no arc — they render as an
+ordinary light. Sectors honour the Symbols toggle, the point-LOD zoom gate, and
+SCAMIN declutter exactly as symbols do.
+
 #### Known CS gaps
 
-- **Light sectors.** `LIGHTS05` draws the flare and character label but not the
-  sector arcs/legs (these need per-feature geometry beyond the point).
+- **Light sectors are fixed on-screen radius.** `LIGHTS05` now draws the sector
+  arcs and dashed limit legs (red/green/white-as-yellow) for sectored lights, but
+  the arc radius is a constant on-screen size, not drawn to the light's nominal
+  range (`VALNMR`). The sector arc geometry is built at the light point from
+  `SECTR1`/`SECTR2`; see [Light sectors](#light-sectors).
 - **Isolated-danger isolation test.** `OBSTRN04`/`WRECKS02` flag a danger by
   depth vs a fixed safety depth (20 m) rather than testing whether the danger is
   surrounded by deeper water.
@@ -529,7 +560,7 @@ CMakeLists.txt              gen_symbols target, custom command,
 
 | Gap | Effect | Notes |
 |-----|--------|-------|
-| Light sectors | `CS(LIGHTS05)` draws the flare + character label but not the sector arcs/legs. | Needs per-feature geometry beyond the point. |
+| Light-sector radius is fixed on-screen | Sector arcs/legs are drawn at a constant pixel radius, not scaled to the light's nominal range (`VALNMR`). | Arcs + legs + colour are drawn (see [Light sectors](#light-sectors)); only the to-scale radius is unimplemented, matching OpenCPN's default. |
 | Isolated-danger isolation test | `OBSTRN04`/`WRECKS02` flag a danger by depth vs a fixed 20 m safety depth, not by surrounding depth. | Over- or under-flags a few dangers. |
 | Floating vs rigid topmarks | `TOPMAR01` always uses the buoy topmark variants. | Parent-object class needs S-57 relationships. |
 | `LC`/`AP` motif scale | HPGL motifs render at a fixed nominal pixel scale (≈ atlas-bitmap size); `AP` patterns don't follow the symbol-size slider. | Visually close; not pixel-exact to OpenCPN. |

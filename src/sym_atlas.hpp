@@ -79,8 +79,21 @@ struct SymText {
     uint8_t  pointSize = 8;        // resolved from the TX/TE body/style code
 };
 
+// One light sector arc from CS(LIGHTS05). A sectored S-57 LIGHTS feature carries
+// one coloured sector. Its limits SECTR1/SECTR2 are bearings "from seaward"
+// (observer→light); the chart arc is drawn around the light at the reciprocal
+// (light→observer), so startDeg/endDeg are those limits + 180°, in degrees CW
+// from true north, with the lit arc sweeping clockwise startDeg→endDeg.
+struct SymSector {
+    float   startDeg = 0.0f;   // SECTR1 + 180  (direction from light)
+    float   endDeg   = 0.0f;   // SECTR1 + 180 + clockwise sweep
+    float   rangeNm  = 0.0f;   // VALNMR nominal range, 0 = unknown
+    uint8_t r = 0, g = 0, b = 0;   // resolved sector light colour
+};
+
 // Result of resolving a feature: any combination of symbol stamps, a line
-// style, a fill, a complex line (LC), an area pattern (AP), and text labels.
+// style, a fill, a complex line (LC), an area pattern (AP), text labels, and
+// light-sector arcs.
 struct SymHit {
     std::vector<SymStamp> symbols;
     bool          hasLine = false;
@@ -90,6 +103,7 @@ struct SymHit {
     int           lcIndex = -1;    // LC() line-complex def, or -1
     int           apIndex = -1;    // AP() area-pattern def, or -1
     std::vector<SymText>  texts;
+    std::vector<SymSector> sectors; // CS(LIGHTS05) light sectors
 
     // Back-compat convenience: the first symbol's index/rotation, or kNoSymbol.
     uint16_t firstSym() const;

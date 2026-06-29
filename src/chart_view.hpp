@@ -133,6 +133,20 @@ struct BuiltText {
     quint8  pointSize = 8;
 };
 
+// A light sector: a coloured arc plus its two dashed limit legs, drawn at
+// constant on-screen size around a sectored light. Bearings are directions from
+// the light (degrees CW from true north); the lit arc sweeps clockwise
+// startDeg→endDeg. Resolved at cell-build time from CS(LIGHTS05); SCAMIN
+// declutter and the Symbols toggle apply at paint time, like symbols.
+struct BuiltLightSector {
+    QPointF pos;             // scene position of the light (Y flipped north-up)
+    float   startDeg = 0.0f;
+    float   endDeg   = 0.0f;
+    float   rangeNm  = 0.0f;
+    QColor  color;
+    int     scaleMin = 0;    // S-57 SCAMIN (0 = none)
+};
+
 struct BuiltCell {
     QString path;
     int  band = 0;
@@ -142,6 +156,7 @@ struct BuiltCell {
     std::vector<Sounding>    soundings;                    // scene pos + depth
     std::vector<BuiltSymbol> symbols;                      // scene pos + sym idx
     std::vector<BuiltText>   texts;                        // scene pos + label
+    std::vector<BuiltLightSector> sectors;                 // light sector arcs
 };
 
 // Chart canvas with a camera-based renderer.

@@ -371,6 +371,16 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
                         bc.symbols.push_back(bs);
                     }
                 }
+                // Light-sector arcs (one per sectored LIGHTS feature), anchored at
+                // the light's scene position so they pan with the chart.
+                for (const SymSector& s : hit.sectors) {
+                    BuiltLightSector ls;
+                    ls.pos = pos;
+                    ls.startDeg = s.startDeg; ls.endDeg = s.endDeg;
+                    ls.rangeNm = s.rangeNm; ls.scaleMin = f.scaleMin;
+                    ls.color = QColor(s.r, s.g, s.b);
+                    bc.sectors.push_back(ls);
+                }
                 pushHitTexts(hit, pos, f.scaleMin, f.name);
                 break;
             }
@@ -1869,6 +1879,45 @@ void ChartView::invalidateChart() {
     update();
 }
 
+// Draw one light sector around the light at device point `c`: the two dashed
+// limit legs out to radius R, then the coloured arc at R. Bearings in `s` are
+// directions from the light (deg CW from true north); the lit arc sweeps
+// clockwise s.startDeg→s.endDeg. The scene is north-up with device Y pointing
+// down, so a bearing b maps to the unit vector (sin b, -cos b). The arc is a
+// sampled polyline, which sidesteps Qt's drawArc angle/Y-down conventions.
+static void drawLightSector(QPainter& p, const QPointF& c,
+                            const BuiltLightSector& s, double R) {
+    constexpr double kDeg2Rad = 3.14159265358979323846 / 180.0;
+    auto dir = [&](double bearingDeg) -> QPointF {
+        const double r = bearingDeg * kDeg2Rad;
+        return QPointF(std::sin(r), -std::cos(r));
+    };
+    const double sweep = s.endDeg - s.startDeg;   // > 0, clockwise
+
+    // Limit legs: thin dashed dark-grey lines to each sector boundary.
+    QPen legPen(QColor(70, 70, 70, 200));
+    legPen.setWidthF(1.0);
+    legPen.setStyle(Qt::DashLine);
+    p.setPen(legPen);
+    p.setBrush(Qt::NoBrush);
+    p.drawLine(c, c + dir(s.startDeg) * R);
+    p.drawLine(c, c + dir(s.endDeg)   * R);
+
+    // Coloured arc at radius R, ~3° per segment.
+    const int steps = std::max(2, int(std::ceil(sweep / 3.0)));
+    QPolygonF arc;
+    arc.reserve(steps + 1);
+    for (int i = 0; i <= steps; ++i)
+        arc << c + dir(s.startDeg + sweep * (double(i) / steps)) * R;
+    QPen arcPen(s.color);
+    arcPen.setWidthF(2.5);
+    arcPen.setCapStyle(Qt::RoundCap);
+    arcPen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(arcPen);
+    p.setBrush(Qt::NoBrush);
+    p.drawPolyline(arc);
+}
+
 // The static chart layer. Formerly the body of paintEvent; now it always renders
 // the settled look (antialiased, point overlays shown) because the result is
 // cached and blitted during gestures rather than re-rendered per frame. `cam`,
@@ -2082,6 +2131,27 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
                                                     : QStringLiteral(".");
                     p.drawText(QPointF(d.x() + 1.0, d.y() + asc), text);
                     remember(d);
+                }
+                if (clipped) p.restore();
+            }
+        }
+        if (showSymbols_) {
+            // Light sectors: coloured arcs + dashed limit legs around sectored
+            // lights, at constant on-screen size. Drawn before the flares (the
+            // symbol pass below) so the light symbol sits on top of its arcs.
+            const double R = 60.0 * symbolScale_;   // arc radius, device px
+            const QRectF sectorScreen = screen.adjusted(-R, -R, R, R);
+            for (const BuiltCell* c : order) {
+                if (c->sectors.empty()) continue;
+                const auto dcIt = deviceClip.constFind(c->path);
+                const bool clipped = (dcIt != deviceClip.constEnd());
+                if (clipped) { p.save(); p.setClipPath(*dcIt); }
+                const double off = c->drawOffsetX;
+                for (const BuiltLightSector& s : c->sectors) {
+                    if (!scaminPasses(s.scaleMin, scaminDenom)) continue;
+                    const QPointF d = cam.map(QPointF(s.pos.x() + off, s.pos.y()));
+                    if (!sectorScreen.contains(d)) continue;
+                    drawLightSector(p, d, s, R);
                 }
                 if (clipped) p.restore();
             }
