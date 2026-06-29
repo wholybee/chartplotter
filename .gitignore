@@ -7,6 +7,9 @@ chartplotter.zip
 docs/menu_structure.md
 docs/ydnu02.pdf
 docs/NMEA 2000 ASCII Output format.docx
+docs/renderer_architecture_plan.md
+docs/opencpn_optimizations.md
+docs/performance.md
 CM93/
 
 # User-specific files
