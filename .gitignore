@@ -11,6 +11,7 @@ docs/renderer_architecture_plan.md
 docs/opencpn_optimizations.md
 docs/performance.md
 CM93/
+.codex/
 
 # User-specific files
 *.rsuser
