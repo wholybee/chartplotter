@@ -32,6 +32,7 @@
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -648,6 +649,17 @@ QList<ChartObjectInfo> ChartView::pickObjects(const QPointF& screenPt) {
         const double cx = clickScene.x() - off;   // click in this cell's projected X
         const double cy = -clickScene.y();         // projected Y (north up)
 
+        // Respect the quilt clip exactly as rendering does: where a finer band
+        // overlaps this cell, drawClip_ restricts what it draws. If the click
+        // falls outside this cell's drawn region, none of its features are
+        // visible there, so skip the whole cell — otherwise a coarse cell hidden
+        // under a finer one returns phantom duplicate hits. drawClip_ is in the
+        // cell's own (un-wrapped) scene frame: x = projected X, y = scene Y.
+        const auto clipIt = drawClip_.constFind(path);
+        if (clipIt != drawClip_.constEnd() &&
+            !clipIt.value().contains(QPointF(cx, clickScene.y())))
+            continue;
+
         for (const Feature& f : *feats) {
             int prio = -1; double distSq = 0.0, repX = 0.0, repY = 0.0;
             switch (f.kind) {
@@ -708,8 +720,23 @@ QList<ChartObjectInfo> ChartView::pickObjects(const QPointF& screenPt) {
         if (a.prio != b.prio) return a.prio < b.prio;
         return a.distSq < b.distSq;
     });
+    // Deduplicate: the same real-world object is frequently charted in several
+    // overlapping cells (different usage bands, or duplicate/overlapping cells in
+    // one band, which the quilt clip does not separate). Those produce identical
+    // candidates; keep only the first (nearest, since the list is sorted). Identity
+    // is class + name + kind + position rounded to ~1 m of projected northing/
+    // easting, so genuinely distinct objects are never merged.
+    QSet<QString> seen;
     constexpr int kMaxObjects = 10;
     for (const Cand& c : cands) {
+        const QString id = c.info.objClass + QChar(0x1f) + c.info.name +
+                           QChar(0x1f) + QString::number(int(c.info.kind)) +
+                           QChar(0x1f) +
+                           QString::number(qlonglong(std::llround(c.info.lon * 1e5))) +
+                           QChar(0x1f) +
+                           QString::number(qlonglong(std::llround(c.info.lat * 1e5)));
+        if (seen.contains(id)) continue;   // already have this object
+        seen.insert(id);
         out.push_back(c.info);
         if (out.size() >= kMaxObjects) break;
     }
@@ -2070,6 +2097,25 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
     if (pointLodVisible_) {
         const QRectF screen = deviceRect.adjusted(-24, -24, 24, 24);
 
+        // Cross-cell duplicate suppression. The same point object is often charted
+        // in several overlapping cells; the quilt clip separates different bands
+        // but not duplicate/overlapping cells within one band, so identical symbols
+        // and labels would stamp on top of each other (most visible on text). Each
+        // point pass keeps a set of (quantized scene position, content) keys and
+        // skips a repeat. True duplicates share an exact scene position, so 0.5 m
+        // buckets never merge genuinely distinct objects. Keyed in scene metres so
+        // it is stable under pan/zoom.
+        auto sceneKey = [](double sx, double sy, quint64 content) -> quint64 {
+            auto mix = [](quint64 h, quint64 v) {
+                v += 0x9E3779B97F4A7C15ULL;
+                h ^= v + (h << 6) + (h >> 2);
+                return h;
+            };
+            quint64 h = mix(0, quint64(qint64(std::llround(sx * 2.0))));
+            h = mix(h, quint64(qint64(std::llround(sy * 2.0))));
+            return mix(h, content);
+        };
+
         // SCAMIN declutter threshold (computed above, shared with the LC/AP
         // pass): point objects whose SCAMIN is smaller than this are dropped.
         if (showSoundings_) {
@@ -2116,6 +2162,7 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
                                  ^ static_cast<quint32>(gy);
                 kept[key].push_back(d);
             };
+            std::unordered_set<quint64> seen;
 
             for (const BuiltCell* c : order) {
                 const auto dcIt = deviceClip.constFind(c->path);
@@ -2126,6 +2173,14 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
                     if (!scaminPasses(s.scaleMin, scaminDenom)) continue;
                     const QPointF d = cam.map(QPointF(s.pos.x() + off, s.pos.y()));
                     if (!screen.contains(d)) continue;
+                    // A clipped-away instance must not claim the dedup slot, or it
+                    // would suppress the visible copy in the finer cell on top.
+                    if (clipped && !dcIt->contains(d)) continue;
+                    // Suppress the same sounding charted in an overlapping cell
+                    // (independent of the detail-level thinning below).
+                    if (!seen.insert(sceneKey(s.pos.x() + off, s.pos.y(),
+                                              quint64(qRound(s.depthM * 10.0)))).second)
+                        continue;
                     if (!farEnough(d)) continue;
                     const QString text = s.hasDepth ? formatSounding(s.depthM)
                                                     : QStringLiteral(".");
@@ -2141,6 +2196,7 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
             // symbol pass below) so the light symbol sits on top of its arcs.
             const double R = 60.0 * symbolScale_;   // arc radius, device px
             const QRectF sectorScreen = screen.adjusted(-R, -R, R, R);
+            std::unordered_set<quint64> seen;
             for (const BuiltCell* c : order) {
                 if (c->sectors.empty()) continue;
                 const auto dcIt = deviceClip.constFind(c->path);
@@ -2151,6 +2207,14 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
                     if (!scaminPasses(s.scaleMin, scaminDenom)) continue;
                     const QPointF d = cam.map(QPointF(s.pos.x() + off, s.pos.y()));
                     if (!sectorScreen.contains(d)) continue;
+                    // A clipped-away instance must not claim the dedup slot, or it
+                    // would suppress the visible copy in the finer cell on top.
+                    if (clipped && !dcIt->contains(d)) continue;
+                    const quint64 content = (quint64(qRound(s.startDeg)) << 32) ^
+                                            (quint64(qRound(s.endDeg)) << 16) ^
+                                            quint64(s.color.rgb());
+                    if (!seen.insert(sceneKey(s.pos.x() + off, s.pos.y(), content)).second)
+                        continue;
                     drawLightSector(p, d, s, R);
                 }
                 if (clipped) p.restore();
@@ -2163,6 +2227,7 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
             p.setBrush(QColor(179, 26, 128));
 
             const bool atlasOk = symAtlas_.isLoaded();
+            std::unordered_set<quint64> seen;
             for (const BuiltCell* c : order) {
                 const auto dcIt = deviceClip.constFind(c->path);
                 const bool clipped = (dcIt != deviceClip.constEnd());
@@ -2173,6 +2238,14 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
                     const QPointF d = cam.map(
                         QPointF(sym.pos.x() + off, sym.pos.y()));
                     if (!screen.contains(d)) continue;
+                    // A clipped-away instance must not claim the dedup slot, or it
+                    // would suppress the visible copy in the finer cell on top.
+                    if (clipped && !dcIt->contains(d)) continue;
+                    const quint64 content = (quint64(sym.symIdx) << 16) ^
+                                            quint64(quint16(qRound(sym.rotationDeg)));
+                    if (!seen.insert(sceneKey(sym.pos.x() + off, sym.pos.y(),
+                                              content)).second)
+                        continue;
 
                     if (atlasOk && sym.symIdx != SymAtlas::kNoSymbol) {
                         symAtlas_.draw(p, sym.symIdx, d, sym.rotationDeg,
@@ -2202,6 +2275,7 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
             QFontMetricsF fm(f);
             double cw = fm.averageCharWidth(), th = fm.height(),
                    asc = fm.ascent(), desc = fm.descent();
+            std::unordered_set<quint64> seen;
             for (const BuiltCell* c : order) {
                 const auto dcIt = deviceClip.constFind(c->path);
                 const bool clipped = (dcIt != deviceClip.constEnd());
@@ -2211,6 +2285,12 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
                     if (!scaminPasses(t.scaleMin, scaminDenom)) continue;
                     const QPointF d = cam.map(QPointF(t.pos.x() + off, t.pos.y()));
                     if (!screen.contains(d)) continue;
+                    // A clipped-away instance must not claim the dedup slot, or it
+                    // would suppress the visible copy in the finer cell on top.
+                    if (clipped && !dcIt->contains(d)) continue;
+                    if (!seen.insert(sceneKey(t.pos.x() + off, t.pos.y(),
+                                              quint64(qHash(t.text)))).second)
+                        continue;   // same label already drawn from another cell
 
                     if (int(t.pointSize) != curSize) {
                         curSize = t.pointSize;
