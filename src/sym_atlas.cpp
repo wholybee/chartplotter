@@ -597,6 +597,31 @@ void SymAtlas::runCS(const QByteArray& proc, const QByteArray& objClass,
             st.rotationDeg = float(std::atof(s1->c_str()));
         if (st.symIdx != kNoSymbol) hit.symbols.push_back(st);
 
+        // Sector arc. A LIGHTS feature with both limits defines one coloured
+        // sector. The limits are bearings from seaward (observer→light); the arc
+        // is drawn around the light at the reciprocal (light→observer), sweeping
+        // clockwise SECTR1→SECTR2. All-round "sectors" (limits equal / full
+        // circle) carry no arc — they're just an ordinary light.
+        if (sectored) {
+            const double s1 = std::atof(val("SECTR1")->c_str());
+            const double s2 = std::atof(val("SECTR2")->c_str());
+            double sweep = std::fmod(s2 - s1, 360.0);
+            if (sweep < 0.0) sweep += 360.0;
+            if (sweep > 0.5 && sweep < 359.5) {
+                SymSector sec;
+                sec.startDeg = float(s1 + 180.0);
+                sec.endDeg   = float(s1 + 180.0 + sweep);
+                sec.rangeNm  = float(num("VALNMR", 0.0));
+                const QColor c = colorFor(red   ? QByteArrayLiteral("LITRD")
+                                        : green ? QByteArrayLiteral("LITGN")
+                                                : QByteArrayLiteral("LITYW"));
+                sec.r = uint8_t(c.red());
+                sec.g = uint8_t(c.green());
+                sec.b = uint8_t(c.blue());
+                hit.sectors.push_back(sec);
+            }
+        }
+
         // Build a compact light description ("Fl(2)R 10s15M") as a label.
         QString desc;
         if (const std::string* lc = val("LITCHR"))
