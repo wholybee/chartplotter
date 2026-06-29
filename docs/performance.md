@@ -24,7 +24,7 @@ noted. Companion doc: `opencpn_optimizations.md` (pipeline/disk-cache ideas).
 |---|--------|-------|--------|--------|
 | 1 | **Coalesce repaints** behind one ~15–20 Hz timer; stop calling `update()` directly from data signals | idle CPU | low | high |
 | 2 | **Cache the static chart to a `QPixmap`**; composite moving overlays on top each frame | idle CPU **and** pan/zoom | medium | very high |
-| 3 | **Hoist per-frame work out of `paintEvent`** (sounding declutter, text `QFontMetrics`, cell sort) | idle CPU + every frame | low–med | high |
+| 3 | **Hoist per-frame work** — mostly absorbed by Fix 2; text `QFontMetrics` per-label churn *done* | cache-render cost | low | medium |
 | 4 | **Zoom-aware geometry simplification** — *done* (`tol = 0.5/ppm`, rebuild on ±1.6× zoom) | pan/zoom, high detail | medium | high |
 | 5 | **GPU via `QOpenGLWidget` backing** — only after 1–3; measure first | all rendering | high | medium |
 | 6 | **SENC-style on-disk parse cache + "Prepare all charts"** | cold-cell latency | medium | high (cold) |
@@ -147,32 +147,37 @@ and re-render on resize (`resizeEvent`, `chart_view.cpp:2396`). The pixmap is
 
 ---
 
-## Finding 3 — work that runs every frame but should be precomputed
+## Finding 3 — work that ran every frame (mostly absorbed by Fix 2; text hoist done)
 
-Even after layering, the static re-render should be lean. Today `paintEvent`
-redoes, on every single frame, work whose inputs only change on pan/zoom/build:
+This was written before the pixmap cache. **Fix 2 already removed the per-*frame*
+aspect**: the cell sort, the sounding declutter, and the text layout all live in
+`renderStatic`, which now runs only when the cache is (re)rendered — on settle, a
+zoom-rebuild, or a cell arrival — not on idle/overlay frames. So items 1–2 below
+no longer run "every frame"; they run once per cache render, which is the right
+granularity, and the payoff of hoisting them further is small.
 
-1. **Cell z-order sort** — `std::sort` over all loaded cells every paint
-   (`chart_view.cpp:1794–1800`). Sort once when `loaded_` changes; keep a sorted
-   `order_` vector.
+1. **Cell z-order sort** — `std::sort` over the loaded cells, now once per cache
+   render over a handful of cells. Negligible, and a cached `order_` would have to
+   be kept in sync with `loaded_` across every mutation (z-order bug risk) for a
+   microsecond saving — **not worth it; left as is.**
 
-2. **Sounding declutter** — the greedy minimum-gap spatial hash
-   (`chart_view.cpp:1903–1948`) is rebuilt from scratch every frame. It depends
-   only on the camera (zoom + center) and the kept sounding set, so it can be
-   computed when the view changes and cached as a flat list of `(screenPos,
-   text)` to draw. At high detail this loop over thousands of soundings is a real
-   per-frame cost.
+2. **Sounding declutter** — the greedy minimum-gap spatial hash depends on the
+   camera and the kept sounding set, so it is inherently per-view; it now runs
+   once per cache render rather than per paint. Caching it across same-camera
+   re-renders (consecutive cell arrivals) is possible but adds keyed state for a
+   modest gain. **Left as is for now.**
 
-3. **Text layout** — a `QFontMetricsF` is constructed **per label**, inside the
-   loop (`chart_view.cpp:2005`), plus four halo `drawText` passes per label
-   (`:2022–2027`). Construct metrics once per font size (or cache per size), and
-   precompute each label's anchor at build time. Consider drawing the halo only
-   when zoomed in, or replacing the 4-pass halo with a single
-   `QPainterPathStroker` outline or a translucent background rect.
+3. **Text layout** — *done.* A `QFontMetricsF` was constructed **per label**, with
+   `ascent`/`descent`/`height`/`averageCharWidth` re-queried per glyph even though
+   they depend only on the font size. These are now computed once per point-size
+   change and reused; only `horizontalAdvance` (string-dependent) stays per label.
+   At thousands of labels with few distinct sizes this removes nearly all the
+   metrics work from the static render. The 4-pass halo was left intact — it's
+   what keeps labels legible over busy fill, and reducing it changes appearance.
 
-These three are pure CPU waste on the settled frame and compound every time
-Finding 1's repaint storm fires. Hoisting them is low-risk and independent of
-the bigger refactors.
+Net: after Fix 2, Finding 3's substance was the per-label metrics churn, which is
+now hoisted. The sort and declutter are correctly per-cache-render and not worth
+the sync/state complexity to optimise further.
 
 ---
 

@@ -2125,6 +2125,13 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
             const QColor halo(255, 255, 255, 230);
             QFont f = p.font();
             int curSize = -1;
+            // Font-only metrics, recomputed solely when the point size changes.
+            // Previously a QFontMetricsF was constructed for every label (and
+            // ascent/descent/height/avgWidth re-queried per glyph); only the
+            // per-text horizontalAdvance actually depends on the string.
+            QFontMetricsF fm(f);
+            double cw = fm.averageCharWidth(), th = fm.height(),
+                   asc = fm.ascent(), desc = fm.descent();
             for (const BuiltCell* c : order) {
                 const auto dcIt = deviceClip.constFind(c->path);
                 const bool clipped = (dcIt != deviceClip.constEnd());
@@ -2138,11 +2145,13 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
                     if (int(t.pointSize) != curSize) {
                         curSize = t.pointSize;
                         f.setPointSizeF(curSize); p.setFont(f);
+                        fm = QFontMetricsF(f);
+                        cw = fm.averageCharWidth();
+                        th = fm.height();
+                        asc = fm.ascent();
+                        desc = fm.descent();
                     }
-                    const QFontMetricsF fm(f);
-                    const double tw = fm.horizontalAdvance(t.text);
-                    const double cw = fm.averageCharWidth();
-                    const double th = fm.height();
+                    const double tw = fm.horizontalAdvance(t.text);   // string-dependent
                     const double px = d.x() + t.xoffs * cw;
                     const double py = d.y() + t.yoffs * th;
                     // Horizontal: 1=centre, 2=right (pivot at right end), 3=left.
@@ -2150,9 +2159,9 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
                                     : (t.hjust == 3) ? px
                                                      : px - tw / 2.0;
                     // Vertical (to baseline): 1=bottom, 2=centre, 3=top.
-                    const double base = (t.vjust == 3) ? py + fm.ascent()
-                                      : (t.vjust == 1) ? py - fm.descent()
-                                                       : py + fm.ascent() - th / 2.0;
+                    const double base = (t.vjust == 3) ? py + asc
+                                      : (t.vjust == 1) ? py - desc
+                                                       : py + asc - th / 2.0;
                     const QPointF at(tx, base);
                     // Cheap halo: white at the four neighbours, then ink on top.
                     p.setPen(halo);
