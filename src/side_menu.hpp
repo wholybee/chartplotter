@@ -65,6 +65,7 @@ signals:
     void autoFollowToggled(bool on);                  // auto-follow on/off
     void chartSetToggled(const QString& directory);   // user tapped a set to add/remove
     void manageChartSetsRequested();                  // open the Chart Sets dialog
+    void prepareChartCacheRequested();                // build the parsed-cell cache
     void basemapFolderRequested();                    // pick the GSHHG data folder
     void editUnitsRequested();                        // open the Units dialog
     void editStaleThresholdsRequested();              // open stale-data dialog

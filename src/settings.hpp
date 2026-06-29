@@ -46,11 +46,6 @@ public:
     // linework/symbols on top. Intended for satellite/imagery raster bases.
     bool vectorOverlay() const { return vectorOverlay_; }
 
-    // When true, soundings and symbols are suppressed during a pan/zoom gesture
-    // (the moving frame draws only vector geometry, for speed). Default false:
-    // point overlays stay visible while interacting.
-    bool hideSymbolsWhilePanning() const { return hideSymbolsWhilePanning_; }
-
     // The user's defined chart sets, in menu order.
     const QVector<ChartSet>& chartSets() const { return chartSets_; }
 
@@ -148,7 +143,6 @@ public slots:
     void setShowAisTargets(bool on);
     void setShowRasterCharts(bool on);
     void setVectorOverlay(bool on);
-    void setHideSymbolsWhilePanning(bool on);
     void setChartSets(const QVector<ChartSet>& sets);
     void setView(double lon, double lat, double scale);
     void setBasemapDirectory(const QString& dir);
@@ -182,7 +176,6 @@ signals:
     void showAisTargetsChanged(bool on);
     void showRasterChartsChanged(bool on);
     void vectorOverlayChanged(bool on);
-    void hideSymbolsWhilePanningChanged(bool on);
     void chartSetsChanged();
     void basemapDirectoryChanged(const QString& dir);
     void staleThresholdsChanged(double staleS, double invalidS);
@@ -216,7 +209,6 @@ private:
     bool showAisTargets_ = true;
     bool showRasterCharts_ = true;
     bool vectorOverlay_ = false;
-    bool hideSymbolsWhilePanning_ = false;
     QVector<ChartSet> chartSets_;
     QString basemapDir_;
     double viewLon_ = 0.0;
