@@ -1867,9 +1867,11 @@ void ChartView::renderStaticCache() {
     const qreal dpr = devicePixelRatioF() > 0.0 ? devicePixelRatioF() : 1.0;
     const int W = width(), H = height();
     if (W <= 0 || H <= 0) return;
-    // Quarter-viewport margin each side == 1.5x the viewport, matching the
-    // keepArea the cells are loaded for (no geometry exists beyond it to cache).
-    const int mx = W / 4, my = H / 4;
+    // Full-viewport margin each side == 3x the viewport. Cells are built out to
+    // a 1.5-viewport keepArea margin, so this stays inside already-built geometry
+    // while giving normal pans a full screen of cached pixels before any edge can
+    // show. The refresh after the pan then happens offscreen into this pixmap.
+    const int mx = W, my = H;
     cacheMX_ = mx; cacheMY_ = my;
     cacheW_ = W; cacheH_ = H;
     cacheScx_ = scx_; cacheScy_ = scy_; cachePpm_ = ppm_;
