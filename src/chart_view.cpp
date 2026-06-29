@@ -160,6 +160,20 @@ BasemapSource resolveBasemap(const QString& override) {
     return {};
 }
 
+// Vertex-merge tolerance (projected metres) for a usage band, ~half a pixel at
+// the band's display scale. Band-based so chart cells do not lose detail just
+// because the user temporarily zoomed through a coarser view.
+double simplifyToleranceM(int band) {
+    switch (band) {
+        case 1: return 1389.0;   // overview
+        case 2: return 278.0;    // general
+        case 3: return 46.0;     // coastal
+        case 4: return 13.9;     // approach
+        case 5: return 2.8;      // harbour
+        default: return 0.0;     // berthing / unknown: keep full detail
+    }
+}
+
 // Clip + simplify one cell to `clipBox` (projected, real frame) with vertex-merge
 // tolerance `tol`, building its vector primitives sorted by z. Pure and
 // Qt-value-only: runs on a worker. Used for both ENC cells and the basemap.
@@ -774,7 +788,6 @@ void ChartView::clearAll() {
     bboxByPath_.clear();
     cache_.clear();
     pointLodVisible_ = true;
-    cellsBuiltPpm_ = 0.0;    // force a fresh zoom reference on the next build
     staticDirty_ = true;     // dropped cells: the cached chart is now stale
 }
 
@@ -1100,13 +1113,7 @@ void ChartView::updateVisibleCells() {
     }
 
     // Unload cells out of range; re-clip cells the view panned across (including
-    // across the seam, where the offset — and thus the clip frame — changes), and
-    // re-simplify the loaded set when the zoom has drifted far enough that the
-    // built geometry (tolerance ~0.5px at build time) no longer matches the screen
-    // — the same 1.6x/0.6x band the basemap uses. cellsBuiltPpm_ tracks the zoom
-    // the current cells were simplified for; it advances only when we rebuild.
-    const bool zoomStale = cellsBuiltPpm_ <= 0.0 ||
-        ppm_ > cellsBuiltPpm_ * 1.6 || ppm_ < cellsBuiltPpm_ * 0.6;
+    // across the seam, where the offset — and thus the clip frame — changes).
     const QList<QString> loadedPaths = loaded_.keys();
     for (const QString& path : loadedPaths) {
         const int  band = bandByPath_.value(path, 0);
@@ -1121,14 +1128,11 @@ void ChartView::updateVisibleCells() {
 
         const BBox clipBox = loaded_[path].clipBox;           // real frame
         const BBox wantedRealFrame = shiftX(wantedArea, -off);
-        // Rebuild when the clip no longer covers the wanted area (panned across) or
-        // the zoom drifted enough to want a different vertex density.
-        if ((zoomStale || !clipBox.contains(wantedRealFrame)) && !building_.contains(path)) {
+        if (!clipBox.contains(wantedRealFrame) && !building_.contains(path)) {
             if (FeatureCache::FeaturesPtr feats = cache_.get(path))
                 dispatchBuild(path, feats, band, shiftX(keepArea, -off), off);
         }
     }
-    if (zoomStale) cellsBuiltPpm_ = ppm_;
 
     emit statusChanged(QStringLiteral("Bands ≤ %1  ·  %2 cell(s) shown")
                            .arg(maxBand).arg(loaded_.size()));
@@ -1211,16 +1215,6 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
     const quint64 gen = generation_;
     const QString p = path;
 
-    // Vertex-merge tolerance keyed to the actual on-screen scale: ~half a (logical)
-    // pixel in scene metres at the current zoom. Geometry is simplified to what the
-    // screen can resolve, independent of the cell's band or the detail level — a
-    // fine-band cell pulled in by +detail while zoomed out is simplified as coarsely
-    // as the view warrants, and the same cell zoomed in keeps full detail. The
-    // loaded set is re-simplified when the zoom drifts past ~1.6x (updateVisibleCells),
-    // matching the basemap (maybeBuildBasemap). Read here on the GUI thread and
-    // captured, so the worker sees a stable value.
-    const double tol = 0.5 / ppm_;
-
     // Pass a const pointer to the atlas: it is fully loaded before any worker
     // thread runs and is never modified afterwards, so no locking is needed.
     const SymAtlas* atlas = symAtlas_.isLoaded() ? &symAtlas_ : nullptr;
@@ -1232,8 +1226,8 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
         watcher->deleteLater();
         onCellBuilt(std::move(bc), gen, drawOffsetX);
     });
-    watcher->setFuture(QtConcurrent::run(&pool_, [p, feats, band, clipBox, tol, atlas]() {
-        return buildCell(p, *feats, band, clipBox, tol, atlas);
+    watcher->setFuture(QtConcurrent::run(&pool_, [p, feats, band, clipBox, atlas]() {
+        return buildCell(p, *feats, band, clipBox, simplifyToleranceM(band), atlas);
     }));
 }
 
