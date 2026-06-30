@@ -80,6 +80,19 @@ add_test(NAME product_model_round_trip COMMAND test_product_model)
 set_tests_properties(product_model_round_trip PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
+# Stage 5 unit test: ear-clip tessellator + prepared-render cache serialization
+# round trip. The cache TU only needs Qt6::Core (no GUI / GDAL).
+add_executable(test_prepared_render
+    tools/test_prepared_render.cpp
+    src/prepared_render_cache.cpp
+)
+set_target_properties(test_prepared_render PROPERTIES WIN32_EXECUTABLE FALSE)
+target_include_directories(test_prepared_render PRIVATE src)
+target_link_libraries(test_prepared_render PRIVATE Qt6::Core)
+add_test(NAME prepared_render COMMAND test_prepared_render)
+set_tests_properties(prepared_render PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
 qt_add_executable(chartviewer
     src/main.cpp
     src/main_window.cpp
@@ -142,6 +155,8 @@ qt_add_executable(chartviewer
     src/sym_atlas.cpp
     src/render_resource_atlas.cpp
     src/portrayal_engine.cpp
+    src/render_scene_compiler.cpp
+    src/prepared_render_cache.cpp
     src/theme.cpp
     src/nmea0183_client.cpp
 )

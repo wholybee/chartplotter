@@ -10,6 +10,9 @@
 #include "prepared_chart_cache.hpp"
 #include "product_decoder.hpp"
 #include "product_adapter.hpp"
+#include "prepared_render.hpp"
+#include "render_scene_compiler.hpp"
+#include "prepared_render_cache.hpp"
 
 #include <QPainter>
 #include <QElapsedTimer>
@@ -183,22 +186,32 @@ double simplifyToleranceM(int band) {
     }
 }
 
-// Clip + simplify one cell to `clipBox` (projected, real frame) with vertex-merge
-// tolerance `tol`, building its vector primitives sorted by z. Pure and
-// Qt-value-only: runs on a worker. Used for both ENC cells and the basemap.
+// Instantiate one cell into a view: clip + simplify to `clipBox` (projected,
+// real frame) with vertex-merge tolerance `tol`, building its vector primitives
+// sorted by z. Pure and Qt-value-only: runs on a worker. Used for both ENC cells
+// and the basemap.
 //
-// atlas: optional pointer to the loaded SymAtlas used to resolve symbol indices
-// for Point features.  nullptr is allowed (basemap cells have no point
-// features; ENC cells fall back to the dot glyph when atlas is not loaded).
-BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
-                    int band, const BBox& clipBox, double tol,
-                    const SymAtlas* atlas = nullptr) {
+// Portrayal is NOT recomputed here — it was resolved once by scene::compileScene
+// into `prep`, whose hits are aligned by index to `feats`. This function reads
+// prep.hits[i] where the old per-feature path called SymAtlas::symbolForFeature,
+// so the output is identical while the expensive S-52 evaluation is cached
+// (prepared_render_cache). `prep` may be empty (e.g. the basemap): a missing or
+// default hit behaves exactly as "no symbol resolved" did before.
+BuiltCell instantiateCell(const QString& path, const std::vector<Feature>& feats,
+                          const PreparedCellRender& prep,
+                          int band, const BBox& clipBox, double tol) {
     BuiltCell bc;
     bc.path    = path;
     bc.band    = band;
     bc.clipBox = clipBox;
 
     const double zb = static_cast<double>(band) * 1000.0;
+
+    // Portrayal result for feature i (default-empty when none was resolved).
+    auto hitAt = [&prep](std::size_t i) -> const SymHit& {
+        static const SymHit kEmpty;
+        return i < prep.hits.size() ? prep.hits[i] : kEmpty;
+    };
 
     std::vector<std::vector<Pt>> clipBuf;
     std::vector<std::vector<Pt>> simpBuf;
@@ -238,7 +251,8 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
         }
     };
 
-    for (const Feature& f : feats) {
+    for (std::size_t i = 0; i < feats.size(); ++i) {
+        const Feature& f = feats[i];
         const bool doClip = clipBox.valid() && !clipBox.contains(f.bbox);
 
         switch (f.kind) {
@@ -273,20 +287,13 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
             case FeatureKind::DepthContour:
             case FeatureKind::Coastline:
             case FeatureKind::OtherLine: {
-                // Resolve the S-52 lookup once for OtherArea / OtherLine
-                // features.  For OtherArea: any AC() fills the polygon, LS()
-                // styles the boundary, and any SY() drops at the centroid.
-                // For OtherLine: LS() styles the line itself.
-                SymHit hit;
-                const bool resolvable = atlas && !f.objClass.empty() &&
-                    (f.kind == FeatureKind::OtherArea ||
-                     f.kind == FeatureKind::OtherLine);
-                if (resolvable) {
-                    const SymGeom g = (f.kind == FeatureKind::OtherArea)
-                        ? SymGeom::Area : SymGeom::Line;
-                    hit = atlas->symbolForFeature(
-                        QByteArray::fromStdString(f.objClass), g, f.attrs);
-                }
+                // S-52 lookup for OtherArea / OtherLine, resolved at prepare time
+                // (scene::compileScene) and read back here. For OtherArea: any
+                // AC() fills the polygon, LS() styles the boundary, and any SY()
+                // drops at the centroid. For OtherLine: LS() styles the line.
+                // hitAt(i) is default-empty for non-symbol-bearing kinds
+                // (DepthContour/Coastline) and when no atlas was loaded.
+                const SymHit& hit = hitAt(i);
 
                 // When the area carries an AC() fill or an AP() pattern we need
                 // closed polygons (Sutherland-Hodgman ring clip + closeSubpath);
@@ -376,11 +383,7 @@ BuiltCell buildCell(const QString& path, const std::vector<Feature>& feats,
                 if (f.rings.empty() || f.rings[0].empty()) break;
                 if (doClip && !pointInRect(f.rings[0][0], clipBox)) break;
                 const QPointF pos(f.rings[0][0].x, -f.rings[0][0].y);
-                SymHit hit;
-                if (atlas)
-                    hit = atlas->symbolForFeature(
-                        QByteArray::fromStdString(f.objClass),
-                        SymGeom::Point, f.attrs);
+                const SymHit& hit = hitAt(i);
                 // One BuiltSymbol per SY() stamp (lights add a flare, buoys add
                 // a topmark, etc.). With no atlas / no resolved symbol, emit a
                 // single dot-fallback marker.
@@ -981,6 +984,48 @@ void ChartView::requestRepaint() {
     repaintTimer_->start();
 }
 
+// --- IChartRenderer (painter backend) ---------------------------------------
+//
+// These forward the renderer contract onto ChartView's existing painter-backed
+// implementation. A future GPU backend implements the same interface against its
+// own state; the shell and overlays are written against IChartRenderer and do
+// not change.
+
+void ChartView::setCamera(const ChartCamera& c) {
+    restoreView(c.lon, c.lat, c.scale);
+}
+
+ChartCamera ChartView::camera() const {
+    ChartCamera c;
+    currentView(c.lon, c.lat, c.scale);   // leaves defaults if no view yet
+    return c;
+}
+
+void ChartView::setDisplaySettings(const ChartDisplaySettings& s) {
+    // Each setter is a no-op when the value is unchanged, so pushing the whole
+    // bundle costs nothing when nothing moved.
+    setShowSoundings(s.showSoundings);
+    setShowSymbols(s.showSymbols);
+    setShowText(s.showText);
+    setShowDepthContours(s.showDepthContours);
+    setShowRasterCharts(s.showRasterCharts);
+    setVectorOverlay(s.vectorOverlay);
+    setChartDetailLevel(s.chartDetailLevel);
+    setChartScaminLevel(s.scaminLevel);
+    setSymbolScale(s.symbolScale);
+}
+
+void ChartView::requestRepaint(RepaintReason reason) {
+    if (reason == RepaintReason::Immediate) update();
+    else                                    requestRepaint();   // coalesced
+}
+
+PickResult ChartView::pick(const QPointF& screenPos) {
+    PickResult r;
+    r.objects = pickObjects(screenPos);
+    return r;
+}
+
 bool ChartView::computeViewBoxes(BBox& view, BBox& wanted, BBox& keep, int& target) const {
     if (ppm_ <= 0.0 || width() <= 0) return false;
     const double halfW = (width()  / 2.0) / ppm_;
@@ -1265,6 +1310,7 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
     // Pass a const pointer to the atlas: it is fully loaded before any worker
     // thread runs and is never modified afterwards, so no locking is needed.
     const SymAtlas* atlas = symAtlas_.isLoaded() ? &symAtlas_ : nullptr;
+    const quint64 fp = atlas ? atlas->fingerprint() : 0;
 
     auto* watcher = new QFutureWatcher<BuiltCell>(this);
     connect(watcher, &QFutureWatcher<BuiltCell>::finished, this,
@@ -1273,8 +1319,18 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
         watcher->deleteLater();
         onCellBuilt(std::move(bc), gen, drawOffsetX);
     });
-    watcher->setFuture(QtConcurrent::run(&pool_, [p, feats, band, clipBox, atlas]() {
-        return buildCell(p, *feats, band, clipBox, simplifyToleranceM(band), atlas);
+    watcher->setFuture(QtConcurrent::run(&pool_, [p, feats, band, clipBox, atlas, fp]() {
+        // Prepared-render cache (Stage 5): load the portrayal-resolved scene, or
+        // compile it once and store. The positional feature-count guard rejects a
+        // stale artifact whose feature vector no longer lines up. instantiateCell
+        // then clips/simplifies into a BuiltCell without re-running portrayal.
+        PreparedCellRender prep;
+        if (!(prepared_render_cache::load(p, fp, prep) &&
+              prep.featureCount() == feats->size())) {
+            prep = scene::compileScene(p, *feats, atlas);
+            prepared_render_cache::store(p, fp, prep);
+        }
+        return instantiateCell(p, *feats, prep, band, clipBox, simplifyToleranceM(band));
     }));
 }
 
@@ -1463,8 +1519,12 @@ void ChartView::maybeBuildBasemap() {
     watcher->setFuture(QtConcurrent::run(&pool_, [feats, reqs, tol]() {
         std::vector<BuiltCell> result;
         result.reserve(reqs.size());
+        // Basemap features carry no symbology (no atlas), so the prepared scene
+        // is just fills; compile it once and instantiate per world-copy. Not
+        // disk-cached (GSHHG geometry is transient and regenerated per zoom).
+        const PreparedCellRender prep = scene::compileScene(QString(), *feats, nullptr);
         for (const auto& r : reqs) {
-            BuiltCell bc = buildCell(QString(), *feats, 0, r.first, tol);
+            BuiltCell bc = instantiateCell(QString(), *feats, prep, 0, r.first, tol);
             bc.drawOffsetX = r.second;
             result.push_back(std::move(bc));
         }
