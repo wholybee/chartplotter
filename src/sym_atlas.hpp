@@ -47,6 +47,11 @@ public:
     bool load(const QString& binPath, const QString& pngPath);
     bool isLoaded() const { return resources_.isLoaded(); }
 
+    // Identity digest of the loaded portrayal package (derived from symbols.bin's
+    // size + mtime). Used to key the prepared-render cache so swapping the
+    // portrayal package invalidates it. 0 until a successful load().
+    quint64 fingerprint() const { return fingerprint_; }
+
     // The S-57 attribute acronyms that any lookup condition, text command, or CS
     // procedure references. The chart loader reads exactly these per feature.
     const std::vector<std::string>& relevantAttrs() const {
@@ -90,4 +95,5 @@ public:
 private:
     PortrayalPackage    package_;
     RenderResourceAtlas resources_;
+    quint64             fingerprint_ = 0;
 };

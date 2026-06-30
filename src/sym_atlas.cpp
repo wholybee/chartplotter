@@ -3,6 +3,7 @@
 #include "portrayal_binary.hpp"
 
 #include <QFile>
+#include <QFileInfo>
 #include <QPixmap>
 
 #include <cstddef>
@@ -55,6 +56,14 @@ bool SymAtlas::load(const QString& binPath, const QString& pngPath) {
                   attrRecs, hdr->attrCount, colorRecs, hdr->colorCount,
                   strBase, strBytes);
 
-    return resources_.load(symRecs, hdr->symCount, lcRecs, hdr->lcCount,
-                           apRecs, hdr->apCount, strBase, strBytes, pm);
+    if (!resources_.load(symRecs, hdr->symCount, lcRecs, hdr->lcCount,
+                         apRecs, hdr->apCount, strBase, strBytes, pm))
+        return false;
+
+    // Portrayal fingerprint: size + mtime of the loaded binary. Changes whenever
+    // symbols.bin is rebuilt, so the prepared-render cache rebuilds with it.
+    const QFileInfo bi(binPath);
+    fingerprint_ = (static_cast<quint64>(bi.size()) << 32) ^
+                   static_cast<quint64>(bi.lastModified().toMSecsSinceEpoch());
+    return true;
 }

@@ -25,6 +25,7 @@
 #include "plugin_api.hpp"       // IChartOverlay, ChartViewport
 #include "sym_atlas.hpp"        // SymAtlas
 #include "mbtiles_reader.hpp"   // MbtilesMeta
+#include "chart_renderer.hpp"   // IChartRenderer seam
 
 class ChartCatalog;
 class QTimer;
@@ -168,11 +169,25 @@ struct BuiltCell {
 // in X with period worldWidth — lets us wrap at the 180° seam by drawing cells
 // shifted by whole-world widths. It also leaves a clean place to draw a
 // worldwide basemap underlay beneath the cells.
-class ChartView : public QWidget {
+// ChartView is both the UI shell and — for now — the one concrete
+// IChartRenderer: a painter-backed renderer that loads, retains, and draws chart
+// cells with QPainter. The IChartRenderer base is the seam a future retained GPU
+// backend (Stage 7) implements; the shell-facing parts (input, overlays,
+// settings, ownship, status) stay on ChartView regardless of backend.
+class ChartView : public QWidget, public IChartRenderer {
     Q_OBJECT
 public:
     explicit ChartView(QWidget* parent = nullptr);
     ~ChartView() override;
+
+    // --- IChartRenderer (painter backend) ---------------------------------
+    QWidget*    widget() override { return this; }
+    void        setCamera(const ChartCamera& camera) override;
+    ChartCamera camera() const override;
+    void        setDisplaySettings(const ChartDisplaySettings& settings) override;
+    void        requestRepaint(RepaintReason reason) override;
+    PickResult  pick(const QPointF& screenPos) override;
+    // addOverlay/removeOverlay below also satisfy IChartRenderer.
 
     void setCatalog(ChartCatalog* catalog);
     // Select the vector-chart backend for cell loads. nullptr (default) uses the
@@ -252,8 +267,8 @@ public:
 
     // Plugin chart overlays: drawn on top of the chart each frame, in registration
     // order. The view does not own them (the plugin does).
-    void addOverlay(IChartOverlay* overlay);
-    void removeOverlay(IChartOverlay* overlay);
+    void addOverlay(IChartOverlay* overlay) override;
+    void removeOverlay(IChartOverlay* overlay) override;
 
     // Active chart editor (nullptr = none). While set, press/move/release are
     // offered to it before panning, so it can drag chart nodes. Not owned.
