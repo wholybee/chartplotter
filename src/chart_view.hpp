@@ -18,6 +18,8 @@
 #include <memory>
 #include "chart_loader.hpp"
 #include "chart_object.hpp"
+#include "built_cell.hpp"       // BuiltCell + primitives
+#include "cell_source.hpp"      // CellLoadResult + cellsource::parseCell
 #include "feature_cache.hpp"
 #include "nav_data_store.hpp"   // OwnshipState, NavFreshness
 #include "units.hpp"            // DepthUnit
@@ -26,6 +28,7 @@
 #include "sym_atlas.hpp"        // SymAtlas
 #include "mbtiles_reader.hpp"   // MbtilesMeta
 #include "chart_renderer.hpp"   // IChartRenderer seam
+#include "render_backend.hpp"   // RenderBackend
 
 class ChartCatalog;
 class QTimer;
@@ -33,6 +36,7 @@ class QPushButton;
 class QThread;
 class MbtilesService;
 class IChartSource;
+class GpuChartView;             // retained GPU chart layer (Stage 7)
 
 // A chart-editing controller (e.g. the route/waypoint editor). When one is set,
 // ChartView consults it on the raw press/move/release before its own panning, so
@@ -63,102 +67,12 @@ inline size_t qHash(const RasterTileKey& k, size_t seed = 0) noexcept {
     return qHashMulti(seed, k.chart, k.z, k.x, k.y);
 }
 
-// Result handed back from a worker thread after loading one cell.
-struct CellLoadResult {
-    QString path;
-    std::vector<Feature> features;
-    BBox bbox;
-    bool ok = false;
-    QString error;
-};
+// CellLoadResult (the worker's parse result) lives in cell_source.hpp so the
+// shared loader and a future GPU backend can produce it without the widget.
 
-// One ready-to-draw vector primitive: a clipped, simplified path plus its style.
-// Built on a worker thread (QPainterPath/QColor are value types, safe off the
-// GUI thread); the UI thread draws it directly through the camera transform.
-// Coordinates are scene metres: projected Mercator with Y flipped so north is up.
-struct BuiltPath {
-    QPainterPath path;
-    QRectF bounds;             // path.boundingRect(), for view culling
-    double z = 0.0;
-    bool   filled = false;     // true: area (use brush); false: line (pen only)
-    QColor brush;
-    bool   hasPen = false;
-    QColor penColor;
-    qreal  penWidth = 1.0;
-    Qt::PenStyle penStyle = Qt::SolidLine;   // SolidLine / DashLine / DotLine
-    bool   isDepthContour = false;
-    // S-52 complex symbology resolved at build time, rendered at constant on-
-    // screen size in device space (see paintEvent). -1 when absent.
-    int    apIndex = -1;       // AP() area-pattern fill (tiled motif)
-    int    lcIndex = -1;       // LC() complex line (motif stamped along the path)
-    int    scaleMin = 0;       // S-57 SCAMIN (0 = none); paint-time declutter floor
-};
-
-// A whole cell, clipped to a region and ready to draw. drawOffsetX shifts it by a
-// whole-world width so cells near the date line can be drawn on the far side of
-// the 180° seam (longitude wrap-around).
-// A single sounding: scene position plus the raw depth in metres (S-57's native
-// unit). The label is formatted at paint time from the current depth unit, so
-// switching feet/metres is a repaint — no rebuild of the cell geometry.
-struct Sounding {
-    QPointF pos;            // scene position (Y already flipped north-up)
-    double  depthM = 0.0;   // raw depth, metres
-    bool    hasDepth = false;
-    int     scaleMin = 0;   // S-57 SCAMIN (0 = none); paint-time declutter floor
-};
-
-// A resolved symbol: scene position + atlas index + optional rotation.
-// symIdx == SymAtlas::kNoSymbol means no atlas entry was found; the renderer
-// falls back to the magenta dot used before symbol support was added.
-// rotationDeg is the S-57 ORIENT angle (degrees CW from true north); zero for
-// upright symbols.  Resolved at cell-build time so paint is just a blit.
-struct BuiltSymbol {
-    QPointF  pos;
-    uint16_t symIdx = SymAtlas::kNoSymbol;
-    float    rotationDeg = 0.0f;
-    int      scaleMin = 0;   // S-57 SCAMIN (0 = none); paint-time declutter floor
-};
-
-// A text label drawn at constant on-screen size next to its object. Resolved at
-// cell-build time from a TX()/TE() instruction (or the bare OBJNAM); SCAMIN-
-// declutter and the Text toggle apply at paint time, like symbols.
-//   hjust 1=centre 2=right 3=left   vjust 1=bottom 2=centre 3=top
-// xoffs/yoffs are in nominal character-box units (≈ font width/height).
-struct BuiltText {
-    QPointF pos;             // scene position of the object the label annotates
-    QString text;
-    int     scaleMin = 0;    // S-57 SCAMIN (0 = none)
-    quint8  hjust = 3, vjust = 2;
-    int     xoffs = 0, yoffs = 0;
-    QColor  color = QColor(40, 40, 40);
-    quint8  pointSize = 8;
-};
-
-// A light sector: a coloured arc plus its two dashed limit legs, drawn at
-// constant on-screen size around a sectored light. Bearings are directions from
-// the light (degrees CW from true north); the lit arc sweeps clockwise
-// startDeg→endDeg. Resolved at cell-build time from CS(LIGHTS05); SCAMIN
-// declutter and the Symbols toggle apply at paint time, like symbols.
-struct BuiltLightSector {
-    QPointF pos;             // scene position of the light (Y flipped north-up)
-    float   startDeg = 0.0f;
-    float   endDeg   = 0.0f;
-    float   rangeNm  = 0.0f;
-    QColor  color;
-    int     scaleMin = 0;    // S-57 SCAMIN (0 = none)
-};
-
-struct BuiltCell {
-    QString path;
-    int  band = 0;
-    BBox clipBox;                                          // region (real frame)
-    double drawOffsetX = 0.0;                              // scene-X wrap offset
-    std::vector<BuiltPath>   paths;                        // sorted by z
-    std::vector<Sounding>    soundings;                    // scene pos + depth
-    std::vector<BuiltSymbol> symbols;                      // scene pos + sym idx
-    std::vector<BuiltText>   texts;                        // scene pos + label
-    std::vector<BuiltLightSector> sectors;                 // light sector arcs
-};
+// Ready-to-draw cell primitives (BuiltCell / BuiltPath / Sounding / BuiltSymbol
+// / BuiltText / BuiltLightSector) live in built_cell.hpp so the shared cell
+// builder and a future ChartEngine can produce them without the widget.
 
 // Chart canvas with a camera-based renderer.
 //
@@ -257,6 +171,13 @@ public:
     // of the standard install locations. Loads the basemap underlay async.
     void setBasemapDirectory(const QString& dir);
 
+    // Choose the rendering backend (Stage 7). The user toggle maps GPU-on to Auto
+    // and GPU-off to Cpu; the actual backend is resolved via chartrender::
+    // resolveUseGpu against an RHI-availability probe, so a missing/broken device
+    // always falls back to the QPainter path. Switching rebuilds the loaded cells
+    // for the target backend. Safe to call before or after a catalog is loaded.
+    void setRenderBackend(RenderBackend pref);
+
     // Ownship overlay: the view subscribes to a NavDataStore and draws the
     // ownship symbol over the chart, with appearance reflecting freshness.
     void setOwnship(const OwnshipState& s);   // freshness read per-value from s
@@ -319,6 +240,8 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent* e) override;
+    // Paints the translucent GPU overlay layer (dynamic pass) via paintDynamic.
+    bool eventFilter(QObject* obj, QEvent* e) override;
     void wheelEvent(QWheelEvent* e) override;
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
@@ -426,8 +349,31 @@ private:
     // offscreen staticCache_; invalidateChart marks the cache stale and repaints.
     void renderStatic(QPainter& p, const QTransform& cam,
                       const QRectF& vis, const QRectF& deviceRect);
+    // Constant-on-screen-size chart symbology (S-52 area patterns + complex
+    // lines, then soundings, light sectors, symbols, and text) in device space.
+    // Shared by the painter static cache and the GPU overlay layer.
+    void drawPointSymbology(QPainter& p, const QTransform& cam,
+                            const QRectF& vis, const QRectF& deviceRect);
     void renderStaticCache();
     void invalidateChart();
+
+    // --- GPU backend (Stage 7 A4) ------------------------------------------
+    // Dynamic pass (ownship, scale bar, plugin overlays) at the live camera.
+    // Shared by the painter path (drawn straight onto the widget) and the GPU
+    // path (drawn onto the translucent overlay layer above the RHI surface).
+    void paintDynamic(QPainter& p);
+    // Bring the widget stack into line with useGpu_: create/show or hide the GPU
+    // + overlay child layers, and rebuild the loaded cells for the target backend.
+    void applyBackend();
+    // Re-assemble the retained GPU scene from the active cells' batches (called
+    // when the quilt/active set changes, not on pan/zoom).
+    void rebuildGpuScene();
+    // Composite the visible raster (MBTiles) tiles into one image (reusing
+    // drawRasterCharts) centred on the current GPU scene origin, and hand it to
+    // the GPU layer as a textured underlay. Independent of the vector rebuild.
+    void composeGpuRaster();
+    // Push the current camera to the GPU layer (pan/zoom = uniform update only).
+    void syncGpuCamera();
     // Touch-friendly zoom: same step as the wheel, anchored at the screen
     // centre (no cursor on touch devices).
     void zoomBy(double factor);
@@ -440,7 +386,11 @@ private:
 
     ChartCatalog* catalog_ = nullptr;
     IChartSource* chartSource_ = nullptr;   // null = built-in ENC reader
-    QThreadPool   pool_;
+    // Worker pool for cell load/build/basemap tasks. A raw pointer (not a value
+    // member, not parented) so shutdown can *abandon* it if a worker is wedged:
+    // a value member's destructor would waitForDone() unconditionally, hanging
+    // the process after the window is gone. See ~ChartView.
+    QThreadPool*  pool_ = nullptr;
     QTimer*       updateTimer_ = nullptr;
     QTimer*       aaTimer_ = nullptr;
     QTimer*       saveTimer_ = nullptr;
@@ -518,6 +468,20 @@ private:
     // Loaded once at construction; immutable after that, safe to query from
     // worker threads.  When not loaded, point features fall back to a dot.
     SymAtlas symAtlas_;
+
+    // GPU backend (Stage 7 A4). When useGpu_ resolves true, gpuLayer_ (a
+    // QRhiWidget) draws the retained vector cells and overlayLayer_ (translucent)
+    // draws the dynamic pass on top; the painter path is bypassed. Both are child
+    // widgets sized to the viewport; input still flows to this widget (they are
+    // transparent for mouse events). gpuSceneO* is the common origin the retained
+    // batches were re-based to; gpuSceneDirty_ forces a re-assembly.
+    RenderBackend backendPref_ = RenderBackend::Auto;
+    bool          useGpu_ = false;
+    GpuChartView* gpuLayer_ = nullptr;
+    QWidget*      overlayLayer_ = nullptr;
+    double        gpuSceneOX_ = 0.0, gpuSceneOY_ = 0.0;
+    bool          gpuSceneDirty_ = true;
+    bool          gpuRasterDirty_ = false;   // raster underlay needs recompositing
 
     bool   havePendingView_ = false;
     double pendingLon_ = 0.0, pendingLat_ = 0.0, pendingScale_ = 0.0;

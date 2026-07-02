@@ -3,6 +3,7 @@
 #include "chart_loader.hpp"
 #include "main_window.hpp"
 #include "app_info.hpp"
+#include "debug_trace.hpp"
 
 int main(int argc, char** argv) {
     // QApplication must come first: we need applicationDirPath() to locate the
@@ -32,5 +33,10 @@ int main(int argc, char** argv) {
 
     MainWindow w;
     w.show();
-    return app.exec();
+    const int rc = app.exec();
+    hmvtrace::mark("app.exec() returned; destroying MainWindow");
+    // MainWindow `w` is destroyed as this scope unwinds (after the trace above);
+    // a final "clean exit" line is written by its destructor chain. If the trace
+    // file ends before that, teardown blocked — the last line names where.
+    return rc;
 }

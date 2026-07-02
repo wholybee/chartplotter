@@ -1,5 +1,6 @@
 #include "main_window.hpp"
 #include "app_info.hpp"
+#include "debug_trace.hpp"
 #include "about_dialog.hpp"
 #include "window_dragger.hpp"
 #include "chart_view.hpp"
@@ -103,6 +104,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(settings_, &Settings::showDepthContoursChanged, view_, &ChartView::setShowDepthContours);
     connect(settings_, &Settings::showRasterChartsChanged,  view_, &ChartView::setShowRasterCharts);
     connect(settings_, &Settings::vectorOverlayChanged,     view_, &ChartView::setVectorOverlay);
+    // Rendering backend (Stage 7): the "Use GPU acceleration" toggle. Applied now
+    // and on change; ChartView resolves it against an RHI probe and falls back to
+    // the painter automatically if the GPU device can't be created.
+    view_->setRenderBackend(settings_->renderBackend());
+    connect(settings_, &Settings::renderBackendChanged,     view_, &ChartView::setRenderBackend);
     connect(view_, &ChartView::rasterChartsChanged, this, &MainWindow::onRasterChartsChanged);
     view_->setChartDetailLevel(settings_->chartDetailLevel());
     connect(settings_, &Settings::chartDetailLevelChanged,
@@ -411,7 +417,9 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 // Defined here (not =default in the header) so CoreApi/PluginManager are complete
 // types when the unique_ptr members are destroyed. The manager shuts plugins down
 // (removing overlays from the still-alive ChartView) before they are freed.
-MainWindow::~MainWindow() = default;
+MainWindow::~MainWindow() {
+    hmvtrace::mark("~MainWindow begin (plugins shut down, then children destroyed)");
+}
 
 bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
     if (obj == view_ && e->type() == QEvent::Resize) {
@@ -424,10 +432,18 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
 }
 
 void MainWindow::closeEvent(QCloseEvent* e) {
+    hmvtrace::mark("MainWindow::closeEvent begin");
     view_->persistViewNow();   // flush the latest location even if mid-debounce
     // Persist size / position / maximised state for the next launch.
     QSettings().setValue(QStringLiteral("window/geometry"), saveGeometry());
+    // Cancel and join the catalog scan here, on the GUI thread while everything
+    // is still alive, so it is never left running on the global pool (which would
+    // otherwise be joined only at static teardown — after the window is gone —
+    // and keep the process alive). Cooperative cancel makes this prompt.
+    if (catalog_) { hmvtrace::mark("catalog shutdown begin"); catalog_->shutdown(); }
+    hmvtrace::mark("catalog shutdown done");
     QMainWindow::closeEvent(e);
+    hmvtrace::mark("MainWindow::closeEvent end");
 }
 
 void MainWindow::positionMenuButton() {

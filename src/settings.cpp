@@ -36,6 +36,7 @@ constexpr auto kSymScale    = "display/symbolScale";
 constexpr auto kVesselScale = "display/vesselScale";
 constexpr auto kOwnMmsi     = "nav/ownshipMmsi";
 constexpr auto kHeadingSrc  = "ships/headingSource";
+constexpr auto kRenderBackend = "display/renderBackend";
 constexpr auto kDangIgnoreFarOn = "ships/dangerIgnoreFarEnabled";
 constexpr auto kDangIgnoreFarNm = "ships/dangerIgnoreFarNm";
 constexpr auto kDangCpaOn   = "ships/dangerCpaEnabled";
@@ -95,6 +96,8 @@ Settings::Settings(QObject* parent) : QObject(parent) {
     ownshipMmsi_ = s.value(QLatin1String(kOwnMmsi)).toString();
     headingSource_ = headingsrc::fromKey(s.value(QLatin1String(kHeadingSrc)).toString(),
                                          HeadingSource::Heading);
+    renderBackend_ = chartrender::fromKey(s.value(QLatin1String(kRenderBackend)).toString(),
+                                          RenderBackend::Auto);
     dangerIgnoreFarEnabled_ = s.value(QLatin1String(kDangIgnoreFarOn), true).toBool();
     dangerIgnoreFarNm_      = s.value(QLatin1String(kDangIgnoreFarNm), 20.0).toDouble();
     dangerCpaEnabled_  = s.value(QLatin1String(kDangCpaOn), true).toBool();
@@ -244,6 +247,13 @@ void Settings::setHeadingSource(HeadingSource src) {
     headingSource_ = src;
     QSettings().setValue(QLatin1String(kHeadingSrc), headingsrc::key(src));
     emit headingSourceChanged(src);
+}
+
+void Settings::setRenderBackend(RenderBackend b) {
+    if (b == renderBackend_) return;
+    renderBackend_ = b;
+    QSettings().setValue(QLatin1String(kRenderBackend), chartrender::key(b));
+    emit renderBackendChanged(b);
 }
 
 void Settings::setDangerousShips(bool ignoreFarEnabled, double ignoreFarNm,

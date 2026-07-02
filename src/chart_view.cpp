@@ -7,16 +7,16 @@
 #include "sym_atlas.hpp"
 #include "theme.hpp"
 #include "mbtiles_service.hpp"
-#include "prepared_chart_cache.hpp"
-#include "product_decoder.hpp"
-#include "product_adapter.hpp"
 #include "prepared_render.hpp"
 #include "render_scene_compiler.hpp"
 #include "prepared_render_cache.hpp"
+#include "cell_builder.hpp"
+#include "chart_quilt.hpp"
+#include "gpu_chart_view.hpp"
+#include "gpu_batches.hpp"
+#include "debug_trace.hpp"
 
 #include <QPainter>
-#include <QElapsedTimer>
-#include <QLoggingCategory>
 #include <QPaintEvent>
 #include <QWheelEvent>
 #include <QMouseEvent>
@@ -46,58 +46,6 @@
 
 namespace {
 
-// Parsed-cell cache hit/miss + parse timing. Quiet by default; enable with
-// QT_LOGGING_RULES="chart.cache.debug=true". Folds into Stage 0 telemetry later.
-Q_LOGGING_CATEGORY(lcCache, "chart.cache")
-
-QColor fillColor(const Feature& f) {
-    if (f.kind == FeatureKind::LandArea) return QColor(217, 199, 148);
-    if (!f.hasDepth)                     return QColor(184, 212, 235);
-    double d = f.depth;
-    if (d <  0.0)  return QColor(158, 189, 140);
-    if (d <  2.0)  return QColor(102, 168, 217);
-    if (d <  5.0)  return QColor(143, 194, 227);
-    if (d < 10.0)  return QColor(184, 217, 240);
-    if (d < 20.0)  return QColor(217, 235, 250);
-    return QColor(242, 247, 255);
-}
-
-// Builds a path in scene coordinates: projected X, and Y negated so north is up.
-QPainterPath buildPathFromRings(const std::vector<std::vector<Pt>>& rings, bool closed) {
-    QPainterPath path;
-    if (closed) path.setFillRule(Qt::OddEvenFill);
-    for (const auto& ring : rings) {
-        if (ring.size() < 2) continue;
-        path.moveTo(ring[0].x, -ring[0].y);
-        for (std::size_t i = 1; i < ring.size(); ++i)
-            path.lineTo(ring[i].x, -ring[i].y);
-        if (closed) path.closeSubpath();
-    }
-    return path;
-}
-
-// Area-weighted centroid of a polygon ring (projected coords). Falls back to
-// the vertex average for a degenerate (near-zero-area) ring. Used to place an
-// area feature's centred symbol (e.g. an anchorage's anchor glyph).
-Pt ringCentroid(const std::vector<Pt>& ring) {
-    const std::size_t n = ring.size();
-    if (n == 0) return {0.0, 0.0};
-    double a = 0.0, cx = 0.0, cy = 0.0;
-    for (std::size_t i = 0, j = n - 1; i < n; j = i++) {
-        const double cross = ring[j].x * ring[i].y - ring[i].x * ring[j].y;
-        a  += cross;
-        cx += (ring[j].x + ring[i].x) * cross;
-        cy += (ring[j].y + ring[i].y) * cross;
-    }
-    if (std::abs(a) < 1e-9) {
-        double sx = 0.0, sy = 0.0;
-        for (const Pt& p : ring) { sx += p.x; sy += p.y; }
-        return { sx / static_cast<double>(n), sy / static_cast<double>(n) };
-    }
-    a *= 0.5;
-    return { cx / (6.0 * a), cy / (6.0 * a) };
-}
-
 using geom::clipRingToRect;
 using geom::clipPolylineToRect;
 using geom::pointInRect;
@@ -111,30 +59,6 @@ std::size_t approxBytes(const std::vector<Feature>& feats) {
             b += sizeof(Pt) * ring.capacity();
     }
     return b;
-}
-
-// A cell's data-coverage footprint as a scene-frame QPainterPath, shifted into
-// the common view frame by its wrap offset and clipped to `bound` (the kept
-// region, also scene-frame). Scene Y is north-up, so y = -projected y. Falls
-// back to the bbox rectangle when the cell has no M_COVR rings. Used by the
-// quilting pass to decide, region by region, which band is the finest present.
-QPainterPath coveragePath(const CellRecord& c, double off, const QPainterPath& bound) {
-    QPainterPath pp;
-    pp.setFillRule(Qt::WindingFill);
-    if (!c.coverage.empty()) {
-        for (const std::vector<Pt>& ring : c.coverage) {
-            if (ring.size() < 3) continue;
-            QPolygonF poly;
-            poly.reserve(static_cast<int>(ring.size()));
-            for (const Pt& p : ring) poly << QPointF(p.x + off, -p.y);
-            pp.addPolygon(poly);
-            pp.closeSubpath();
-        }
-    } else {
-        const BBox& b = c.bbox;
-        pp.addRect(QRectF(b.minx + off, -b.maxy, b.maxx - b.minx, b.maxy - b.miny));
-    }
-    return pp.intersected(bound);
 }
 
 // Resolve where the GSHHG basemap lives. Search order: an explicit override
@@ -186,238 +110,6 @@ double simplifyToleranceM(int band) {
     }
 }
 
-// Instantiate one cell into a view: clip + simplify to `clipBox` (projected,
-// real frame) with vertex-merge tolerance `tol`, building its vector primitives
-// sorted by z. Pure and Qt-value-only: runs on a worker. Used for both ENC cells
-// and the basemap.
-//
-// Portrayal is NOT recomputed here — it was resolved once by scene::compileScene
-// into `prep`, whose hits are aligned by index to `feats`. This function reads
-// prep.hits[i] where the old per-feature path called SymAtlas::symbolForFeature,
-// so the output is identical while the expensive S-52 evaluation is cached
-// (prepared_render_cache). `prep` may be empty (e.g. the basemap): a missing or
-// default hit behaves exactly as "no symbol resolved" did before.
-BuiltCell instantiateCell(const QString& path, const std::vector<Feature>& feats,
-                          const PreparedCellRender& prep,
-                          int band, const BBox& clipBox, double tol) {
-    BuiltCell bc;
-    bc.path    = path;
-    bc.band    = band;
-    bc.clipBox = clipBox;
-
-    const double zb = static_cast<double>(band) * 1000.0;
-
-    // Portrayal result for feature i (default-empty when none was resolved).
-    auto hitAt = [&prep](std::size_t i) -> const SymHit& {
-        static const SymHit kEmpty;
-        return i < prep.hits.size() ? prep.hits[i] : kEmpty;
-    };
-
-    std::vector<std::vector<Pt>> clipBuf;
-    std::vector<std::vector<Pt>> simpBuf;
-
-    auto reduce = [&](const std::vector<std::vector<Pt>>& src, std::size_t minPts)
-            -> const std::vector<std::vector<Pt>>& {
-        if (tol <= 0.0) return src;
-        simpBuf.clear();
-        for (const auto& ring : src) {
-            std::vector<Pt> s = geom::simplify(ring, tol);
-            if (s.size() >= minPts) simpBuf.push_back(std::move(s));
-        }
-        return simpBuf;
-    };
-
-    // Emit the TX()/TE() labels a SymHit produced at scene position `pos`. When
-    // the instruction carried no text but the feature has an OBJNAM, fall back
-    // to a single name label (the pre-S-52-text behaviour) so named objects keep
-    // their label.
-    auto pushHitTexts = [&](const SymHit& hit, QPointF pos, int scaleMin,
-                            const std::string& fallbackName) {
-        if (!hit.texts.empty()) {
-            for (const SymText& t : hit.texts) {
-                BuiltText bt;
-                bt.pos = pos; bt.text = t.text; bt.scaleMin = scaleMin;
-                bt.hjust = t.hjust; bt.vjust = t.vjust;
-                bt.xoffs = t.xoffs; bt.yoffs = t.yoffs;
-                bt.color = QColor(t.r, t.g, t.b);
-                bt.pointSize = t.pointSize;
-                bc.texts.push_back(std::move(bt));
-            }
-        } else if (!fallbackName.empty()) {
-            BuiltText bt;
-            bt.pos = pos; bt.text = QString::fromStdString(fallbackName);
-            bt.scaleMin = scaleMin;
-            bc.texts.push_back(std::move(bt));
-        }
-    };
-
-    for (std::size_t i = 0; i < feats.size(); ++i) {
-        const Feature& f = feats[i];
-        const bool doClip = clipBox.valid() && !clipBox.contains(f.bbox);
-
-        switch (f.kind) {
-            case FeatureKind::DepthArea:
-            case FeatureKind::LandArea: {
-                const std::vector<std::vector<Pt>>* rings = &f.rings;
-                if (doClip) {
-                    clipBuf.clear();
-                    for (const auto& ring : f.rings) {
-                        std::vector<Pt> c = clipRingToRect(ring, clipBox);
-                        if (c.size() >= 3) clipBuf.push_back(std::move(c));
-                    }
-                    if (clipBuf.empty()) break;
-                    rings = &clipBuf;
-                }
-                const std::vector<std::vector<Pt>>& use = reduce(*rings, 3);
-                if (use.empty()) break;
-
-                BuiltPath bp;
-                bp.path   = buildPathFromRings(use, true);
-                bp.bounds = bp.path.boundingRect();
-                bp.z      = zb + f.zorder;
-                bp.filled = true;
-                bp.brush  = fillColor(f);
-                if (f.kind == FeatureKind::LandArea) {
-                    bp.hasPen = true; bp.penColor = QColor(115, 97, 64); bp.penWidth = 1.0;
-                }
-                bc.paths.push_back(std::move(bp));
-                break;
-            }
-            case FeatureKind::OtherArea:
-            case FeatureKind::DepthContour:
-            case FeatureKind::Coastline:
-            case FeatureKind::OtherLine: {
-                // S-52 lookup for OtherArea / OtherLine, resolved at prepare time
-                // (scene::compileScene) and read back here. For OtherArea: any
-                // AC() fills the polygon, LS() styles the boundary, and any SY()
-                // drops at the centroid. For OtherLine: LS() styles the line.
-                // hitAt(i) is default-empty for non-symbol-bearing kinds
-                // (DepthContour/Coastline) and when no atlas was loaded.
-                const SymHit& hit = hitAt(i);
-
-                // When the area carries an AC() fill or an AP() pattern we need
-                // closed polygons (Sutherland-Hodgman ring clip + closeSubpath);
-                // otherwise the existing polyline clip is correct for outlines.
-                const bool fillArea = (f.kind == FeatureKind::OtherArea) &&
-                                      (hit.hasFill || hit.apIndex >= 0);
-
-                const std::vector<std::vector<Pt>>* rings = &f.rings;
-                if (doClip) {
-                    clipBuf.clear();
-                    if (fillArea) {
-                        for (const auto& ring : f.rings) {
-                            std::vector<Pt> c = clipRingToRect(ring, clipBox);
-                            if (c.size() >= 3) clipBuf.push_back(std::move(c));
-                        }
-                    } else {
-                        for (const auto& ring : f.rings) {
-                            std::vector<std::vector<Pt>> runs = clipPolylineToRect(ring, clipBox);
-                            for (auto& run : runs) clipBuf.push_back(std::move(run));
-                        }
-                    }
-                    if (clipBuf.empty()) break;
-                    rings = &clipBuf;
-                }
-                const std::vector<std::vector<Pt>>& use = reduce(*rings, fillArea ? 3 : 2);
-                if (use.empty()) break;
-
-                BuiltPath bp;
-                bp.path    = buildPathFromRings(use, fillArea);
-                bp.bounds  = bp.path.boundingRect();
-                bp.z       = zb + f.zorder;
-                bp.filled  = hit.hasFill;   // AC() wash (AP pattern overlays it)
-                bp.apIndex = (f.kind == FeatureKind::OtherArea) ? hit.apIndex : -1;
-                bp.lcIndex = hit.lcIndex;
-                bp.scaleMin = f.scaleMin;   // SCAMIN floor for the LC/AP overlay pass
-                if (hit.hasFill)
-                    bp.brush = QColor(hit.fill.r, hit.fill.g, hit.fill.b, hit.fill.a);
-                bp.hasPen = true;
-                if (hit.hasLine) {
-                    bp.penColor = QColor(hit.line.r, hit.line.g, hit.line.b);
-                    bp.penWidth = static_cast<qreal>(hit.line.width);
-                    bp.penStyle = (hit.line.pattern == SymLineStyle::Dash) ? Qt::DashLine
-                                : (hit.line.pattern == SymLineStyle::Dot)  ? Qt::DotLine
-                                : Qt::SolidLine;
-                }
-                // A complex line (LC) replaces the plain outline; keep just a
-                // faint guide so the boundary still reads if the motif is sparse.
-                else if (hit.lcIndex >= 0)                        { bp.penColor = QColor(120, 120, 130, 90);  bp.penWidth = 0.6; }
-                else if (hit.hasFill && bp.apIndex < 0)           { bp.hasPen = false; }   // fill-only area
-                else if (f.kind == FeatureKind::Coastline)        { bp.penColor = QColor(64, 51, 31);         bp.penWidth = 1.4; }
-                else if (f.kind == FeatureKind::DepthContour)     { bp.penColor = QColor(115, 153, 199);      bp.penWidth = 0.8; }
-                else if (f.kind == FeatureKind::OtherArea)        { bp.penColor = QColor(102, 102, 115, 150); bp.penWidth = 0.7; }
-                else                                              { bp.penColor = QColor(102, 102, 128);      bp.penWidth = 0.8; }
-                bp.isDepthContour = (f.kind == FeatureKind::DepthContour);
-                bc.paths.push_back(std::move(bp));
-
-                // Area centred symbols (e.g. ACHARE anchor glyph, TSSLPT
-                // direction arrow, restriction glyph from CS(RESTRN01)) and text
-                // labels, placed at the polygon centroid so they stay put as the
-                // viewport pans. Computed from the unclipped outer ring.
-                if (f.kind == FeatureKind::OtherArea &&
-                    !f.rings.empty() && !f.rings[0].empty()) {
-                    const Pt c = ringCentroid(f.rings[0]);
-                    const QPointF cp(c.x, -c.y);
-                    for (const SymStamp& s : hit.symbols) {
-                        if (s.symIdx == SymAtlas::kNoSymbol) continue;
-                        BuiltSymbol bs;
-                        bs.pos = cp; bs.symIdx = s.symIdx;
-                        bs.rotationDeg = s.rotationDeg; bs.scaleMin = f.scaleMin;
-                        bc.symbols.push_back(bs);
-                    }
-                    pushHitTexts(hit, cp, f.scaleMin, f.name);
-                }
-                break;
-            }
-            case FeatureKind::Sounding: {
-                if (f.rings.empty() || f.rings[0].empty()) break;
-                if (doClip && !pointInRect(f.rings[0][0], clipBox)) break;
-                // Keep the raw depth (metres); the label is formatted at paint
-                // time so the depth-unit preference is a repaint, not a rebuild.
-                bc.soundings.push_back(
-                    { QPointF(f.rings[0][0].x, -f.rings[0][0].y), f.depth, f.hasDepth,
-                      f.scaleMin });
-                break;
-            }
-            case FeatureKind::Point: {
-                if (f.rings.empty() || f.rings[0].empty()) break;
-                if (doClip && !pointInRect(f.rings[0][0], clipBox)) break;
-                const QPointF pos(f.rings[0][0].x, -f.rings[0][0].y);
-                const SymHit& hit = hitAt(i);
-                // One BuiltSymbol per SY() stamp (lights add a flare, buoys add
-                // a topmark, etc.). With no atlas / no resolved symbol, emit a
-                // single dot-fallback marker.
-                if (hit.symbols.empty()) {
-                    BuiltSymbol bs; bs.pos = pos; bs.scaleMin = f.scaleMin;
-                    bc.symbols.push_back(bs);
-                } else {
-                    for (const SymStamp& s : hit.symbols) {
-                        BuiltSymbol bs;
-                        bs.pos = pos; bs.symIdx = s.symIdx;
-                        bs.rotationDeg = s.rotationDeg; bs.scaleMin = f.scaleMin;
-                        bc.symbols.push_back(bs);
-                    }
-                }
-                // Light-sector arcs (one per sectored LIGHTS feature), anchored at
-                // the light's scene position so they pan with the chart.
-                for (const SymSector& s : hit.sectors) {
-                    BuiltLightSector ls;
-                    ls.pos = pos;
-                    ls.startDeg = s.startDeg; ls.endDeg = s.endDeg;
-                    ls.rangeNm = s.rangeNm; ls.scaleMin = f.scaleMin;
-                    ls.color = QColor(s.r, s.g, s.b);
-                    bc.sectors.push_back(ls);
-                }
-                pushHitTexts(hit, pos, f.scaleMin, f.name);
-                break;
-            }
-        }
-    }
-
-    std::sort(bc.paths.begin(), bc.paths.end(),
-              [](const BuiltPath& a, const BuiltPath& b) { return a.z < b.z; });
-    return bc;
-}
 
 } // namespace
 
@@ -426,7 +118,8 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
     setCursor(Qt::OpenHandCursor);
     setAttribute(Qt::WA_OpaquePaintEvent, true);   // we fill the whole widget
 
-    pool_.setMaxThreadCount(qBound(2, QThread::idealThreadCount(), 8));
+    pool_ = new QThreadPool;   // unparented + manually managed (see ~ChartView)
+    pool_->setMaxThreadCount(qBound(2, QThread::idealThreadCount(), 8));
     cache_.setLimits(256u * 1024u * 1024u, 256);
     cache_.setPinned([this](const QString& path) { return loaded_.contains(path); });
 
@@ -479,6 +172,9 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
         // (which also restores antialiasing and the soundings/symbols overlay).
         updateVisibleCells();
         maybeBuildBasemap();
+        // Re-centre the GPU scene/raster on the settled view so its float origin
+        // and the raster texture stay near the viewport after a long pan/zoom.
+        if (useGpu_) gpuSceneDirty_ = true;
         update();
     });
 
@@ -569,9 +265,32 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
 }
 
 ChartView::~ChartView() {
+    hmvtrace::mark("~ChartView begin");
+    // Drop queued tasks and bump the generation so any late result is ignored.
+    // Worker lambdas capture only value copies (never `this`), so a task still
+    // running here cannot touch this half-destroyed view.
+    ++generation_;
+    pool_->clear();
+    // Give running tasks a short grace period to finish cleanly (a normal cell
+    // parse/build completes well within this). If one is wedged — a pathological
+    // GDAL parse or a plugin loadCell that never returns — do NOT block the app's
+    // exit on it: abandon the pool (deliberately leaked) and let process exit
+    // reclaim the thread. A value-member pool would waitForDone() unconditionally
+    // in its destructor, which is exactly what left the window-less process alive.
+    if (pool_->waitForDone(3000)) {
+        hmvtrace::mark("~ChartView pool drained");
+        delete pool_;
+    } else {
+        hmvtrace::mark(QStringLiteral("~ChartView pool WEDGED after 3s (active=%1); "
+                                      "abandoning to allow exit")
+                           .arg(pool_->activeThreadCount()));
+        // intentionally not deleted: its destructor would hang on the stuck task
+    }
+    pool_ = nullptr;
     // Stop the worker before tearing down: once the thread is joined no code runs
     // there, so deleting the service from this (GUI) thread is race-free.
     if (mbThread_) { mbThread_->quit(); mbThread_->wait(); }
+    hmvtrace::mark("~ChartView mbThread joined");
     delete mbService_;
     mbService_ = nullptr;
 }
@@ -1052,116 +771,27 @@ void ChartView::updateVisibleCells() {
     int target;
     if (!computeViewBoxes(view, wantedArea, keepArea, target)) return;
 
-    const std::vector<CellRecord>& cells = catalog_->cells();
-
-    // Which bands have coverage in view? (wrap-aware via per-cell offset.)
-    bool present[kMaxBand + 1] = {};
-    for (const CellRecord& c : cells) {
-        if (!c.extentValid || c.band < 1 || c.band > kMaxBand) continue;
-        const double off = wrapOffsetFor((c.bbox.minx + c.bbox.maxx) / 2.0);
-        if (shiftX(c.bbox, off).intersects(wantedArea)) present[c.band] = true;
-    }
-
-    int maxBand = target;
-    bool haveAtOrBelow = false;
-    for (int b = 1; b <= target; ++b) if (present[b]) { haveAtOrBelow = true; break; }
-    if (!haveAtOrBelow)
-        for (int b = target + 1; b <= kMaxBand; ++b) if (present[b]) { maxBand = b; break; }
-
-    // --- Quilting: only the finest band draws in any given region ------------
-    // Walk candidate cells finest-band-first, accumulating a "covered" region.
-    // A cell contributes only the part of its coverage that a finer band has not
-    // already claimed; fully-covered cells are dropped, and partially-covered
-    // cells get a clip path so their geometry and symbols draw only where they
-    // are the finest data. Coarser bands then fill only the gaps — eliminating
-    // the stacked-duplicate symbols that came from drawing every band.
-    //
-    // Region math runs in a common scene frame (each cell shifted by its wrap
-    // offset into the view frame); the resulting clip is stored back in the
-    // cell's own un-shifted frame so it composes with drawOffsetX when painted.
-    // The work is bounded to keepArea (the 1.5x kept region) so the clips stay
-    // valid for the whole loaded set, not just the tighter wanted area.
-    const QRectF keepScene(keepArea.minx, -keepArea.maxy,
-                           keepArea.maxx - keepArea.minx,
-                           keepArea.maxy - keepArea.miny);
-    QPainterPath keepClip;
-    keepClip.addRect(keepScene);
-
-    struct Cand { const CellRecord* rec; double off; };
-    std::vector<Cand> cands;
-    for (const CellRecord& c : cells) {
-        if (!c.extentValid || c.band < 1 || c.band > maxBand) continue;
-        const double off = wrapOffsetFor((c.bbox.minx + c.bbox.maxx) / 2.0);
-        if (shiftX(c.bbox, off).intersects(keepArea)) cands.push_back({&c, off});
-    }
-    // Finest first: a higher band number is finer (harbour over coastal etc.).
-    std::sort(cands.begin(), cands.end(),
-              [](const Cand& a, const Cand& b) { return a.rec->band > b.rec->band; });
-
-    QSet<QString> newActive;
-    QHash<QString, QPainterPath> newDrawClip;
-    QPainterPath covered;                  // union of finer coverage, common frame
-    covered.setFillRule(Qt::WindingFill);
-
-    // Band-0 cells (filename didn't yield a usage band) can't be reasoned about,
-    // so they always contribute, unclipped.
-    for (const CellRecord& c : cells) {
-        if (!c.extentValid || c.band != 0) continue;
-        const double off = wrapOffsetFor((c.bbox.minx + c.bbox.maxx) / 2.0);
-        if (shiftX(c.bbox, off).intersects(keepArea)) newActive.insert(c.path);
-    }
-
-    for (std::size_t i = 0; i < cands.size();) {
-        // Process a whole band against the coverage of strictly-finer bands, so
-        // same-band cells (which tile without overlap) never clip each other.
-        const int band = cands[i].rec->band;
-        const QPainterPath coveredByFiner = covered;
-        QPainterPath bandUnion;
-        bandUnion.setFillRule(Qt::WindingFill);
-        std::size_t j = i;
-        for (; j < cands.size() && cands[j].rec->band == band; ++j) {
-            const CellRecord& c = *cands[j].rec;
-            const double off = cands[j].off;
-            const QPainterPath cov = coveragePath(c, off, keepClip);
-            if (cov.isEmpty()) continue;
-            bandUnion.addPath(cov);
-
-            if (coveredByFiner.isEmpty() || !coveredByFiner.intersects(cov)) {
-                newActive.insert(c.path);               // open: contributes, no clip
-                continue;
-            }
-            const QPainterPath contrib = cov.subtracted(coveredByFiner);
-            if (contrib.isEmpty()) continue;            // fully hidden: drop
-            newActive.insert(c.path);
-            newDrawClip.insert(c.path, contrib.translated(-off, 0.0));   // cell frame
-        }
-        covered.addPath(bandUnion);
-        i = j;
-    }
-
-    QSet<QString> oldClipped, newClipped;
-    for (auto it = drawClip_.constBegin(); it != drawClip_.constEnd(); ++it)
-        oldClipped.insert(it.key());
-    for (auto it = newDrawClip.constBegin(); it != newDrawClip.constEnd(); ++it)
-        newClipped.insert(it.key());
+    // Quilt selection (which cells draw, at what clip, which must be present) is
+    // pure, camera-free logic shared with the GPU backend; see chart_quilt.hpp.
+    const chartquilt::QuiltResult q = chartquilt::computeQuilt(
+        catalog_->cells(), wantedArea, keepArea, target,
+        [this](double cx) { return wrapOffsetFor(cx); });
+    const int maxBand = q.maxBand;
 
     // Only dirty the static cache when quilt ownership actually changes. The
     // clipped path geometry itself is bounded to keepArea, so routine pans can
     // change its far offscreen edge without changing which cells own visible
     // pixels; that should update future renders, not force a rerender now.
-    const bool quiltTopologyChanged = (newActive != active_) || (newClipped != oldClipped);
-    active_ = std::move(newActive);
-    drawClip_ = std::move(newDrawClip);
-    if (quiltTopologyChanged) staticDirty_ = true;
-
-    // Wanted set = contributing cells whose footprint reaches the tighter wanted
-    // area (the 0.5x margin that triggers loading, as before).
-    wanted_.clear();
-    for (const CellRecord& c : cells) {
-        if (!c.extentValid || !active_.contains(c.path)) continue;
-        const double off = wrapOffsetFor((c.bbox.minx + c.bbox.maxx) / 2.0);
-        if (shiftX(c.bbox, off).intersects(wantedArea)) wanted_.insert(c.path);
-    }
+    QSet<QString> oldClipped, newClipped;
+    for (auto it = drawClip_.constBegin(); it != drawClip_.constEnd(); ++it)
+        oldClipped.insert(it.key());
+    for (auto it = q.drawClip.constBegin(); it != q.drawClip.constEnd(); ++it)
+        newClipped.insert(it.key());
+    const bool quiltTopologyChanged = (q.active != active_) || (newClipped != oldClipped);
+    active_   = q.active;
+    drawClip_ = q.drawClip;
+    wanted_   = q.wanted;
+    if (quiltTopologyChanged) { staticDirty_ = true; gpuSceneDirty_ = true; }
 
     // Bring in newly-wanted cells. Each is built clipped in its own (real) frame;
     // the wrap offset is recorded so it can be drawn on the correct side of the
@@ -1213,7 +843,6 @@ void ChartView::updateVisibleCells() {
 void ChartView::dispatchLoad(const QString& path) {
     inFlight_.insert(path);
     const quint64 gen = generation_;
-    const std::string p = path.toStdString();
     // Snapshot the active source at dispatch time; the worker holds this pointer,
     // so it must outlive the task (guaranteed: onChartSourceUnregistered drains
     // the pool before a source is destroyed).
@@ -1225,44 +854,11 @@ void ChartView::dispatchLoad(const QString& path) {
         watcher->deleteLater();
         onCellLoaded(std::move(r), gen);
     });
-    watcher->setFuture(QtConcurrent::run(&pool_, [p, path, src]() {
-        CellLoadResult r;
-        r.path = path;
-        if (src) {
-            // Plugin backend: the cell id is the QString path; geometry comes back
-            // already projected, with S-57 object classes/attrs for symbology.
-            // (Opaque cell ids aren't cached yet — see prepared_chart_cache.hpp.)
-            QString err;
-            r.ok = src->loadCell(path, r.features, r.bbox, err);
-            r.error = err;
-        } else {
-            // Built-in GDAL path. Try the on-disk parsed-cell cache first; on a
-            // miss, parse with GDAL and write the cache for next time.
-            if (prepared_cache::load(path, r.features, r.bbox)) {
-                r.ok = true;
-                qCDebug(lcCache) << "hit" << path << r.features.size() << "features";
-            } else {
-                // Decode through the normalized product model (Stage 3): the
-                // S-57 decoder emits a ProductFeatureSet, which the compatibility
-                // adapter converts back to the legacy Feature vector the build/
-                // paint path and the parsed-cell cache still consume.
-                QElapsedTimer t;
-                t.start();
-                S57ProductDecoder decoder;
-                ProductFeatureSet pfs;
-                QString err;
-                r.ok = decoder.loadCell(path, pfs, err);
-                if (r.ok) {
-                    r.features = product_adapter::toLegacyFeatures(std::move(pfs), r.bbox);
-                    qCDebug(lcCache) << "miss" << path << "parsed in" << t.elapsed()
-                                     << "ms," << r.features.size() << "features";
-                    prepared_cache::store(path, r.features, r.bbox);
-                } else {
-                    r.error = err;
-                }
-            }
-        }
-        return r;
+    // The parse itself is backend-neutral (see cell_source.hpp): the built-in
+    // cache/decoder dance or the plugin loadCell. `src` must outlive the task
+    // (guaranteed: onChartSourceUnregistered drains the pool before it dies).
+    watcher->setFuture(QtConcurrent::run(pool_, [path, src]() {
+        return cellsource::parseCell(path, src);
     }));
 }
 
@@ -1272,8 +868,8 @@ void ChartView::onChartSourceUnregistered(IChartSource* src) {
     // bump the generation so any results that still post back are discarded,
     // drop queued tasks, then wait out the running ones (they hold `src`).
     ++generation_;
-    pool_.clear();
-    pool_.waitForDone();
+    pool_->clear();
+    pool_->waitForDone();
     chartSource_ = nullptr;
     if (catalog_) catalog_->setSource(nullptr);
 }
@@ -1311,6 +907,7 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
     // thread runs and is never modified afterwards, so no locking is needed.
     const SymAtlas* atlas = symAtlas_.isLoaded() ? &symAtlas_ : nullptr;
     const quint64 fp = atlas ? atlas->fingerprint() : 0;
+    const bool wantGpu = useGpu_;   // also emit retained GPU batches for this cell
 
     auto* watcher = new QFutureWatcher<BuiltCell>(this);
     connect(watcher, &QFutureWatcher<BuiltCell>::finished, this,
@@ -1319,7 +916,7 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
         watcher->deleteLater();
         onCellBuilt(std::move(bc), gen, drawOffsetX);
     });
-    watcher->setFuture(QtConcurrent::run(&pool_, [p, feats, band, clipBox, atlas, fp]() {
+    watcher->setFuture(QtConcurrent::run(pool_, [p, feats, band, clipBox, atlas, fp, wantGpu]() {
         // Prepared-render cache (Stage 5): load the portrayal-resolved scene, or
         // compile it once and store. The positional feature-count guard rejects a
         // stale artifact whose feature vector no longer lines up. instantiateCell
@@ -1330,7 +927,18 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
             prep = scene::compileScene(p, *feats, atlas);
             prepared_render_cache::store(p, fp, prep);
         }
-        return instantiateCell(p, *feats, prep, band, clipBox, simplifyToleranceM(band));
+        BuiltCell bc = cellbuilder::instantiateCell(p, *feats, prep, band, clipBox,
+                                                    simplifyToleranceM(band));
+        // Retained GPU batches from the same prepared render (Stage 7 A4). Origin
+        // = clip-box centre in the projected frame so the float32 vertices stay
+        // near zero; the view re-bases per cell when assembling the frame.
+        if (wantGpu) {
+            bc.gpuOriginX = clipBox.valid() ? (clipBox.minx + clipBox.maxx) / 2.0 : 0.0;
+            bc.gpuOriginY = clipBox.valid() ? (clipBox.miny + clipBox.maxy) / 2.0 : 0.0;
+            gpubatches::appendCellBatches(*feats, prep, bc.gpuOriginX, bc.gpuOriginY,
+                                          bc.gpuTris, bc.gpuLines);
+        }
+        return bc;
     }));
 }
 
@@ -1340,6 +948,7 @@ void ChartView::onCellBuilt(BuiltCell bc, quint64 gen, double drawOffsetX) {
     if (!wanted_.contains(bc.path)) return;
     bc.drawOffsetX = drawOffsetX;
     storeCell(std::move(bc));
+    gpuSceneDirty_ = true;   // new cell's retained batches must join the scene
     emit statusChanged(QStringLiteral("%1 cell(s) shown").arg(loaded_.size()));
     invalidateChart();
 }
@@ -1352,6 +961,7 @@ void ChartView::removeCell(const QString& path) {
     loaded_.remove(path);
     drawClip_.remove(path);
     active_.remove(path);
+    gpuSceneDirty_ = true;   // dropped cell: its batches must leave the GPU scene
 }
 
 void ChartView::updatePointLOD() {
@@ -1455,7 +1065,7 @@ void ChartView::loadTier(const QString& tier) {
         watcher->deleteLater();
         onTierLoaded(feats, tier);
     });
-    watcher->setFuture(QtConcurrent::run(&pool_, [root, t]() -> FeatureCache::FeaturesPtr {
+    watcher->setFuture(QtConcurrent::run(pool_, [root, t]() -> FeatureCache::FeaturesPtr {
         auto feats = std::make_shared<std::vector<Feature>>();
         std::string err;
         chart::loadBasemap(root, t, *feats, err);
@@ -1508,6 +1118,7 @@ void ChartView::maybeBuildBasemap() {
     basemapClipBox_  = keepArea;
     basemapBuiltPpm_ = ppm_;
     auto feats = basemapFeats_;
+    const bool wantGpu = useGpu_;   // also emit retained GPU batches per world-copy
 
     auto* watcher = new QFutureWatcher<std::vector<BuiltCell>>(this);
     connect(watcher, &QFutureWatcher<std::vector<BuiltCell>>::finished, this,
@@ -1516,7 +1127,7 @@ void ChartView::maybeBuildBasemap() {
         watcher->deleteLater();
         onBasemapBuilt(std::move(cells), feats);
     });
-    watcher->setFuture(QtConcurrent::run(&pool_, [feats, reqs, tol]() {
+    watcher->setFuture(QtConcurrent::run(pool_, [feats, reqs, tol, wantGpu]() {
         std::vector<BuiltCell> result;
         result.reserve(reqs.size());
         // Basemap features carry no symbology (no atlas), so the prepared scene
@@ -1524,8 +1135,14 @@ void ChartView::maybeBuildBasemap() {
         // disk-cached (GSHHG geometry is transient and regenerated per zoom).
         const PreparedCellRender prep = scene::compileScene(QString(), *feats, nullptr);
         for (const auto& r : reqs) {
-            BuiltCell bc = instantiateCell(QString(), *feats, prep, 0, r.first, tol);
+            BuiltCell bc = cellbuilder::instantiateCell(QString(), *feats, prep, 0, r.first, tol);
             bc.drawOffsetX = r.second;
+            if (wantGpu) {
+                bc.gpuOriginX = r.first.valid() ? (r.first.minx + r.first.maxx) / 2.0 : 0.0;
+                bc.gpuOriginY = r.first.valid() ? (r.first.miny + r.first.maxy) / 2.0 : 0.0;
+                gpubatches::appendCellBatches(*feats, prep, bc.gpuOriginX, bc.gpuOriginY,
+                                              bc.gpuTris, bc.gpuLines);
+            }
             result.push_back(std::move(bc));
         }
         return result;
@@ -1536,6 +1153,7 @@ void ChartView::onBasemapBuilt(std::vector<BuiltCell> cells, FeatureCache::Featu
     basemapBuilding_ = false;
     if (feats != basemapFeats_) return;     // data was reloaded while building
     basemap_ = std::move(cells);
+    gpuSceneDirty_ = true;                   // new basemap batches must re-assemble
     invalidateChart();
 }
 
@@ -1558,12 +1176,13 @@ void ChartView::setShowDepthContours(bool on) {
 
 void ChartView::setShowRasterCharts(bool on) {
     if (on == showRasterCharts_) return;
-    showRasterCharts_ = on; invalidateChart();
+    showRasterCharts_ = on; gpuRasterDirty_ = true; invalidateChart();
 }
 
 void ChartView::setVectorOverlay(bool on) {
     if (on == vectorOverlay_) return;
-    vectorOverlay_ = on; invalidateChart();
+    // Affects GPU cell/basemap fills and the raster underlay, so re-assemble.
+    vectorOverlay_ = on; gpuSceneDirty_ = true; invalidateChart();
 }
 
 // ---- raster (MBTiles) layer ------------------------------------------------
@@ -1583,6 +1202,7 @@ void ChartView::setRasterChartFolders(const QStringList& dirs) {
     // it would clobber a saved view that the parallel raster path had restored.
     userInteracted_ = false;
     emit rasterSetFolders(dirs, rasterGen_);
+    gpuRasterDirty_ = true;
     invalidateChart();
 }
 
@@ -1607,6 +1227,7 @@ void ChartView::onRasterDiscovered(const QVector<MbtilesMeta>& charts, quint64 g
         }
     }
     emit rasterChartsChanged(charts.size());
+    gpuRasterDirty_ = true;
     invalidateChart();
 }
 
@@ -1623,6 +1244,7 @@ void ChartView::onRasterTileReady(int chartId, int z, int x, int y,
     } else {
         tileCache_.insert(k, QPixmap::fromImage(img));
     }
+    gpuRasterDirty_ = true;   // recomposite the GPU raster underlay with this tile
     invalidateChart();
 }
 
@@ -1906,6 +1528,15 @@ void ChartView::paintEvent(QPaintEvent*) {
     repaintPending_ = false;
     if (repaintTimer_) repaintTimer_->stop();
 
+    // GPU backend: the retained RHI layer draws the chart and the translucent
+    // overlay layer draws the dynamic pass on top; this widget (fully covered)
+    // paints nothing. Keep both layers in step with the live camera each frame.
+    if (useGpu_ && gpuLayer_) {
+        syncGpuCamera();
+        if (overlayLayer_) overlayLayer_->update();
+        return;
+    }
+
     QPainter p(this);
     p.fillRect(rect(), QColor(204, 224, 242));
 
@@ -1944,8 +1575,32 @@ void ChartView::paintEvent(QPaintEvent*) {
 
     // Dynamic overlays at the live camera, composited over the cached chart every
     // frame (these move independently of the chart, so they are never cached).
+    paintDynamic(p);
+}
+
+// The dynamic pass: ownship, scale bar, and plugin overlays at the live camera.
+// Shared by the painter path (onto this widget, over the cached chart) and the
+// GPU path (onto the translucent overlay layer, over the RHI surface). Both draw
+// with the same camera and widget size, so placement is identical.
+void ChartView::paintDynamic(QPainter& p) {
+    if (ppm_ <= 0.0) return;
     const QTransform cam = cameraTransform();
     p.setRenderHint(QPainter::Antialiasing, true);   // smooth the moving overlays
+
+    // GPU mode: the RHI layer drew only area fills + simple lines, so the
+    // constant-size chart symbology (patterns, complex lines, soundings, symbols,
+    // text, light sectors) is drawn here onto the translucent overlay, above the
+    // chart but below the ownship/AIS/route overlays. In painter mode these are
+    // already in the static cache, so this is skipped.
+    if (useGpu_) {
+        const double halfW = (width()  / 2.0) / ppm_;
+        const double halfH = (height() / 2.0) / ppm_;
+        const QRectF vis(scx_ - halfW, scy_ - halfH, width() / ppm_, height() / ppm_);
+        drawPointSymbology(p, cam, vis, QRectF(0, 0, width(), height()));
+        p.resetTransform();
+        p.setRenderHint(QPainter::Antialiasing, true);
+    }
+
     drawOwnship(p, cam);            // 3) ownship glyph (top of the chart stack)
     drawScaleBar(p);               // 4) scale bar (lower-right)
     // 5) Plugin overlays, in device coordinates. They use the viewport snapshot
@@ -1960,6 +1615,165 @@ void ChartView::paintEvent(QPaintEvent*) {
         p.resetTransform();
         for (IChartOverlay* o : overlays_) o->paint(p, vp);
     }
+}
+
+// ---- GPU backend (Stage 7 A4) ----------------------------------------------
+
+bool ChartView::eventFilter(QObject* obj, QEvent* e) {
+    // The translucent overlay layer delegates its painting back here so the
+    // dynamic pass is drawn identically to the painter path.
+    if (obj == overlayLayer_ && e->type() == QEvent::Paint) {
+        QPainter p(overlayLayer_);
+        paintDynamic(p);
+        return true;
+    }
+    return QWidget::eventFilter(obj, e);
+}
+
+void ChartView::setRenderBackend(RenderBackend pref) {
+    backendPref_ = pref;
+    applyBackend();
+}
+
+void ChartView::applyBackend() {
+    // Single auto-fallback decision point: resolve the preference against a real
+    // RHI-availability probe, so a missing/broken device always lands on the
+    // painter and can never blank the chart.
+    const bool want = chartrender::resolveUseGpu(backendPref_, GpuChartView::isAvailable());
+    if (want == useGpu_) return;   // no backend change
+    useGpu_ = want;
+
+    if (useGpu_) {
+        if (!gpuLayer_) {
+            gpuLayer_ = new GpuChartView(this);
+            gpuLayer_->setAttribute(Qt::WA_TransparentForMouseEvents, true);  // input -> this
+            gpuLayer_->setGeometry(rect());
+        }
+        if (!overlayLayer_) {
+            overlayLayer_ = new QWidget(this);
+            overlayLayer_->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+            overlayLayer_->setAttribute(Qt::WA_NoSystemBackground, true);
+            overlayLayer_->setAttribute(Qt::WA_TranslucentBackground, true);
+            overlayLayer_->setGeometry(rect());
+            overlayLayer_->installEventFilter(this);
+        }
+        gpuLayer_->show();
+        gpuLayer_->lower();          // chart layer sits at the bottom of the stack
+        overlayLayer_->show();
+        overlayLayer_->raise();      // dynamic pass above the chart
+        if (zoomInBtn_)  zoomInBtn_->raise();   // buttons stay clickable on top
+        if (zoomOutBtn_) zoomOutBtn_->raise();
+    } else {
+        if (gpuLayer_)     gpuLayer_->hide();
+        if (overlayLayer_) overlayLayer_->hide();
+    }
+
+    // Rebuild the loaded cells for the target backend (GPU batches are emitted by
+    // the build worker only when useGpu_). Features stay cached, so this is a
+    // parse-free rebuild; the camera and catalog are untouched.
+    if (haveCatalog_) {
+        ++generation_;
+        loaded_.clear();
+        active_.clear();
+        drawClip_.clear();
+        wanted_.clear();
+        inFlight_.clear();
+        building_.clear();
+        staticDirty_   = true;
+        gpuSceneDirty_ = true;
+        updateVisibleCells();
+    }
+    // Rebuild the basemap so it gains (or drops) its GPU batches for the new
+    // backend. Forcing the built-zoom stale triggers a re-instantiation; it is a
+    // no-op when no basemap tier is loaded.
+    basemapBuiltPpm_ = 0.0;
+    maybeBuildBasemap();
+    update();
+}
+
+void ChartView::rebuildGpuScene() {
+    if (!gpuLayer_) return;
+    // Re-base every active cell's retained batches to one common origin — the
+    // current view centre in the projected frame (scene X == projected X; scene Y
+    // is north-down, so projected Y = -scy_). This keeps float32 near zero and is
+    // done only when the active set changes, never on pan/zoom.
+    gpuSceneOX_ = scx_;
+    gpuSceneOY_ = -scy_;
+    std::vector<GpuVertex> baseTris, baseLines, cellTris, cellLines;
+
+    // Re-base one built cell's retained batches into the common frame, appending
+    // its fills and lines to the given buckets. Vector-overlay mode drops fills so
+    // a raster/imagery base shows through, keeping only the linework.
+    auto append = [&](const BuiltCell& c, std::vector<GpuVertex>& outTris,
+                      std::vector<GpuVertex>& outLines) {
+        const float dx = static_cast<float>(c.gpuOriginX + c.drawOffsetX - gpuSceneOX_);
+        const float dy = static_cast<float>(c.gpuOriginY - gpuSceneOY_);
+        if (!vectorOverlay_) {
+            outTris.reserve(outTris.size() + c.gpuTris.size());
+            for (const GpuVertex& v : c.gpuTris)
+                outTris.push_back({ v.x + dx, v.y + dy, v.r, v.g, v.b });
+        }
+        outLines.reserve(outLines.size() + c.gpuLines.size());
+        for (const GpuVertex& v : c.gpuLines)
+            outLines.push_back({ v.x + dx, v.y + dy, v.r, v.g, v.b });
+    };
+
+    // Basemap underlay (drawn beneath the raster + cells), unless vector-overlay
+    // mode suppresses the opaque base so a raster/imagery layer is the base.
+    if (!vectorOverlay_)
+        for (const BuiltCell& bc : basemap_) append(bc, baseTris, baseLines);
+
+    // Cells coarse-band-first so finer detail overprints, matching the painter.
+    std::vector<const BuiltCell*> order;
+    order.reserve(active_.size());
+    for (const QString& path : active_) {
+        auto it = loaded_.constFind(path);
+        if (it != loaded_.constEnd()) order.push_back(&it.value());
+    }
+    std::sort(order.begin(), order.end(),
+              [](const BuiltCell* a, const BuiltCell* b) { return a->band < b->band; });
+    for (const BuiltCell* c : order) append(*c, cellTris, cellLines);
+    // Camera centre in the common frame is 0 at assembly (origin == view centre).
+    gpuLayer_->setScene(std::move(baseTris), std::move(baseLines),
+                        std::move(cellTris), std::move(cellLines), 0.0, 0.0, ppm_);
+    composeGpuRaster();          // raster underlay, aligned to this same origin
+    gpuSceneDirty_ = false;
+    gpuRasterDirty_ = false;
+}
+
+void ChartView::composeGpuRaster() {
+    if (!gpuLayer_ || ppm_ <= 0.0 || width() <= 0 || height() <= 0) return;
+    if (!showRasterCharts_ || rasterCharts_.isEmpty()) {
+        gpuLayer_->setRasterLayer(QImage(), 0.0, 0.0);   // clear
+        return;
+    }
+    // Composite centred on the GPU scene origin (not the live camera), so the
+    // texture stays aligned with the vector batches while the view pans between
+    // rebuilds. Scene centre = (gpuSceneOX_, -gpuSceneOY_).
+    const double halfW = (width()  / 2.0) / ppm_;
+    const double halfH = (height() / 2.0) / ppm_;
+    const double sceneCY = -gpuSceneOY_;
+    QTransform camRaster;
+    camRaster.translate(width() / 2.0, height() / 2.0);
+    camRaster.scale(ppm_, ppm_);
+    camRaster.translate(-gpuSceneOX_, -sceneCY);
+    const QRectF vis(gpuSceneOX_ - halfW, sceneCY - halfH, 2.0 * halfW, 2.0 * halfH);
+
+    const qreal dpr = devicePixelRatioF() > 0.0 ? devicePixelRatioF() : 1.0;
+    QImage img(int(std::lround(width() * dpr)), int(std::lround(height() * dpr)),
+               QImage::Format_ARGB32_Premultiplied);
+    img.setDevicePixelRatio(dpr);
+    img.fill(Qt::transparent);
+    { QPainter rp(&img); drawRasterCharts(rp, camRaster, vis); }
+    gpuLayer_->setRasterLayer(img, halfW, halfH);
+}
+
+void ChartView::syncGpuCamera() {
+    if (!gpuLayer_) return;
+    if (gpuSceneDirty_) { rebuildGpuScene(); return; }   // rebuild also sets camera + raster
+    if (gpuRasterDirty_) { composeGpuRaster(); gpuRasterDirty_ = false; }
+    // Pan/zoom: uniform-only update, no geometry rebuild — the retained win.
+    gpuLayer_->setCamera(scx_ - gpuSceneOX_, -scy_ - gpuSceneOY_, ppm_);
 }
 
 // Render the static chart into the offscreen cache at the current camera, with a
@@ -2107,6 +1921,27 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
     std::sort(order.begin(), order.end(),
               [](const BuiltCell* a, const BuiltCell* b) { return a->band < b->band; });
     for (const BuiltCell* c : order) drawPaths(*c);
+
+    // Constant-on-screen-size symbology (patterns, complex lines, soundings,
+    // symbols, text, light sectors). Factored out so the GPU overlay can run the
+    // same passes over its RHI fills; here it renders into the static cache.
+    drawPointSymbology(p, cam, vis, deviceRect);
+}
+
+// Constant-on-screen-size chart symbology in device space: S-52 area patterns
+// (AP) + complex lines (LC), then soundings, light sectors, symbols, and text.
+// Extracted from renderStatic (Stage 7 A5) so the GPU backend can draw the same
+// point/label passes on the translucent overlay layer above its RHI fills — they
+// are constant-size regardless of backend, so QPainter is the pragmatic renderer.
+void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
+                                   const QRectF& vis, const QRectF& deviceRect) {
+    // Cell draw order (coarse band first), as in the fill pass.
+    std::vector<const BuiltCell*> order;
+    order.reserve(loaded_.size());
+    for (auto it = loaded_.constBegin(); it != loaded_.constEnd(); ++it)
+        order.push_back(&it.value());
+    std::sort(order.begin(), order.end(),
+              [](const BuiltCell* a, const BuiltCell* b) { return a->band < b->band; });
 
     // Quilt clips mapped into device space: geometry from a partially-covered
     // cell is suppressed where a finer band overlays it (the finer cell draws
@@ -2771,6 +2606,8 @@ void ChartView::mouseReleaseEvent(QMouseEvent* e) {
 
 void ChartView::resizeEvent(QResizeEvent* e) {
     QWidget::resizeEvent(e);
+    if (gpuLayer_)     gpuLayer_->setGeometry(rect());
+    if (overlayLayer_) overlayLayer_->setGeometry(rect());
     if (haveCatalog_ && !userInteracted_) fitToCatalog();
     else if (!haveCatalog_ && !userInteracted_ && rasterSceneBounds_.valid())
         fitToSceneBox(rasterSceneBounds_);   // raster-only folder

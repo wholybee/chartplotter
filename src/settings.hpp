@@ -5,6 +5,7 @@
 #include <QVector>
 #include "units.hpp"
 #include "heading_source.hpp"
+#include "render_backend.hpp"
 
 // A named chart directory the user can switch between from the menu.
 struct ChartSet {
@@ -119,6 +120,12 @@ public:
     // Which direction the ownship glyph points: true heading or COG.
     HeadingSource headingSource() const { return headingSource_; }
 
+    // Chart-rendering backend preference (Stage 7). Auto = use the GPU backend
+    // when available, else the CPU painter; Cpu = always painter (the safe
+    // choice if a machine's GPU drivers misbehave). The user-facing control is a
+    // "Use GPU acceleration" toggle (Auto/Cpu).
+    RenderBackend renderBackend() const { return renderBackend_; }
+
     // "Dangerous ship" rules. The values are persisted now; the logic that
     // consumes them (flagging targets) is added later. Each rule has an enable
     // flag and a threshold.
@@ -162,6 +169,7 @@ public slots:
     void setVesselScale(double scale);
     void setOwnshipMmsi(const QString& mmsi);
     void setHeadingSource(HeadingSource s);
+    void setRenderBackend(RenderBackend b);
     void setDangerousShips(bool ignoreFarEnabled, double ignoreFarNm,
                            bool cpaEnabled, double cpaNm,
                            bool tcpaEnabled, double tcpaMin,
@@ -194,6 +202,7 @@ signals:
     void vesselScaleChanged(double scale);
     void ownshipMmsiChanged(const QString& mmsi);
     void headingSourceChanged(HeadingSource s);
+    void renderBackendChanged(RenderBackend b);
     void dangerousShipsChanged();   // any dangerous-ship rule changed
 
 private:
@@ -232,6 +241,11 @@ private:
     double        vesselScale_      = 1.0;   // 0.5 .. 3.0, 1.0 = nominal
     QString       ownshipMmsi_;              // 9-digit string or empty
     HeadingSource headingSource_ = HeadingSource::Heading;
+    // Default to the CPU painter while the GPU backend is brought to S-52 parity
+    // (Stage 7 A5). The GPU path renders vector cells but not yet basemap/symbols/
+    // text/soundings/raster, so it must be opt-in ("Use GPU acceleration") until
+    // complete; flip this back to Auto once parity lands.
+    RenderBackend renderBackend_ = RenderBackend::Cpu;
     // Dangerous-ship rules (consumed later); enabled by default with the
     // requested threshold defaults.
     bool   dangerIgnoreFarEnabled_ = true;
