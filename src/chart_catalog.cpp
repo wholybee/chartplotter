@@ -26,6 +26,7 @@ int ChartCatalog::bandFromPath(const QString& path) {
 void ChartCatalog::startScan(const QStringList& roots) {
     if (scanning_.load()) return;
     scanning_.store(true);
+    abort_.store(false);
     roots_ = roots;
 
     // One per-root cache file in the app data dir, keyed by the root's hash so
@@ -42,7 +43,15 @@ void ChartCatalog::startScan(const QStringList& roots) {
 
     QStringList r = roots;
     QStringList c = cachePaths;
-    (void)QtConcurrent::run([this, r, c]() { runScan(r, c); });
+    // Keep the future so shutdown() can join deterministically instead of leaving
+    // the task orphaned on the global pool (joined only at static teardown).
+    scanFuture_ = QtConcurrent::run([this, r, c]() { runScan(r, c); });
+}
+
+void ChartCatalog::shutdown() {
+    abort_.store(true);
+    if (scanFuture_.isRunning())
+        scanFuture_.waitForFinished();
 }
 
 namespace {
@@ -144,6 +153,7 @@ void ChartCatalog::runScan(QStringList roots, QStringList cachePaths) {
         QStringList files;
         QDirIterator it(roots[i], QDir::Files, QDirIterator::Subdirectories);
         while (it.hasNext()) {
+            if (abort_.load()) { scanning_.store(false); return; }
             const QString f = it.next();
             if (QFileInfo(f).suffix().compare(QStringLiteral("000"), Qt::CaseInsensitive) == 0)
                 files << f;
@@ -173,6 +183,13 @@ void ChartCatalog::runScan(QStringList roots, QStringList cachePaths) {
         QHash<QString, CacheEntry> updated;
 
         for (const QString& path : rf.files) {
+            // Cancelled (app closing): stop promptly. Persist what we've resolved
+            // so far so the next launch benefits from the partial cache.
+            if (abort_.load()) {
+                saveCache(cachePath, updated);
+                scanning_.store(false);
+                return;
+            }
             CellRecord r;
             r.path = path;
             r.band = bandFromPath(path);
@@ -222,6 +239,7 @@ void ChartCatalog::runScan(QStringList roots, QStringList cachePaths) {
         saveCache(cachePath, updated);
     }
 
+    if (abort_.load()) { scanning_.store(false); return; }
     cells_  = std::move(recs);
     bounds_ = bounds;
     scanning_.store(false);
@@ -236,6 +254,7 @@ void ChartCatalog::runScanFromSource(QStringList roots) {
     std::vector<ChartSourceCell> srcCells;
     QString err;
     for (const QString& root : roots) {
+        if (abort_.load()) { scanning_.store(false); return; }
         std::vector<ChartSourceCell> rootCells;
         QString rootErr;
         // Forward the source's progress to our progress() signal. Runs on the
@@ -282,6 +301,7 @@ void ChartCatalog::runScanFromSource(QStringList roots) {
             emit progress(done, total);
     }
 
+    if (abort_.load()) { scanning_.store(false); return; }
     cells_  = std::move(recs);
     bounds_ = bounds;
     scanning_.store(false);

@@ -339,6 +339,20 @@ QWidget* SideMenu::buildSettingsPage() {
             [this] { emit editSymbolSizeRequested(); });
     col->addWidget(symSizeBtn);
 
+    // GPU acceleration toggle: checked = Auto (use the GPU backend when it is
+    // available, else the CPU painter), unchecked = force the CPU painter — the
+    // safe choice if a machine's GPU drivers misbehave.
+    auto* gpuBtn = makeCheckAction(QStringLiteral("Use GPU acceleration"),
+                                   settings_->renderBackend() != RenderBackend::Cpu);
+    connect(gpuBtn, &QPushButton::toggled, settings_, [this](bool on) {
+        settings_->setRenderBackend(on ? RenderBackend::Auto : RenderBackend::Cpu);
+    });
+    connect(settings_, &Settings::renderBackendChanged, gpuBtn, [gpuBtn](RenderBackend b) {
+        const bool on = (b != RenderBackend::Cpu);
+        if (gpuBtn->isChecked() != on) gpuBtn->setChecked(on);
+    });
+    col->addWidget(gpuBtn);
+
     auto* basemapBtn = makeSettingsAction(QStringLiteral("Basemap Folder…"));
     connect(basemapBtn, &QPushButton::clicked, this,
             [this] { emit basemapFolderRequested(); });

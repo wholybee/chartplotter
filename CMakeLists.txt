@@ -93,6 +93,56 @@ add_test(NAME prepared_render COMMAND test_prepared_render)
 set_tests_properties(prepared_render PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
+# Stage 7 (path A) step A3 unit test: the pure quilt / cell-visibility selection
+# extracted from ChartView. Needs Qt6::Gui for QPainterPath; no GUI event loop or
+# GDAL.
+add_executable(test_chart_quilt
+    tools/test_chart_quilt.cpp
+    src/chart_quilt.cpp
+)
+set_target_properties(test_chart_quilt PROPERTIES WIN32_EXECUTABLE FALSE)
+target_include_directories(test_chart_quilt PRIVATE src)
+target_link_libraries(test_chart_quilt PRIVATE Qt6::Gui)
+add_test(NAME chart_quilt COMMAND test_chart_quilt)
+set_tests_properties(chart_quilt PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
+# Stage 7 (path A) step A4 unit test: prepared-render -> GPU vertex batches.
+# Needs Qt6::Gui (QColor / QPainterPath via cell_builder); no RHI, no GDAL.
+add_executable(test_gpu_batches
+    tools/test_gpu_batches.cpp
+    src/gpu_batches.cpp
+    src/cell_builder.cpp
+)
+set_target_properties(test_gpu_batches PROPERTIES WIN32_EXECUTABLE FALSE)
+target_include_directories(test_gpu_batches PRIVATE src)
+target_link_libraries(test_gpu_batches PRIVATE Qt6::Gui)
+add_test(NAME gpu_batches COMMAND test_gpu_batches)
+set_tests_properties(gpu_batches PROPERTIES
+    ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
+
+# Stage 7 (path A) step A1: prove the QRhiWidget / Direct3D 11 / qsb shader stack
+# works on this machine, in isolation from the chart app. Manual harness (opens a
+# window, needs a display + human eyes), so it is NOT a CTest. QRhiWidget lives in
+# Qt6::Widgets; the QRhi* classes need Qt6::GuiPrivate; qt6_add_shaders needs the
+# Qt6 ShaderTools (the qsb shader baker). A loud configure failure here means the
+# GPU toolchain isn't installed.
+find_package(Qt6 REQUIRED COMPONENTS GuiPrivate ShaderTools)
+qt_add_executable(test_gpu_canvas
+    tools/test_gpu_canvas.cpp
+    src/gpu_chart_view.cpp
+    src/prepared_chart_cache.cpp
+)
+set_target_properties(test_gpu_canvas PROPERTIES WIN32_EXECUTABLE FALSE)
+target_include_directories(test_gpu_canvas PRIVATE src)
+target_link_libraries(test_gpu_canvas PRIVATE Qt6::Widgets Qt6::GuiPrivate)
+qt6_add_shaders(test_gpu_canvas "gpu_test_shaders"
+    BATCHABLE
+    PREFIX "/shaders"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
+    FILES src/shaders/color.vert src/shaders/color.frag
+)
+
 qt_add_executable(chartviewer
     src/main.cpp
     src/main_window.cpp
@@ -157,12 +207,27 @@ qt_add_executable(chartviewer
     src/portrayal_engine.cpp
     src/render_scene_compiler.cpp
     src/prepared_render_cache.cpp
+    src/cell_builder.cpp
+    src/cell_source.cpp
+    src/chart_quilt.cpp
+    src/gpu_batches.cpp
+    src/gpu_chart_view.cpp
     src/theme.cpp
     src/nmea0183_client.cpp
 )
 
-target_link_libraries(chartviewer PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network Qt6::Sql ${GDAL_LINK})
+target_link_libraries(chartviewer PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network Qt6::Sql Qt6::GuiPrivate ${GDAL_LINK})
 add_dependencies(chartviewer symbols_bin)
+
+# Stage 7: bake the retained-GPU shaders into the app (same qsb artifacts the
+# harness uses), so gpu_chart_view can load :/shaders/color.*.qsb at runtime.
+qt6_add_shaders(chartviewer "chart_shaders"
+    BATCHABLE
+    PREFIX "/shaders"
+    BASE "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
+    FILES src/shaders/color.vert src/shaders/color.frag
+          src/shaders/tex.vert   src/shaders/tex.frag
+)
 
 # Embed the README and licence so the in-app About box can show them without an
 # on-disk lookup (BASE makes them resolve as :/README.md and :/LICENSE).
