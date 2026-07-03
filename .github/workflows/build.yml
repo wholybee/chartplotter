@@ -19,6 +19,14 @@ jobs:
   linux:
     name: linux (${{ matrix.name }})
     runs-on: ${{ matrix.runner }}
+    # Built in a Debian Trixie container: the retained-GPU backend needs
+    # QRhiWidget (Qt >= 6.7), and Trixie ships Qt 6.8 where the stock Ubuntu
+    # runners still ship Qt 6.4. GitHub falls back to /bin/sh for container jobs,
+    # so force bash for the bash-only syntax used below.
+    container: debian:trixie
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
@@ -28,6 +36,17 @@ jobs:
           - name: arm64
             runner: ubuntu-24.04-arm
     steps:
+      - name: Install dependencies
+        run: |
+          set -eux
+          apt-get update
+          apt-get install -y \
+            ca-certificates git \
+            cmake ninja-build g++ pkg-config \
+            qt6-base-dev qt6-base-dev-tools qt6-base-private-dev \
+            qt6-shadertools-dev qt6-websockets-dev libgdal-dev \
+            dpkg-dev fakeroot apt-utils
+
       - uses: actions/checkout@v4
 
       - name: Compute artifact tag
@@ -40,14 +59,6 @@ jobs:
             echo "DEB_VERSION=0.0.0+sha${GITHUB_SHA::7}-1" >> "$GITHUB_ENV"
           fi
           echo "DEB_ARCH=$(dpkg --print-architecture)" >> "$GITHUB_ENV"
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y \
-            cmake ninja-build g++ pkg-config \
-            qt6-base-dev qt6-base-dev-tools qt6-websockets-dev libgdal-dev \
-            dpkg-dev fakeroot apt-utils
 
       - name: Configure
         run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=${{ env.BUILD_TYPE }}
@@ -193,6 +204,7 @@ jobs:
             ${{ matrix.prefix }}-cmake
             ${{ matrix.prefix }}-ninja
             ${{ matrix.prefix }}-qt6-base
+            ${{ matrix.prefix }}-qt6-shadertools
             ${{ matrix.prefix }}-qt6-websockets
             ${{ matrix.prefix }}-gdal
             git
@@ -283,17 +295,16 @@ jobs:
           name: windows-${{ matrix.name }}
           path: ${{ env.PKG_NAME }}-${{ env.ARTIFACT_TAG }}-windows-${{ matrix.name }}.zip
 
-  # Build that actually runs on a Raspberry Pi (64-bit Debian Bookworm). The
-  # generic "linux arm64" job above builds on Ubuntu 24.04 (glibc 2.39, newer
-  # Qt/GDAL), whose binaries will not run on Bookworm (glibc 2.36). Building
-  # inside a debian:bookworm container — natively on the aarch64 runner, no
-  # emulation — produces a binary/.deb matched to the Pi's glibc, Qt 6.4 and
-  # GDAL 3.6.
-  debian-bookworm:
-    name: debian bookworm (arm64 / Raspberry Pi)
+  # Build that actually runs on a Raspberry Pi (64-bit Debian Trixie / Pi OS
+  # Trixie). Built inside a debian:trixie container — natively on the aarch64
+  # runner, no emulation — so the binary/.deb is matched to the Pi's glibc,
+  # Qt 6.8 and GDAL. Trixie (Qt 6.8) is the oldest Debian that ships QRhiWidget
+  # (Qt >= 6.7), which the retained-GPU chart backend requires.
+  debian-trixie:
+    name: debian trixie (arm64 / Raspberry Pi)
     runs-on: ubuntu-24.04-arm
-    container: debian:bookworm
-    # The debian:bookworm container has bash, but GitHub Actions falls back to
+    container: debian:trixie
+    # The debian:trixie container has bash, but GitHub Actions falls back to
     # /bin/sh (dash) for container jobs, which breaks the bash-only syntax used
     # below ([[ ]], ${VAR::N}, set -o pipefail, arrays). Force bash for all steps.
     defaults:
@@ -307,7 +318,8 @@ jobs:
           apt-get install -y \
             ca-certificates git \
             cmake ninja-build g++ pkg-config \
-            qt6-base-dev qt6-base-dev-tools qt6-websockets-dev libgdal-dev \
+            qt6-base-dev qt6-base-dev-tools qt6-base-private-dev \
+            qt6-shadertools-dev qt6-websockets-dev libgdal-dev \
             dpkg-dev fakeroot
 
       - uses: actions/checkout@v4
@@ -316,10 +328,10 @@ jobs:
         run: |
           if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
             echo "ARTIFACT_TAG=${GITHUB_REF_NAME}" >> "$GITHUB_ENV"
-            echo "DEB_VERSION=${GITHUB_REF_NAME#v}-1~bookworm" >> "$GITHUB_ENV"
+            echo "DEB_VERSION=${GITHUB_REF_NAME#v}-1~trixie" >> "$GITHUB_ENV"
           else
             echo "ARTIFACT_TAG=sha-${GITHUB_SHA::7}" >> "$GITHUB_ENV"
-            echo "DEB_VERSION=0.0.0+sha${GITHUB_SHA::7}-1~bookworm" >> "$GITHUB_ENV"
+            echo "DEB_VERSION=0.0.0+sha${GITHUB_SHA::7}-1~trixie" >> "$GITHUB_ENV"
           fi
           echo "DEB_ARCH=$(dpkg --print-architecture)" >> "$GITHUB_ENV"
 
@@ -332,7 +344,7 @@ jobs:
       - name: Package portable tarball
         run: |
           set -euo pipefail
-          DIST="dist/${PKG_NAME}-${ARTIFACT_TAG}-debian-bookworm-arm64"
+          DIST="dist/${PKG_NAME}-${ARTIFACT_TAG}-debian-trixie-arm64"
           rm -rf dist
           install -d "$DIST"
 
@@ -343,7 +355,7 @@ jobs:
           [ -d build/plugins ] && cp -a build/plugins "$DIST/"
           [ -f build/instruments.xml ] && cp -a build/instruments.xml "$DIST/"
 
-          tar -czf "${PKG_NAME}-${ARTIFACT_TAG}-debian-bookworm-arm64.tar.gz" -C "dist" "${PKG_NAME}-${ARTIFACT_TAG}-debian-bookworm-arm64"
+          tar -czf "${PKG_NAME}-${ARTIFACT_TAG}-debian-trixie-arm64.tar.gz" -C "dist" "${PKG_NAME}-${ARTIFACT_TAG}-debian-trixie-arm64"
 
       - name: Package Debian .deb
         run: |
@@ -423,7 +435,7 @@ jobs:
           Installed-Size: ${SIZE_KB}
           Homepage: https://github.com/${GITHUB_REPOSITORY}
           Description: Marine chart viewer built with Qt 6 and GDAL
-           A streamlined ENC (S-57) chart viewer. Built on Debian Bookworm for
+           A streamlined ENC (S-57) chart viewer. Built on Debian Trixie for
            64-bit Raspberry Pi / Debian arm64.
           CONTROL
 
@@ -432,15 +444,15 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: debian-bookworm-arm64
+          name: debian-trixie-arm64
           path: |
-            ${{ env.PKG_NAME }}-${{ env.ARTIFACT_TAG }}-debian-bookworm-arm64.tar.gz
+            ${{ env.PKG_NAME }}-${{ env.ARTIFACT_TAG }}-debian-trixie-arm64.tar.gz
             ${{ env.PKG_NAME }}_${{ env.DEB_VERSION }}_${{ env.DEB_ARCH }}.deb
 
   publish:
     name: publish to GitHub Release (+ flat APT repo)
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, debian-bookworm]
+    needs: [linux, windows, debian-trixie]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -473,7 +485,7 @@ jobs:
           files: |
             release-assets/linux-amd64/*.tar.gz
             release-assets/linux-arm64/*.tar.gz
-            release-assets/debian-bookworm-arm64/*
+            release-assets/debian-trixie-arm64/*
             release-assets/windows-x64/*.zip
             release-assets/windows-arm64/*.zip
             apt-repo/*

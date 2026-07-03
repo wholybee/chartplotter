@@ -7,6 +7,7 @@
 #include <QMouseEvent>
 #include <QWheelEvent>
 #include <QSize>
+#include <QOffscreenSurface>
 #include <algorithm>
 #include <unordered_set>
 
@@ -123,6 +124,11 @@ bool GpuChartView::isAvailable() {
     static int cached = -1;
     if (cached >= 0)
         return cached == 1;
+    // Probe the *same* backend the widget will actually use (see the constructor
+    // and QRhiWidget's per-platform default) by bringing up and tearing down a
+    // throwaway offscreen device. A Null-backend probe always succeeds and so
+    // would never trigger the CPU fallback; a headless session or a broken GPU
+    // driver must fail *this* create to be caught here.
     bool ok = false;
 #if defined(Q_OS_WIN)
     QRhiD3D11InitParams params;
@@ -130,12 +136,24 @@ bool GpuChartView::isAvailable() {
         delete rhi;
         ok = true;
     }
-#else
-    QRhiNullInitParams params;
-    if (QRhi* rhi = QRhi::create(QRhi::Null, &params)) {
+#elif defined(Q_OS_MACOS)
+    QRhiMetalInitParams params;
+    if (QRhi* rhi = QRhi::create(QRhi::Metal, &params)) {
         delete rhi;
         ok = true;
     }
+#else
+    // Linux/other: QRhiWidget defaults to the OpenGL backend, which needs an
+    // offscreen surface to create a probe context. The surface must outlive the
+    // QRhi, so free it only after the throwaway device is gone.
+    QRhiGles2InitParams params;
+    QOffscreenSurface* surface = QRhiGles2InitParams::newFallbackSurface();
+    params.fallbackSurface = surface;
+    if (QRhi* rhi = QRhi::create(QRhi::OpenGLES2, &params)) {
+        delete rhi;
+        ok = true;
+    }
+    delete surface;
 #endif
     cached = ok ? 1 : 0;
     return ok;

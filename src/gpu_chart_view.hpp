@@ -98,10 +98,11 @@ public:
     bool hasTileTexture(quint64 texId) const;
     void setTileTexture(quint64 texId, const QImage& img);
 
-    // Cheap one-shot probe: can this machine bring up the RHI backend at all?
-    // Creates and destroys a throwaway offscreen RHI (Direct3D 11 on Windows).
-    // Used to decide auto-fallback to the painter before any GPU widget is shown,
-    // so a broken driver can never blank the chart. Result is cached.
+    // Cheap one-shot probe: can this machine bring up the RHI backend the widget
+    // will actually use (Direct3D 11 on Windows, Metal on macOS, OpenGL elsewhere)?
+    // Creates and destroys a throwaway offscreen device. Used to decide auto-
+    // fallback to the painter before any GPU widget is shown, so a broken driver
+    // can never blank the chart. Result is cached.
     static bool isAvailable();
 
     // Frame telemetry: RHI frames rendered, cell-buffer uploads, raster texture

@@ -121,13 +121,50 @@ add_test(NAME gpu_batches COMMAND test_gpu_batches)
 set_tests_properties(gpu_batches PROPERTIES
     ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:Qt6::Core>")
 
-# Stage 7 (path A) step A1: prove the QRhiWidget / Direct3D 11 / qsb shader stack
-# works on this machine, in isolation from the chart app. Manual harness (opens a
-# window, needs a display + human eyes), so it is NOT a CTest. QRhiWidget lives in
-# Qt6::Widgets; the QRhi* classes need Qt6::GuiPrivate; qt6_add_shaders needs the
+# Stage 7 (path A) step A1: prove the QRhiWidget / qsb shader stack works on this
+# machine, in isolation from the chart app. Manual harness (opens a window, needs a
+# display + human eyes), so it is NOT a CTest. QRhiWidget lives in Qt6::Widgets
+# (public API since Qt 6.7) and auto-selects the RHI backend per platform (Direct3D
+# 11 on Windows, Vulkan/OpenGL on Linux, Metal on macOS); qt6_add_shaders needs the
 # Qt6 ShaderTools (the qsb shader baker). A loud configure failure here means the
 # GPU toolchain isn't installed.
-find_package(Qt6 REQUIRED COMPONENTS GuiPrivate ShaderTools)
+find_package(Qt6 REQUIRED COMPONENTS ShaderTools)
+
+# The QRhi* classes QRhiWidget exposes are private Gui API, so the backend needs
+# Qt's private Gui headers. Upstream Qt and MSYS2 ship a Qt6::GuiPrivate CMake
+# package; Debian/Ubuntu ship the private headers (qt6-base-private-dev) but
+# deliberately omit the CMake package, so synthesise an equivalent target from the
+# installed private include tree when Qt6::GuiPrivate is absent. Either way the
+# implementation symbols come from the public Qt6::Gui library.
+find_package(Qt6 QUIET COMPONENTS GuiPrivate)
+if(TARGET Qt6::GuiPrivate)
+    set(QT_GUI_PRIVATE Qt6::GuiPrivate)
+else()
+    set(_qt_gui_private_ok FALSE)
+    get_target_property(_qt_gui_incs Qt6::Gui INTERFACE_INCLUDE_DIRECTORIES)
+    foreach(_inc IN LISTS _qt_gui_incs Qt6Gui_INCLUDE_DIRS)
+        # Private headers live at <inc>/<ver>/QtGui, with the RHI headers under
+        # .../QtGui/rhi/ (matching the code's #include <rhi/qrhi.h>).
+        if(EXISTS "${_inc}/${Qt6Gui_VERSION}/QtGui/rhi/qrhi.h")
+            add_library(Qt6GuiPrivateShim INTERFACE)
+            target_include_directories(Qt6GuiPrivateShim INTERFACE
+                "${_inc}/${Qt6Gui_VERSION}"
+                "${_inc}/${Qt6Gui_VERSION}/QtGui")
+            target_link_libraries(Qt6GuiPrivateShim INTERFACE Qt6::Gui)
+            set(QT_GUI_PRIVATE Qt6GuiPrivateShim)
+            set(_qt_gui_private_ok TRUE)
+            break()
+        endif()
+    endforeach()
+    if(NOT _qt_gui_private_ok)
+        message(FATAL_ERROR
+            "Qt6::GuiPrivate is unavailable and the private RHI headers were not "
+            "found next to Qt6::Gui (looked for "
+            "<inc>/${Qt6Gui_VERSION}/QtGui/rhi/qrhi.h). Install qt6-base-private-dev "
+            "(Debian/Ubuntu) or use a Qt that ships the GuiPrivate CMake package.")
+    endif()
+endif()
+
 qt_add_executable(test_gpu_canvas
     tools/test_gpu_canvas.cpp
     src/gpu_chart_view.cpp
@@ -135,7 +172,7 @@ qt_add_executable(test_gpu_canvas
 )
 set_target_properties(test_gpu_canvas PROPERTIES WIN32_EXECUTABLE FALSE)
 target_include_directories(test_gpu_canvas PRIVATE src)
-target_link_libraries(test_gpu_canvas PRIVATE Qt6::Widgets Qt6::GuiPrivate)
+target_link_libraries(test_gpu_canvas PRIVATE Qt6::Widgets ${QT_GUI_PRIVATE})
 qt6_add_shaders(test_gpu_canvas "gpu_test_shaders"
     BATCHABLE
     PREFIX "/shaders"
@@ -233,7 +270,7 @@ if(MSVC)
     )
 endif()
 
-target_link_libraries(chartviewer PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network Qt6::Sql Qt6::GuiPrivate ${GDAL_LINK})
+target_link_libraries(chartviewer PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network Qt6::Sql ${QT_GUI_PRIVATE} ${GDAL_LINK})
 add_dependencies(chartviewer symbols_bin)
 
 # Stage 7: bake the retained-GPU shaders into the app (same qsb artifacts the
