@@ -500,7 +500,7 @@ QList<ChartObjectInfo> ChartView::pickObjects(const QPointF& screenPt) {
             info.hasDepth = f.hasDepth;
             info.depthM   = f.depth;
             info.scaleMin = f.scaleMin;
-            info.lon      = proj::xToLon(repX);
+            info.lon      = proj::wrapLonDeg(proj::xToLon(repX));
             info.lat      = proj::yToLat(repY);
             for (const auto& a : f.attrs)
                 info.attrs.push_back({ QString::fromStdString(a.first),
@@ -2035,7 +2035,14 @@ void ChartView::renderStaticCache() {
 }
 
 bool ChartView::staticCacheReusable() const {
-    const double dxPx = (scx_ - cacheScx_) * ppm_;
+    // Measure the pan since the cache was built along the shortest path around the
+    // 180° seam: normalizeCenter() wraps scx_ by a whole world-width when it
+    // crosses, so the raw (scx_ - cacheScx_) would jump by ~ww and needlessly
+    // (and incorrectly) reject a cache that blitStaticCache() can still place.
+    const double ww = worldWidthM();
+    double dx = scx_ - cacheScx_;
+    dx -= std::round(dx / ww) * ww;
+    const double dxPx = dx * ppm_;
     const double dyPx = (scy_ - cacheScy_) * ppm_;
     return !staticDirty_ && !staticCache_.isNull()
            && ppm_ == cachePpm_ && cacheW_ == width() && cacheH_ == height()
@@ -2045,8 +2052,14 @@ bool ChartView::staticCacheReusable() const {
 void ChartView::blitStaticCache(QPainter& p) {
     if (staticCache_.isNull()) return;
     // Map cache-pixel space to the live camera. Equal zoom -> pure translation
-    // (crisp); different zoom (mid-gesture placeholder) -> scaled blit.
-    const QTransform blit = cacheCam_.inverted() * cameraTransform();
+    // (crisp); different zoom (mid-gesture placeholder) -> scaled blit. Across the
+    // 180° seam the live centre has wrapped a whole world-width away from the
+    // cache's; shift the cache by that offset (the same nearest-copy rule the
+    // cells use) so it lands on-screen instead of a world off it — the source of
+    // the blank chart when panning through the date line.
+    QTransform wrap;
+    wrap.translate(wrapOffsetFor(cacheScx_), 0.0);
+    const QTransform blit = cacheCam_.inverted() * wrap * cameraTransform();
     p.save();
     p.setRenderHint(QPainter::SmoothPixmapTransform, ppm_ != cachePpm_);
     p.setTransform(blit);
@@ -2773,7 +2786,7 @@ void ChartView::mousePressEvent(QMouseEvent* e) {
 void ChartView::mouseMoveEvent(QMouseEvent* e) {
     if (ppm_ > 0.0) {
         const QPointF s = screenToScene(e->position());
-        emit cursorMoved(proj::xToLon(s.x()), proj::yToLat(-s.y()));
+        emit cursorMoved(proj::wrapLonDeg(proj::xToLon(s.x())), proj::yToLat(-s.y()));
         if (editorGrab_) {                    // dragging a node, not panning
             editor_->onMove(e->position());
             scheduleFrame();

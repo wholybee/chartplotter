@@ -36,4 +36,13 @@ inline double yToLat(double y) {
     return (2.0 * std::atan(std::exp(y / kEarthRadius)) - PI / 2.0) * kRad2Deg;
 }
 
+// Fold a longitude back into [-180, 180] for display. Scene X is deliberately
+// continuous (wrap-free) so panning is unbounded and the 180° seam is handled by
+// drawing world-shifted copies; xToLon() therefore returns values outside ±180
+// near the seam. Anything user-facing (cursor read-out, picked-object position)
+// must wrap first, or the read-out shows e.g. 181° instead of 179°W.
+inline double wrapLonDeg(double lonDeg) {
+    return std::remainder(lonDeg, 360.0);   // nearest-multiple fold -> [-180, 180]
+}
+
 } // namespace proj
