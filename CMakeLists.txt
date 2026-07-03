@@ -216,6 +216,23 @@ qt_add_executable(chartviewer
     src/nmea0183_client.cpp
 )
 
+if(MSVC)
+    target_compile_options(chartviewer PRIVATE
+        $<$<CONFIG:Release>:/Zi>
+    )
+
+    target_link_options(chartviewer PRIVATE
+        $<$<CONFIG:Release>:/DEBUG:FULL>
+    )
+
+    set_target_properties(chartviewer PROPERTIES
+        COMPILE_PDB_NAME "hmvchartplotter"
+        COMPILE_PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
+        PDB_NAME "hmvchartplotter"
+        PDB_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/$<CONFIG>"
+    )
+endif()
+
 target_link_libraries(chartviewer PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network Qt6::Sql Qt6::GuiPrivate ${GDAL_LINK})
 add_dependencies(chartviewer symbols_bin)
 
