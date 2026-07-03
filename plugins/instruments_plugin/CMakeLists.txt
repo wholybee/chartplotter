@@ -40,19 +40,22 @@ target_link_libraries(instruments_plugin PRIVATE
     chartviewer        # host symbols (NavDataStore, TouchSpinBox, theme, ...)
 )
 
-# Deploy the built plugin next to the host exe so QPluginLoader finds it via the
-# well-known plugins/ subfolder.
+# Deploy into the host's plugin folder (plugins/ next to the exe, or
+# Contents/PlugIns on macOS) so QPluginLoader finds it at runtime.
 add_custom_command(TARGET instruments_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:chartviewer>/plugins"
+            "${CHARTPLOTTER_PLUGIN_DEPLOY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:instruments_plugin>"
-            "$<TARGET_FILE_DIR:chartviewer>/plugins/"
-    # The default instrument catalogue ships next to the exe; the plugin seeds a
-    # user-editable copy from it on first run (see InstrumentCatalog::load).
+            "${CHARTPLOTTER_PLUGIN_DEPLOY_DIR}/"
+    # The default instrument catalogue ships in the bundled data dir (next to the
+    # exe, or Contents/Resources on macOS); the plugin seeds a user-editable copy
+    # from it on first run (see InstrumentCatalog::load / bundlepaths::dataDir()).
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            "${CHARTPLOTTER_DATA_DEPLOY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "${CMAKE_CURRENT_SOURCE_DIR}/instruments.xml"
-            "$<TARGET_FILE_DIR:chartviewer>/instruments.xml"
-    COMMENT "Deploying instruments_plugin into plugins/ next to chartviewer"
+            "${CHARTPLOTTER_DATA_DEPLOY_DIR}/instruments.xml"
+    COMMENT "Deploying instruments_plugin into the host plugin folder"
     VERBATIM
 )

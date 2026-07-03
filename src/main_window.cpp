@@ -44,6 +44,7 @@
 #include "plugin_manager.hpp"
 #include "nmea0183_plugin.hpp"
 #include "nmea2000_plugin.hpp"
+#include "bundle_paths.hpp"
 
 #include <QCoreApplication>
 #include <QStatusBar>
@@ -345,10 +346,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     plugins_ = std::make_unique<PluginManager>(coreApi_.get());
     plugins_->add(std::make_unique<Nmea0183Plugin>());   // first => default-highest priority
     plugins_->add(std::make_unique<Nmea2000Plugin>());
-    // Dynamic plugins (GPX, Signal K, WMM, Instruments, ...) discovered as DLLs
-    // in the plugins/ folder alongside the exe and loaded via QPluginLoader.
-    plugins_->loadFromDirectory(QCoreApplication::applicationDirPath()
-                                + QStringLiteral("/plugins"));
+    // Dynamic plugins (GPX, Signal K, WMM, Instruments, ...) discovered as shared
+    // libraries in the plugin folder (plugins/ next to the exe, or Contents/PlugIns
+    // on macOS) and loaded via QPluginLoader.
+    plugins_->loadFromDirectory(bundlepaths::pluginDir());
     plugins_->initializeAll();
 
     // Apply the saved source-priority order across the registered sources

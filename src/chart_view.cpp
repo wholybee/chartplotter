@@ -14,6 +14,7 @@
 #include "chart_quilt.hpp"
 #include "gpu_chart_view.hpp"
 #include "gpu_batches.hpp"
+#include "bundle_paths.hpp"
 #include "debug_trace.hpp"
 
 #include <QPainter>
@@ -87,7 +88,7 @@ QStringList tiersIn(const QString& root) {
 BasemapSource resolveBasemap(const QString& override) {
     QStringList roots;
     if (!override.isEmpty()) roots << override;
-    roots << QCoreApplication::applicationDirPath() + "/gshhg-shp";
+    roots << bundlepaths::dataDir() + "/gshhg-shp";
     for (const QString& d : QStandardPaths::standardLocations(QStandardPaths::AppDataLocation))
         roots << d + "/gshhg-shp";
     for (const QString& d : QStandardPaths::standardLocations(QStandardPaths::GenericDataLocation))
@@ -278,13 +279,13 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
 
     // Load the symbol atlas from the standard data locations.
     // Search order mirrors the GDAL-data and basemap resolver patterns:
-    //   1. next to the executable (installed / release builds)
+    //   1. the bundled data dir (next to the exe, or Contents/Resources on macOS)
     //   2. CHARTPLOTTER_SOURCE_DIR/data/ (in-tree development builds)
     auto tryLoadAtlas = [this](const QString& dir) {
         return symAtlas_.load(dir + QStringLiteral("/symbols.bin"),
                               dir + QStringLiteral("/rastersymbols-day.png"));
     };
-    if (!tryLoadAtlas(QCoreApplication::applicationDirPath())) {
+    if (!tryLoadAtlas(bundlepaths::dataDir())) {
 #ifdef CHARTPLOTTER_SOURCE_DIR
         tryLoadAtlas(QStringLiteral(CHARTPLOTTER_SOURCE_DIR) +
                      QStringLiteral("/data"));

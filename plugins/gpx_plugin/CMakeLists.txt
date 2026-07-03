@@ -43,14 +43,15 @@ target_link_libraries(gpx_plugin PRIVATE
     chartviewer        # host symbols (RouteStore, theme, route_types, ...)
 )
 
-# Deploy the built plugin next to the host exe so QPluginLoader finds it via the
-# well-known plugins/ subfolder.
+# Deploy the built plugin into the host's plugin folder (plugins/ next to the exe,
+# or Contents/PlugIns on macOS — see CHARTPLOTTER_PLUGIN_DEPLOY_DIR in the
+# top-level CMakeLists) so QPluginLoader finds it at runtime.
 add_custom_command(TARGET gpx_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:chartviewer>/plugins"
+            "${CHARTPLOTTER_PLUGIN_DEPLOY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:gpx_plugin>"
-            "$<TARGET_FILE_DIR:chartviewer>/plugins/"
-    COMMENT "Deploying gpx_plugin into plugins/ next to chartviewer"
+            "${CHARTPLOTTER_PLUGIN_DEPLOY_DIR}/"
+    COMMENT "Deploying gpx_plugin into the host plugin folder"
     VERBATIM
 )

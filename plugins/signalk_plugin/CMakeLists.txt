@@ -36,29 +36,33 @@ target_link_libraries(signalk_plugin PRIVATE
     chartviewer        # host symbols (NavDataStore, theme, TouchSpinBox, ...)
 )
 
-# Deploy the built plugin next to the host exe so QPluginLoader finds it via the
-# well-known plugins/ subfolder.
+# Deploy into the host's plugin folder (plugins/ next to the exe, or
+# Contents/PlugIns on macOS) so QPluginLoader finds it at runtime.
 add_custom_command(TARGET signalk_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:chartviewer>/plugins"
+            "${CHARTPLOTTER_PLUGIN_DEPLOY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:signalk_plugin>"
-            "$<TARGET_FILE_DIR:chartviewer>/plugins/"
-    COMMENT "Deploying signalk_plugin into plugins/ next to chartviewer"
+            "${CHARTPLOTTER_PLUGIN_DEPLOY_DIR}/"
+    COMMENT "Deploying signalk_plugin into the host plugin folder"
     VERBATIM
 )
 
 # windeployqt is invoked against chartviewer.exe, which doesn't link Qt6Network /
 # Qt6WebSockets directly (only this plugin does), so those DLLs are not copied
 # automatically. Drop them next to the exe ourselves so QPluginLoader can resolve
-# the plugin's imports at runtime.
-add_custom_command(TARGET signalk_plugin POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:Qt6::WebSockets>"
-            "$<TARGET_FILE_DIR:chartviewer>"
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "$<TARGET_FILE:Qt6::Network>"
-            "$<TARGET_FILE_DIR:chartviewer>"
-    COMMENT "Copying Qt6WebSockets/Qt6Network DLLs next to chartviewer"
-    VERBATIM
-)
+# the plugin's imports at runtime. On macOS this is skipped: macdeployqt bundles
+# the frameworks (the plugin is passed to it via -executable), and copying a
+# framework binary into Contents/MacOS would break code signing.
+if(NOT APPLE)
+    add_custom_command(TARGET signalk_plugin POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:Qt6::WebSockets>"
+                "$<TARGET_FILE_DIR:chartviewer>"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "$<TARGET_FILE:Qt6::Network>"
+                "$<TARGET_FILE_DIR:chartviewer>"
+        COMMENT "Copying Qt6WebSockets/Qt6Network libraries next to chartviewer"
+        VERBATIM
+    )
+endif()

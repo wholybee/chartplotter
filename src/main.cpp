@@ -3,6 +3,7 @@
 #include "chart_loader.hpp"
 #include "main_window.hpp"
 #include "app_info.hpp"
+#include "bundle_paths.hpp"
 #include "debug_trace.hpp"
 
 int main(int argc, char** argv) {
@@ -17,12 +18,12 @@ int main(int argc, char** argv) {
     QApplication::setApplicationVersion(appinfo::version());
 
     // Resolve the bundled GDAL data directory (contains s57objectclasses.csv
-    // etc.). CMake copies this from the GDAL installation into gdal-data/ next
-    // to the executable at build time, so it travels with the app on any machine
-    // regardless of whether GDAL is installed system-wide.
+    // etc.). CMake copies this from the GDAL installation next to the executable
+    // (Contents/Resources on macOS) at build time, so it travels with the app on
+    // any machine regardless of whether GDAL is installed system-wide.
     std::string gdalDataDir;
     {
-        const QDir d(QApplication::applicationDirPath() + QStringLiteral("/gdal-data"));
+        const QDir d(bundlepaths::dataDir() + QStringLiteral("/gdal-data"));
         if (d.exists())
             gdalDataDir = d.absolutePath().toStdString();
     }

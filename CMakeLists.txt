@@ -341,6 +341,25 @@ set_target_properties(chartviewer PROPERTIES
     WINDOWS_EXPORT_ALL_SYMBOLS TRUE
 )
 
+# ---- Where post-build steps stage bundled data and plugins ------------------
+#
+# On Windows/Linux the app is a portable directory: data files sit next to the
+# exe and plugins in a plugins/ subfolder. On a macOS .app the executable lives
+# in Contents/MacOS, where loose data files may NOT go (code signing rejects
+# non-code content in the MacOS dir) and nested plugin code belongs in PlugIns —
+# so data is staged into Contents/Resources and plugins into Contents/PlugIns.
+# These variables are consumed by the data-copy steps below AND by each plugin's
+# post-build copy (they inherit into the plugins/ subdirectories). Runtime
+# resolution of these same locations lives in src/bundle_paths.hpp — keep the two
+# in sync.
+if(APPLE)
+    set(CHARTPLOTTER_DATA_DEPLOY_DIR   "$<TARGET_BUNDLE_CONTENT_DIR:chartviewer>/Resources")
+    set(CHARTPLOTTER_PLUGIN_DEPLOY_DIR "$<TARGET_BUNDLE_CONTENT_DIR:chartviewer>/PlugIns")
+else()
+    set(CHARTPLOTTER_DATA_DEPLOY_DIR   "$<TARGET_FILE_DIR:chartviewer>")
+    set(CHARTPLOTTER_PLUGIN_DEPLOY_DIR "$<TARGET_FILE_DIR:chartviewer>/plugins")
+endif()
+
 # ---- Qt DLL deployment (Windows only) --------------------------------------
 #
 # After each build, run windeployqt to copy the Qt DLLs, platform plugins,
@@ -424,7 +443,7 @@ if(GDAL_DATA_DIR)
     add_custom_command(TARGET chartviewer POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_directory
             "${GDAL_DATA_DIR}"
-            "$<TARGET_FILE_DIR:chartviewer>/gdal-data"
+            "${CHARTPLOTTER_DATA_DEPLOY_DIR}/gdal-data"
         COMMENT "Bundling GDAL data files into gdal-data/"
         VERBATIM
     )
@@ -437,8 +456,9 @@ endif()
 
 # ---- Symbol atlas data files ------------------------------------------------
 #
-# Copy the prebaked symbols.bin and the atlas PNG(s) next to the executable
-# so ChartView can find them at runtime via applicationDirPath().
+# Copy the prebaked symbols.bin and the atlas PNG(s) into the bundled data dir
+# (next to the exe, or Contents/Resources on macOS) so ChartView can find them at
+# runtime via bundlepaths::dataDir().
 #
 # Place the source files in data/ under the project root:
 #   data/chartsymbols.xml       (input to gen_symbols — build time only)
@@ -447,11 +467,15 @@ endif()
 #   data/rastersymbols-dark.png (optional — night variant)
 
 # symbols.bin is generated in the binary directory by the custom command above.
+# make_directory first: the data dir already exists next to the exe, but on macOS
+# Contents/Resources may not exist yet (copy_if_different won't create it).
 add_custom_command(TARGET chartviewer POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+        "${CHARTPLOTTER_DATA_DEPLOY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
         "${CMAKE_CURRENT_BINARY_DIR}/symbols.bin"
-        "$<TARGET_FILE_DIR:chartviewer>/symbols.bin"
-    COMMENT "Installing symbols.bin next to executable"
+        "${CHARTPLOTTER_DATA_DEPLOY_DIR}/symbols.bin"
+    COMMENT "Installing symbols.bin into the bundled data dir"
     VERBATIM
 )
 
@@ -464,10 +488,12 @@ foreach(_atlas_png
     set(_src "${CMAKE_CURRENT_SOURCE_DIR}/data/${_atlas_png}")
     if(EXISTS "${_src}")
         add_custom_command(TARGET chartviewer POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E make_directory
+                "${CHARTPLOTTER_DATA_DEPLOY_DIR}"
             COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${_src}"
-                "$<TARGET_FILE_DIR:chartviewer>/${_atlas_png}"
-            COMMENT "Installing ${_atlas_png} next to executable"
+                "${CHARTPLOTTER_DATA_DEPLOY_DIR}/${_atlas_png}"
+            COMMENT "Installing ${_atlas_png} into the bundled data dir"
             VERBATIM
         )
     else()

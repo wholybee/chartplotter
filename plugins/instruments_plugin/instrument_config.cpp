@@ -1,5 +1,6 @@
 #include "instrument_config.hpp"
 #include "nav_data_store.hpp"
+#include "bundle_paths.hpp"
 
 #include <QHash>
 #include <QXmlStreamReader>
@@ -128,7 +129,7 @@ QList<InstrumentDef> InstrumentCatalog::load() {
     //    present, otherwise from the built-in fallback. Then load it back so the
     //    user always has an editable file at a known path.
     QByteArray seed;
-    const QString bundled = QDir(QCoreApplication::applicationDirPath())
+    const QString bundled = QDir(bundlepaths::dataDir())
                                 .filePath(QStringLiteral("instruments.xml"));
     if (QFileInfo::exists(bundled)) {
         QFile bf(bundled);

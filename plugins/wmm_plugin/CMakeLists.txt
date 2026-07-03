@@ -28,13 +28,14 @@ target_link_libraries(wmm_plugin PRIVATE
     chartviewer        # host symbols (NavDataStore, INavDataPublisher, ...)
 )
 
-# Deploy next to the host exe so QPluginLoader finds it in the plugins/ subfolder.
+# Deploy into the host's plugin folder (plugins/ next to the exe, or
+# Contents/PlugIns on macOS) so QPluginLoader finds it at runtime.
 add_custom_command(TARGET wmm_plugin POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:chartviewer>/plugins"
+            "${CHARTPLOTTER_PLUGIN_DEPLOY_DIR}"
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "$<TARGET_FILE:wmm_plugin>"
-            "$<TARGET_FILE_DIR:chartviewer>/plugins/"
-    COMMENT "Deploying wmm_plugin into plugins/ next to chartviewer"
+            "${CHARTPLOTTER_PLUGIN_DEPLOY_DIR}/"
+    COMMENT "Deploying wmm_plugin into the host plugin folder"
     VERBATIM
 )

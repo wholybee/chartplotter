@@ -11,6 +11,8 @@
 #include <QTextStream>
 #include <QCoreApplication>
 
+#include "bundle_paths.hpp"
+
 namespace {
 
 // Shared palette / type face with the AIS target window, nav display window and
@@ -148,10 +150,11 @@ struct S57EnumTable {
         return (static_cast<qint64>(code) << 20) | static_cast<unsigned>(id);
     }
 
-    // The bundled gdal-data folder next to the exe (what main.cpp points GDAL
-    // at), falling back to a system GDAL_DATA override.
+    // The bundled gdal-data folder (next to the exe, or Contents/Resources on
+    // macOS — what main.cpp points GDAL at), falling back to a system GDAL_DATA
+    // override.
     static QString dataDir() {
-        const QString bundled = QCoreApplication::applicationDirPath()
+        const QString bundled = bundlepaths::dataDir()
                               + QStringLiteral("/gdal-data");
         if (QFile::exists(bundled + QStringLiteral("/s57attributes.csv")))
             return bundled;

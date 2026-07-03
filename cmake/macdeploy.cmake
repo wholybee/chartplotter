@@ -24,13 +24,13 @@ if(NOT MACDEPLOYQT)
     message(FATAL_ERROR "macdeploy: MACDEPLOYQT not set")
 endif()
 
-# The app's own plugins are copied into Contents/MacOS/plugins by each plugin
-# target's post-build step (main.cpp loads applicationDirPath()/plugins). Pass
-# each to macdeployqt with -executable= so their Qt references are rewritten to
-# @rpath alongside the host exe's.
+# The app's own plugins are copied into Contents/PlugIns by each plugin target's
+# post-build step (the host loads bundlepaths::pluginDir() == Contents/PlugIns).
+# Pass each to macdeployqt with -executable= so their Qt references are rewritten
+# to @rpath alongside the host exe's.
 file(GLOB _plugins
-    "${APP}/Contents/MacOS/plugins/*.so"
-    "${APP}/Contents/MacOS/plugins/*.dylib")
+    "${APP}/Contents/PlugIns/chartplotter_*.so"
+    "${APP}/Contents/PlugIns/chartplotter_*.dylib")
 
 set(_plugin_args "")
 foreach(_p IN LISTS _plugins)
@@ -50,13 +50,12 @@ if(NOT _rc EQUAL 0)
 endif()
 
 # macdeployqt rewrites each -executable plugin's Qt references to @rpath/... but
-# does not give those plugins an rpath to resolve it against (it only adds one to
-# the main exe). Our plugins also sit a directory deeper than a standard bundle
-# plugin (Contents/MacOS/plugins), so anchor the rpath on @executable_path, which
-# always resolves to the host binary's dir (Contents/MacOS) regardless of which
-# file is doing the loading — so ../Frameworks lands on Contents/Frameworks from
-# any plugin. -add_rpath errors if the entry already exists; that is harmless, so
-# the result is not checked.
+# may not give those plugins an rpath to resolve it against (it reliably adds one
+# only to the main exe). Anchor the rpath on @executable_path, which always
+# resolves to the host binary's dir (Contents/MacOS) regardless of which file is
+# doing the loading — so ../Frameworks lands on Contents/Frameworks from any
+# plugin. -add_rpath errors if the entry already exists; that is harmless, so the
+# result is not checked.
 foreach(_p IN LISTS _plugins)
     execute_process(
         COMMAND install_name_tool -add_rpath "@executable_path/../Frameworks" "${_p}"
