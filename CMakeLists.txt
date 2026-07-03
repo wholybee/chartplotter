@@ -165,20 +165,39 @@ else()
     endif()
 endif()
 
-qt_add_executable(test_gpu_canvas
-    tools/test_gpu_canvas.cpp
-    src/gpu_chart_view.cpp
-    src/prepared_chart_cache.cpp
-)
-set_target_properties(test_gpu_canvas PROPERTIES WIN32_EXECUTABLE FALSE)
-target_include_directories(test_gpu_canvas PRIVATE src)
-target_link_libraries(test_gpu_canvas PRIVATE Qt6::Widgets ${QT_GUI_PRIVATE})
-qt6_add_shaders(test_gpu_canvas "gpu_test_shaders"
-    BATCHABLE
-    PREFIX "/shaders"
-    BASE "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
-    FILES src/shaders/color.vert src/shaders/color.frag
-)
+# The standalone manual GPU harness bakes the same color.vert/color.frag shaders
+# as chartviewer (below). Under the Xcode "new build system" a custom-command
+# output (color.vert.qsb) may not be attached to two independent targets, so
+# generating both in one Xcode project fails at the generate step. The harness is
+# a manual, display-required tool (not a CTest) that nothing depends on, so
+# default it OFF for the Xcode generator and ON everywhere else (Ninja / Make /
+# Visual Studio dedup the shared shader output and build it fine). Override with
+# -DCHARTPLOTTER_BUILD_GPU_HARNESS=ON/OFF.
+if(CMAKE_GENERATOR STREQUAL "Xcode")
+    set(_gpu_harness_default OFF)
+else()
+    set(_gpu_harness_default ON)
+endif()
+option(CHARTPLOTTER_BUILD_GPU_HARNESS
+    "Build the standalone manual GPU canvas harness (test_gpu_canvas)"
+    ${_gpu_harness_default})
+
+if(CHARTPLOTTER_BUILD_GPU_HARNESS)
+    qt_add_executable(test_gpu_canvas
+        tools/test_gpu_canvas.cpp
+        src/gpu_chart_view.cpp
+        src/prepared_chart_cache.cpp
+    )
+    set_target_properties(test_gpu_canvas PROPERTIES WIN32_EXECUTABLE FALSE)
+    target_include_directories(test_gpu_canvas PRIVATE src)
+    target_link_libraries(test_gpu_canvas PRIVATE Qt6::Widgets ${QT_GUI_PRIVATE})
+    qt6_add_shaders(test_gpu_canvas "gpu_test_shaders"
+        BATCHABLE
+        PREFIX "/shaders"
+        BASE "${CMAKE_CURRENT_SOURCE_DIR}/src/shaders"
+        FILES src/shaders/color.vert src/shaders/color.frag
+    )
+endif()
 
 qt_add_executable(chartviewer
     src/main.cpp
@@ -308,6 +327,10 @@ set_target_properties(chartviewer PROPERTIES
     OUTPUT_NAME "hmvchartplotter"
     WIN32_EXECUTABLE TRUE
     MACOSX_BUNDLE TRUE
+    # Stable bundle id for the .app (code signing + a unique identifier). Without
+    # it Qt warns it can't derive one from Xcode prefs and falls back to a
+    # non-unique default. Matches the org name set in main.cpp (net.holybee).
+    MACOSX_BUNDLE_GUI_IDENTIFIER "net.holybee.hmvchartplotter"
     # Expose the host's symbols so dynamically loaded plugins can link against
     # them. On Windows ENABLE_EXPORTS produces an import library (chartviewer.lib)
     # and WINDOWS_EXPORT_ALL_SYMBOLS auto-generates a .def listing every global
@@ -468,6 +491,60 @@ add_subdirectory(plugins/instruments_plugin)
 # in src/ (chart_source.hpp et al.). It is not built here; drop its built
 # chartplotter_cm93_plugin.dll into plugins/ next to the exe (with Qt6Concurrent.dll
 # next to the exe) to enable CM93 charts. See docs/cm93.md.
+
+# ---- Qt framework deployment: self-contained .app (macOS only) --------------
+#
+# macOS analogue of the Windows windeployqt step. macdeployqt copies the Qt
+# frameworks and the Qt platform/style plugins into the built .app and rewrites
+# the host exe's framework references to @rpath, so it launches on a Mac without
+# Qt (or Homebrew) installed. cmake/macdeploy.cmake also fixes the app's own
+# plugins (Contents/MacOS/plugins) and ad-hoc re-signs the bundle.
+#
+# Unlike windeployqt (a chartviewer POST_BUILD), this is a standalone target in
+# ALL that depends on the exe AND every plugin: the plugins are copied into the
+# bundle by their own post-build steps, which run *after* chartviewer, so a
+# chartviewer POST_BUILD would deploy before the plugins exist. Turn off with
+# -DCHARTPLOTTER_MACOS_DEPLOY=OFF (e.g. for a fast inner-loop build that just runs
+# against the Qt libraries at their build-time paths).
+if(APPLE)
+    option(CHARTPLOTTER_MACOS_DEPLOY
+        "Run macdeployqt after build to make the .app self-contained" ON)
+
+    # Locate macdeployqt: prefer the imported tool target Qt ships; otherwise
+    # find it next to qmake (same bin/ dir), then fall back to PATH.
+    if(TARGET Qt6::macdeployqt)
+        set(_macdeployqt "$<TARGET_FILE:Qt6::macdeployqt>")
+    else()
+        set(_macdeployqt_hint "")
+        if(TARGET Qt6::qmake)
+            get_target_property(_qmake_loc Qt6::qmake IMPORTED_LOCATION)
+            get_filename_component(_macdeployqt_hint "${_qmake_loc}" DIRECTORY)
+        endif()
+        find_program(MACDEPLOYQT macdeployqt HINTS "${_macdeployqt_hint}")
+        set(_macdeployqt "${MACDEPLOYQT}")
+    endif()
+
+    if(CHARTPLOTTER_MACOS_DEPLOY AND _macdeployqt)
+        add_custom_target(macdeploy ALL
+            COMMAND ${CMAKE_COMMAND}
+                    -DAPP=$<TARGET_BUNDLE_DIR:chartviewer>
+                    -DMACDEPLOYQT=${_macdeployqt}
+                    -P ${CMAKE_SOURCE_DIR}/cmake/macdeploy.cmake
+            COMMENT "Bundling Qt frameworks into the .app (macdeployqt)"
+            VERBATIM
+        )
+        # Order after the exe + all plugins so their deployed output is in the
+        # bundle before macdeployqt fixes it (same rationale as the Windows
+        # installer target below).
+        add_dependencies(macdeploy chartviewer
+            signalk_plugin gpx_plugin wmm_plugin instruments_plugin)
+    elseif(CHARTPLOTTER_MACOS_DEPLOY AND NOT _macdeployqt)
+        message(WARNING
+            "macdeployqt not found — the .app will NOT be self-contained (it will "
+            "rely on the Qt frameworks at their build-time paths). Ensure Qt's "
+            "deploy tools are installed, or set -DCHARTPLOTTER_MACOS_DEPLOY=OFF.")
+    endif()
+endif()
 
 # ---- Packaging: Windows installer (CPack + NSIS) ----------------------------
 #
