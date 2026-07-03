@@ -81,7 +81,13 @@ signals:
 ```
 
 Consumers connect to the signals and read `targets()`. CPA/TCPA are attached by a
-collision component via `setCpaTcpa(mmsi, cpa, tcpa)`, which emits `targetUpdated`.
+collision component via `setCpaTcpa(mmsi, cpa, tcpa)`, which emits `targetUpdated`
+only when the values materially changed (range/CPA by more than ~1 m, TCPA by
+more than ~0.5 s, or a value appearing/disappearing). The calculator republishes
+every second, so without this dead band a live feed would emit per target per
+second forever and the chart could never go idle. Suppressed values are not
+stored, so slow drift accumulates against the last published value and still
+gets through.
 
 ## AisDecoder
 

@@ -21,7 +21,8 @@ namespace scene {
 
 // Prepared-render format version. Bump on any change to PreparedCellRender's
 // layout or to what compileScene produces, so cached artifacts are invalidated.
-constexpr quint32 kPreparedRenderFormat = 1;
+// v2: fills are hole-aware (earcut-style bridged polygons + detached outers).
+constexpr quint32 kPreparedRenderFormat = 2;
 
 // Portray a cell and pre-triangulate its area fills. `atlas` may be null (e.g.
 // the GSHHG basemap, which carries no symbol-bearing features): then no SymHits

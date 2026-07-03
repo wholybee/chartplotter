@@ -1,5 +1,6 @@
 #include "ais_target_store.hpp"
 #include <QTimer>
+#include <cmath>
 
 QString aisNavStatusName(int code) {
     switch (code) {
@@ -186,9 +187,38 @@ void AisTargetStore::publishAisStatic(const AisStaticData& d, const QString& sou
     emit targetUpdated(d.mmsi);
 }
 
+// Change-detection tolerances for the derived range/CPA/TCPA data. The CPA
+// calculator republishes every second and on every ownship fix, so without a
+// dead band a live GPS feed keeps every target "updated" forever and the chart
+// never goes idle. Values closer than these to what is already stored cannot
+// change a rendered pixel or a displayed digit: range and CPA are shown in
+// units far coarser than a metre, and TCPA ticks in whole seconds (half a
+// second keeps a real countdown updating every tick while suppressing
+// recompute jitter). Suppressed values are NOT stored, so slow drift compares
+// against the last published value, accumulates, and eventually publishes.
+namespace {
+constexpr double kRangeToleranceM = 1.0;
+constexpr double kCpaToleranceM   = 1.0;
+constexpr double kTcpaToleranceS  = 0.5;
+constexpr double kPosToleranceDeg = 1e-5;   // ~1.1 m of latitude
+
+bool nearlyEqual(const std::optional<double>& a, const std::optional<double>& b,
+                 double tol) {
+    if (a.has_value() != b.has_value()) return false;
+    return !a || std::abs(*a - *b) <= tol;
+}
+
+bool nearlyEqual(const std::optional<GeoPos>& a, const std::optional<GeoPos>& b) {
+    if (a.has_value() != b.has_value()) return false;
+    return !a || (std::abs(a->latDeg - b->latDeg) <= kPosToleranceDeg &&
+                  std::abs(a->lonDeg - b->lonDeg) <= kPosToleranceDeg);
+}
+} // namespace
+
 void AisTargetStore::setRangeMeters(quint32 mmsi, std::optional<double> rangeMeters) {
     auto it = targets_.find(mmsi);
     if (it == targets_.end()) return;
+    if (nearlyEqual(it->rangeMeters, rangeMeters, kRangeToleranceM)) return;
     it->rangeMeters = rangeMeters;
     emit targetUpdated(mmsi);
 }
@@ -199,6 +229,11 @@ void AisTargetStore::setCpaTcpa(quint32 mmsi, std::optional<double> cpaMeters,
                                 std::optional<GeoPos> targetAtCpa) {
     auto it = targets_.find(mmsi);
     if (it == targets_.end()) return;
+    if (nearlyEqual(it->cpaMeters, cpaMeters, kCpaToleranceM) &&
+        nearlyEqual(it->tcpaSeconds, tcpaSeconds, kTcpaToleranceS) &&
+        nearlyEqual(it->cpaOwnshipPos, ownshipAtCpa) &&
+        nearlyEqual(it->cpaTargetPos, targetAtCpa))
+        return;
     it->cpaMeters = cpaMeters;
     it->tcpaSeconds = tcpaSeconds;
     it->cpaOwnshipPos = ownshipAtCpa;

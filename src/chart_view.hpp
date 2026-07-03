@@ -293,6 +293,19 @@ private:
     static BBox shiftX(const BBox& b, double dx);
 
     // Raster (MBTiles) layer -------------------------------------------------
+    // One tile blit/quad chosen by selectRasterTiles: the cached pixmap to draw
+    // (possibly a coarser ancestor standing in for a loading tile), its
+    // scene-frame footprint, and the source sub-rect within that pixmap.
+    struct RasterTileDraw {
+        RasterTileKey key;
+        QRectF dest;   // scene frame (Y down)
+        QRectF src;    // pixels within the cached pixmap
+    };
+    // Choose the tiles to draw for `vis`: native pyramid zoom per chart, cached
+    // tiles preferred with ancestor fallback, missing tiles requested, cache
+    // evicted to its working set. Shared by the painter (blits) and the GPU
+    // backend (retained textures + quads).
+    std::vector<RasterTileDraw> selectRasterTiles(const QRectF& vis);
     void drawRasterCharts(QPainter& p, const QTransform& cam, const QRectF& vis);
     void requestRasterTile(const RasterTileKey& k);
     void fitToSceneBox(const BBox& sceneBox);   // box already in scene frame
@@ -355,6 +368,12 @@ private:
     void drawPointSymbology(QPainter& p, const QTransform& cam,
                             const QRectF& vis, const QRectF& deviceRect);
     void renderStaticCache();
+    // True when staticCache_ still serves the current camera: same zoom and
+    // widget size, panned no further than the cached margin, content not dirty.
+    bool staticCacheReusable() const;
+    // Blit staticCache_ mapped to the live camera: pure translation at equal
+    // zoom (crisp), scaled placeholder mid-zoom. No-op when the cache is null.
+    void blitStaticCache(QPainter& p);
     void invalidateChart();
 
     // --- GPU backend (Stage 7 A4) ------------------------------------------
@@ -365,15 +384,27 @@ private:
     // Bring the widget stack into line with useGpu_: create/show or hide the GPU
     // + overlay child layers, and rebuild the loaded cells for the target backend.
     void applyBackend();
-    // Re-assemble the retained GPU scene from the active cells' batches (called
-    // when the quilt/active set changes, not on pan/zoom).
-    void rebuildGpuScene();
-    // Composite the visible raster (MBTiles) tiles into one image (reusing
-    // drawRasterCharts) centred on the current GPU scene origin, and hand it to
-    // the GPU layer as a textured underlay. Independent of the vector rebuild.
-    void composeGpuRaster();
+    // Hand one built cell's retained GPU batches to the GPU layer under `key`
+    // (moves the vectors out — the GPU copy becomes the only copy) with its
+    // absolute origin and culling bounds.
+    void pushCellToGpu(const QString& key, BuiltCell& c);
+    // Refresh the GPU layer's draw order + option flags from the active set
+    // (called when the quilt/active set or a toggle changes, not on pan/zoom).
+    void rebuildGpuDrawList();
+    // Push the visible raster tiles to the GPU layer as retained textures +
+    // quads (selectRasterTiles decides the set; only new tiles upload).
+    void pushGpuRasterTiles();
     // Push the current camera to the GPU layer (pan/zoom = uniform update only).
     void syncGpuCamera();
+    // Schedule one chart frame on the active backend: painter mode repaints this
+    // widget; GPU mode drives the child layers via refreshGpuFrame(). All chart
+    // frame requests go through here instead of calling update() directly.
+    void scheduleFrame();
+    // GPU mode: push camera/scene state to the child layers and repaint them.
+    // Called from input/data/timer events only — never from a paint handler,
+    // which would re-trigger itself through the translucent overlay (see
+    // paintEvent).
+    void refreshGpuFrame();
     // Touch-friendly zoom: same step as the wheel, anchored at the screen
     // centre (no cursor on touch devices).
     void zoomBy(double factor);
@@ -399,6 +430,9 @@ private:
     // it on every incoming message so the rate is capped at the interval.
     QTimer*       repaintTimer_ = nullptr;
     bool          repaintPending_ = false;
+    // Coalesces bursts of decoded raster tile replies into one chart refresh
+    // (single-shot; see onRasterTileReady).
+    QTimer*       rasterTileTimer_ = nullptr;
     QPushButton*  zoomInBtn_ = nullptr;     // lower-right + button
     QPushButton*  zoomOutBtn_ = nullptr;    // lower-right - button
 
@@ -473,15 +507,51 @@ private:
     // QRhiWidget) draws the retained vector cells and overlayLayer_ (translucent)
     // draws the dynamic pass on top; the painter path is bypassed. Both are child
     // widgets sized to the viewport; input still flows to this widget (they are
-    // transparent for mouse events). gpuSceneO* is the common origin the retained
-    // batches were re-based to; gpuSceneDirty_ forces a re-assembly.
+    // transparent for mouse events). Cells are retained per-cell inside the GPU
+    // layer (uploaded once at build, culled per draw); gpuDrawListDirty_ marks
+    // the draw order/options stale (quilt change, toggle) — a cheap list edit,
+    // never a geometry rebuild. basemapGpuCount_ tracks how many basemap
+    // world-copy entries are currently installed so they can be replaced.
     RenderBackend backendPref_ = RenderBackend::Auto;
     bool          useGpu_ = false;
     GpuChartView* gpuLayer_ = nullptr;
     QWidget*      overlayLayer_ = nullptr;
-    double        gpuSceneOX_ = 0.0, gpuSceneOY_ = 0.0;
-    bool          gpuSceneDirty_ = true;
+    bool          gpuDrawListDirty_ = true;
+    int           basemapGpuCount_ = 0;
     bool          gpuRasterDirty_ = false;   // raster underlay needs recompositing
+    // Camera the GPU raster tile set was last selected for. syncGpuCamera()
+    // reselects when the settled view moves/zooms/resizes (cheap: the GPU layer
+    // no-op-guards an unchanged set and uploads only textures it lacks); ppm -1
+    // forces the first selection.
+    double rasterCompScx_ = 0.0, rasterCompScy_ = 0.0, rasterCompPpm_ = -1.0;
+    int    rasterCompW_ = 0, rasterCompH_ = 0;
+
+    // Frame telemetry (docs/performance_fix_plan.md, Step 0.2). Cheap counters
+    // accumulated by the paint/GPU/data paths and dumped once per second on the
+    // "chart.telemetry" logging category — but only when something happened, so
+    // a truly idle app logs nothing at all (the Phase 1 acceptance test: every
+    // counter at 0). Kept in release builds; the cost is a few increments per
+    // frame plus one coarse 1 Hz timer.
+    struct FrameTelemetry {
+        int    paints = 0;            // painter-path paintEvent runs
+        int    overlayPaints = 0;     // GPU-mode overlay (dynamic pass) repaints
+        int    gpuFrames = 0;         // refreshGpuFrame() camera/scene pushes
+        int    repaintRequests = 0;   // data-driven requestRepaint() calls
+        int    drawListUpdates = 0;   // rebuildGpuDrawList() runs (cheap list edit)
+        int    rasterComposites = 0;  // pushGpuRasterTiles() tile selections
+        qint64 rasterCompositeMs = 0;
+        int    symbologyPasses = 0;   // symbology cache renders (GPU mode settle)
+        qint64 symbologyMs = 0;
+        int    staticRenders = 0;     // renderStaticCache() runs (settle)
+        qint64 staticRenderMs = 0;
+        bool any() const {
+            return paints || overlayPaints || gpuFrames || repaintRequests ||
+                   drawListUpdates || rasterComposites || symbologyPasses ||
+                   staticRenders;
+        }
+    };
+    FrameTelemetry telemetry_;
+    QTimer* telemetryTimer_ = nullptr;
 
     bool   havePendingView_ = false;
     double pendingLon_ = 0.0, pendingLat_ = 0.0, pendingScale_ = 0.0;

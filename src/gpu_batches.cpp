@@ -2,6 +2,9 @@
 #include "gpu_batches.hpp"
 
 #include <QColor>
+#include <QPainterPath>
+
+#include <algorithm>
 
 #include "cell_builder.hpp"   // cellbuilder::fillColor
 
@@ -16,43 +19,27 @@ Rgb toRgb(const QColor& c) {
              static_cast<float>(c.blueF()) };
 }
 
-// The outline pen for a feature, mirroring cellbuilder::instantiateCell's pen
-// decision: the portrayal LS() colour when present, else the painter's per-kind
-// fallback. Returns false when the feature draws no outline (bare DepthArea, or
-// a fill-only OtherArea wash).
-bool outlineColor(const Feature& f, const SymHit* hit, Rgb& out) {
-    if (hit && hit->hasLine) {
-        out = { hit->line.r / 255.f, hit->line.g / 255.f, hit->line.b / 255.f };
-        return true;
-    }
-    switch (f.kind) {
-        case FeatureKind::LandArea:     out = toRgb(QColor(115,  97,  64)); return true;
-        case FeatureKind::Coastline:    out = toRgb(QColor( 64,  51,  31)); return true;
-        case FeatureKind::DepthContour: out = toRgb(QColor(115, 153, 199)); return true;
-        case FeatureKind::OtherArea:
-            // Fill-only wash (AC without a line) draws no outline, matching the
-            // painter's "fill-only area" branch.
-            if (hit && hit->hasFill && hit->apIndex < 0) return false;
-            out = toRgb(QColor(102, 102, 115));
-            return true;
-        case FeatureKind::OtherLine:    out = toRgb(QColor(102, 102, 128)); return true;
-        case FeatureKind::DepthArea:    return false;   // bare depth area: no outline
-        default:                        return false;   // soundings / points: no line here
-    }
-}
-
 } // namespace
 
 void appendCellBatches(const std::vector<Feature>& feats,
                        const PreparedCellRender& prep,
+                       const BuiltCell& cell,
                        double originX, double originY,
                        std::vector<GpuVertex>& tris,
-                       std::vector<GpuVertex>& lines) {
+                       std::vector<GpuVertex>& lines,
+                       std::vector<GpuVertex>& contourLines) {
     auto hitFor = [&](std::size_t i) -> const SymHit* {
         return (i < prep.hasHit.size() && prep.hasHit[i]) ? &prep.hits[i] : nullptr;
     };
 
-    // --- Area fills: the Stage 5 pre-triangulated batches ---------------------
+    // --- Area fills: the Stage 5 pre-triangulated batches, filtered to the
+    // cell's clip box. The triangles are whole-cell (the painter's clipped fill
+    // geometry is QPainterPath, not triangles, so it can't be reused here);
+    // instead cull per triangle by bounding-box overlap — that drops the bulk
+    // of an oversized cell while keeping every triangle that could touch the
+    // kept region (the GPU clips the survivors at the viewport).
+    const BBox& clip = cell.clipBox;
+    const bool doClip = clip.valid();
     for (const PreparedFill& pf : prep.fills) {
         if (pf.featureIndex >= feats.size()) continue;
         const Feature& f = feats[pf.featureIndex];
@@ -68,36 +55,56 @@ void appendCellBatches(const std::vector<Feature>& feats,
         }
 
         const std::vector<float>& v = pf.verts;
-        for (quint32 idx : pf.indices) {
-            const std::size_t xi = static_cast<std::size_t>(idx) * 2;
-            if (xi + 1 >= v.size()) continue;   // guard against a malformed fill
-            tris.push_back({ static_cast<float>(v[xi]     - originX),
-                             static_cast<float>(v[xi + 1] - originY),
-                             col.r, col.g, col.b });
+        const std::size_t triCount = pf.indices.size() / 3;
+        for (std::size_t t = 0; t < triCount; ++t) {
+            const std::size_t x0 = static_cast<std::size_t>(pf.indices[3 * t])     * 2;
+            const std::size_t x1 = static_cast<std::size_t>(pf.indices[3 * t + 1]) * 2;
+            const std::size_t x2 = static_cast<std::size_t>(pf.indices[3 * t + 2]) * 2;
+            if (x0 + 1 >= v.size() || x1 + 1 >= v.size() || x2 + 1 >= v.size())
+                continue;   // guard against a malformed fill
+            if (doClip) {
+                const float minX = std::min({ v[x0], v[x1], v[x2] });
+                const float maxX = std::max({ v[x0], v[x1], v[x2] });
+                const float minY = std::min({ v[x0 + 1], v[x1 + 1], v[x2 + 1] });
+                const float maxY = std::max({ v[x0 + 1], v[x1 + 1], v[x2 + 1] });
+                if (maxX < clip.minx || minX > clip.maxx ||
+                    maxY < clip.miny || minY > clip.maxy)
+                    continue;   // triangle entirely outside the kept region
+            }
+            for (const std::size_t xi : { x0, x1, x2 })
+                tris.push_back({ static_cast<float>(v[xi]     - originX),
+                                 static_cast<float>(v[xi + 1] - originY),
+                                 col.r, col.g, col.b });
         }
     }
 
-    // --- Outlines / lines -----------------------------------------------------
-    for (std::size_t i = 0; i < feats.size(); ++i) {
-        const Feature& f = feats[i];
-        Rgb lc;
-        if (!outlineColor(f, hitFor(i), lc)) continue;
-
-        const bool closed = (f.kind == FeatureKind::DepthArea ||
-                             f.kind == FeatureKind::LandArea ||
-                             f.kind == FeatureKind::OtherArea);
-        for (const auto& ring : f.rings) {
-            const std::size_t n = ring.size();
-            if (n < 2) continue;
-            const std::size_t segs = closed ? n : n - 1;
-            for (std::size_t s = 0; s < segs; ++s) {
-                const Pt& a = ring[s];
-                const Pt& b = ring[(s + 1) % n];
-                lines.push_back({ static_cast<float>(a.x - originX),
-                                  static_cast<float>(a.y - originY), lc.r, lc.g, lc.b });
-                lines.push_back({ static_cast<float>(b.x - originX),
-                                  static_cast<float>(b.y - originY), lc.r, lc.g, lc.b });
+    // --- Outlines / lines: from the BuiltCell's clipped + simplified BuiltPath
+    // geometry — exactly the polylines the painter strokes, with its pen
+    // colours. BuiltPath is in the scene frame (Y = -projected Y), so Y is
+    // negated back to the projected frame the GPU batches use. The builder
+    // emits only MoveTo/LineTo elements (closeSubpath appends the closing
+    // LineTo), so element iteration reconstructs the segments directly.
+    for (const BuiltPath& bp : cell.paths) {
+        if (!bp.hasPen) continue;
+        std::vector<GpuVertex>& out = bp.isDepthContour ? contourLines : lines;
+        const Rgb lc = toRgb(bp.penColor);
+        const int n = bp.path.elementCount();
+        bool haveCur = false;
+        float cx = 0.0f, cy = 0.0f;
+        for (int i = 0; i < n; ++i) {
+            const QPainterPath::Element& e = bp.path.elementAt(i);
+            const float x = static_cast<float>(e.x - originX);
+            const float y = static_cast<float>(-e.y - originY);   // scene -> projected
+            if (e.type == QPainterPath::MoveToElement) {
+                cx = x; cy = y; haveCur = true;
+                continue;
             }
+            if (e.type != QPainterPath::LineToElement) { haveCur = false; continue; }
+            if (haveCur) {
+                out.push_back({ cx, cy, lc.r, lc.g, lc.b });
+                out.push_back({ x,  y,  lc.r, lc.g, lc.b });
+            }
+            cx = x; cy = y; haveCur = true;
         }
     }
 }

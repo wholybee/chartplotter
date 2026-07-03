@@ -104,9 +104,13 @@ struct BuiltCell {
     // the GPU backend is active. Vertices are in the projected frame (Y
     // north-up-positive, unlike the QPainter primitives above) relative to the
     // cell-local origin (gpuOriginX/Y), so float32 keeps precision; the view
-    // re-bases them to a common scene origin when it assembles the frame.
+    // hands them to the GPU layer (which applies the origin per draw) and the
+    // vectors are then freed — the GPU buffer becomes the only copy. Depth
+    // contours sit in their own bucket so the show/hide toggle is a draw-list
+    // change, not a rebuild.
     std::vector<GpuVertex> gpuTris;
     std::vector<GpuVertex> gpuLines;
+    std::vector<GpuVertex> gpuContours;
     double gpuOriginX = 0.0;
     double gpuOriginY = 0.0;
 };

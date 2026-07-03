@@ -37,12 +37,18 @@
 #include <QCoreApplication>
 #include <QFutureWatcher>
 #include <QtConcurrent/QtConcurrentRun>
+#include <QElapsedTimer>
+#include <QLoggingCategory>
 #include <algorithm>
 #include <cmath>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 #include <vector>
+
+// Frame telemetry (docs/performance_fix_plan.md, Step 0.2). Enable/disable with
+// QT_LOGGING_RULES="chart.telemetry.debug=true|false".
+Q_LOGGING_CATEGORY(lcTelemetry, "chart.telemetry")
 
 namespace {
 
@@ -172,10 +178,11 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
         // (which also restores antialiasing and the soundings/symbols overlay).
         updateVisibleCells();
         maybeBuildBasemap();
-        // Re-centre the GPU scene/raster on the settled view so its float origin
-        // and the raster texture stay near the viewport after a long pan/zoom.
-        if (useGpu_) gpuSceneDirty_ = true;
-        update();
+        // No unconditional GPU re-base here: syncGpuCamera() re-bases only once
+        // float32 error at the camera's distance from the scene origin could
+        // become visible, and recomposites the raster around the settled view,
+        // so a routine pan/zoom settle is camera-only.
+        scheduleFrame();
     });
 
     saveTimer_ = new QTimer(this);
@@ -196,8 +203,49 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
     repaintTimer_->setInterval(60);     // ~16 Hz
     connect(repaintTimer_, &QTimer::timeout, this, [this] {
         repaintPending_ = false;
-        update();
+        scheduleFrame();
     });
+
+    // Coalesce bursts of decoded raster tiles: during load-in dozens arrive per
+    // second, and each refresh is a full static-cache re-render (painter) or a
+    // full recomposite + texture upload (GPU). One short single-shot timer folds
+    // a burst into a single refresh instead of one per tile.
+    rasterTileTimer_ = new QTimer(this);
+    rasterTileTimer_->setSingleShot(true);
+    rasterTileTimer_->setInterval(75);
+    connect(rasterTileTimer_, &QTimer::timeout, this, [this] {
+        gpuRasterDirty_ = true;   // ignored by the painter path
+        invalidateChart();
+    });
+
+    // Frame telemetry dump: once per second, and only when at least one counter
+    // is nonzero — a truly idle app must log nothing at all. VeryCoarse keeps
+    // the timer itself from forcing precise CPU wakeups.
+    telemetryTimer_ = new QTimer(this);
+    telemetryTimer_->setInterval(1000);
+    telemetryTimer_->setTimerType(Qt::VeryCoarseTimer);
+    connect(telemetryTimer_, &QTimer::timeout, this, [this] {
+        int rhiFrames = 0, cellUploads = 0, texUploads = 0;
+        quint64 vertsDrawn = 0;
+        if (gpuLayer_)
+            gpuLayer_->takeTelemetry(rhiFrames, cellUploads, texUploads, vertsDrawn);
+        FrameTelemetry& t = telemetry_;
+        if (!t.any() && !rhiFrames && !cellUploads && !texUploads) return;
+        qCDebug(lcTelemetry).nospace()
+            << "paints=" << t.paints
+            << " overlay=" << t.overlayPaints
+            << " gpuFrames=" << t.gpuFrames
+            << " rhiFrames=" << rhiFrames
+            << " requests=" << t.repaintRequests
+            << " drawlist=" << t.drawListUpdates
+            << " rasterComp=" << t.rasterComposites << '/' << t.rasterCompositeMs << "ms"
+            << " symbology=" << t.symbologyPasses << '/' << t.symbologyMs << "ms"
+            << " staticRender=" << t.staticRenders << '/' << t.staticRenderMs << "ms"
+            << " uploads=" << cellUploads << '+' << texUploads
+            << " verts=" << vertsDrawn;
+        t = FrameTelemetry{};
+    });
+    telemetryTimer_->start();
 
     // Touch zoom buttons (lower-right, just left of the scale bar). Circular,
     // translucent so they sit nicely over the chart. Auto-repeat lets the user
@@ -495,7 +543,7 @@ void ChartView::restoreView(double lon, double lat, double s) {
     ppm_ = std::max(s, minPpm());   // never restore past the whole-globe floor
     normalizeCenter();
     updatePointLOD();
-    update();
+    scheduleFrame();
 }
 
 bool ChartView::currentView(double& lon, double& lat, double& s) const {
@@ -509,6 +557,11 @@ bool ChartView::currentView(double& lon, double& lat, double& s) const {
 // ---- catalog / fit ---------------------------------------------------------
 
 void ChartView::clearAll() {
+    if (gpuLayer_) {
+        const QList<QString> keys = loaded_.keys();
+        for (const QString& p : keys) gpuLayer_->removeCell(p);
+        gpuDrawListDirty_ = true;
+    }
     loaded_.clear();
     inFlight_.clear();
     building_.clear();
@@ -533,7 +586,7 @@ void ChartView::onCatalogFinished(bool ok, const QString&) {
 
     if (!haveCatalog_) {
         emit statusChanged(QString());
-        update();
+        scheduleFrame();
         return;
     }
 
@@ -555,7 +608,7 @@ void ChartView::onCatalogFinished(bool ok, const QString&) {
     }
     updateVisibleCells();
     maybeBuildBasemap();
-    update();
+    scheduleFrame();
 }
 
 void ChartView::fitToCatalog() {
@@ -572,7 +625,7 @@ void ChartView::fitToCatalog() {
     scy_ = -(b.miny + b.maxy) / 2.0;
     normalizeCenter();
     updatePointLOD();
-    update();
+    scheduleFrame();
 }
 
 // Zoom/pan so the most detailed charts in the set fill the screen. Fitting the
@@ -611,7 +664,7 @@ void ChartView::zoomToCharts() {
     userInteracted_ = true;                // explicit jump; don't auto-refit on resize
     normalizeCenter();
     updatePointLOD();
-    update();
+    scheduleFrame();
 }
 
 // Move the view center onto the ownship, leaving zoom untouched. Returns false
@@ -696,8 +749,10 @@ void ChartView::requestRepaint() {
     }
     // Coalesce: if a repaint is already scheduled within the current window this
     // request folds into it. The single-shot interval caps the data-driven
-    // repaint rate however fast messages arrive. paintEvent clears the flag, so
-    // any frame (including an interactive one) satisfies a pending request.
+    // repaint rate however fast messages arrive. The painter paintEvent and the
+    // GPU refreshGpuFrame() both clear the flag, so any frame (including an
+    // interactive one) satisfies a pending request.
+    telemetry_.repaintRequests++;   // counted before folding: request pressure
     if (repaintPending_) return;
     repaintPending_ = true;
     repaintTimer_->start();
@@ -735,7 +790,7 @@ void ChartView::setDisplaySettings(const ChartDisplaySettings& s) {
 }
 
 void ChartView::requestRepaint(RepaintReason reason) {
-    if (reason == RepaintReason::Immediate) update();
+    if (reason == RepaintReason::Immediate) scheduleFrame();
     else                                    requestRepaint();   // coalesced
 }
 
@@ -791,7 +846,7 @@ void ChartView::updateVisibleCells() {
     active_   = q.active;
     drawClip_ = q.drawClip;
     wanted_   = q.wanted;
-    if (quiltTopologyChanged) { staticDirty_ = true; gpuSceneDirty_ = true; }
+    if (quiltTopologyChanged) { staticDirty_ = true; gpuDrawListDirty_ = true; }
 
     // Bring in newly-wanted cells. Each is built clipped in its own (real) frame;
     // the wrap offset is recorded so it can be drawn on the correct side of the
@@ -835,7 +890,7 @@ void ChartView::updateVisibleCells() {
 
     emit statusChanged(QStringLiteral("Bands ≤ %1  ·  %2 cell(s) shown")
                            .arg(maxBand).arg(loaded_.size()));
-    update();
+    scheduleFrame();
 }
 
 // ---- async load / build ----------------------------------------------------
@@ -929,14 +984,25 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
         }
         BuiltCell bc = cellbuilder::instantiateCell(p, *feats, prep, band, clipBox,
                                                     simplifyToleranceM(band));
-        // Retained GPU batches from the same prepared render (Stage 7 A4). Origin
-        // = clip-box centre in the projected frame so the float32 vertices stay
-        // near zero; the view re-bases per cell when assembling the frame.
+        // Retained GPU batches from the built (clipped + simplified) geometry
+        // (Stage 7 A4). Origin = clip-box centre in the projected frame so the
+        // float32 vertices stay near zero; the GPU layer applies the origin per
+        // draw through its camera uniform.
         if (wantGpu) {
             bc.gpuOriginX = clipBox.valid() ? (clipBox.minx + clipBox.maxx) / 2.0 : 0.0;
             bc.gpuOriginY = clipBox.valid() ? (clipBox.miny + clipBox.maxy) / 2.0 : 0.0;
-            gpubatches::appendCellBatches(*feats, prep, bc.gpuOriginX, bc.gpuOriginY,
-                                          bc.gpuTris, bc.gpuLines);
+            gpubatches::appendCellBatches(*feats, prep, bc, bc.gpuOriginX, bc.gpuOriginY,
+                                          bc.gpuTris, bc.gpuLines, bc.gpuContours);
+            // The GPU draws fills/lines from the retained buffers just built, so
+            // keep only the painter primitives the constant-size symbology pass
+            // still strokes with QPainter (AP area patterns / LC complex lines);
+            // dropping the rest releases QPainterPath memory the GPU backend
+            // would never touch again.
+            bc.paths.erase(std::remove_if(bc.paths.begin(), bc.paths.end(),
+                                          [](const BuiltPath& bp) {
+                                              return bp.apIndex < 0 && bp.lcIndex < 0;
+                                          }),
+                           bc.paths.end());
         }
         return bc;
     }));
@@ -947,8 +1013,12 @@ void ChartView::onCellBuilt(BuiltCell bc, quint64 gen, double drawOffsetX) {
     if (gen != generation_) return;
     if (!wanted_.contains(bc.path)) return;
     bc.drawOffsetX = drawOffsetX;
+    const QString path = bc.path;
     storeCell(std::move(bc));
-    gpuSceneDirty_ = true;   // new cell's retained batches must join the scene
+    // Hand the retained batches to the GPU layer (uploaded once, CPU copy
+    // freed) and refresh the draw order so the new cell joins the frame.
+    if (useGpu_ && gpuLayer_) pushCellToGpu(path, loaded_[path]);
+    gpuDrawListDirty_ = true;
     emit statusChanged(QStringLiteral("%1 cell(s) shown").arg(loaded_.size()));
     invalidateChart();
 }
@@ -961,7 +1031,8 @@ void ChartView::removeCell(const QString& path) {
     loaded_.remove(path);
     drawClip_.remove(path);
     active_.remove(path);
-    gpuSceneDirty_ = true;   // dropped cell: its batches must leave the GPU scene
+    if (gpuLayer_) gpuLayer_->removeCell(path);   // frees its GPU buffers
+    gpuDrawListDirty_ = true;
 }
 
 void ChartView::updatePointLOD() {
@@ -995,10 +1066,10 @@ void ChartView::reloadBasemap() {
     staticDirty_ = true;     // basemap dropped: cached chart is stale
     basemapClipBox_ = BBox();
     basemapBuiltPpm_ = 0.0;
-    if (availableTiers_.isEmpty()) { update(); return; }
+    if (availableTiers_.isEmpty()) { scheduleFrame(); return; }
     ensureViewForBasemap();   // need a zoom to choose a tier
     ensureTierForZoom();      // load the tier appropriate for the current zoom
-    update();
+    scheduleFrame();
 }
 
 // With a basemap but no charts, establish a whole-world view so the underlay is
@@ -1140,8 +1211,12 @@ void ChartView::maybeBuildBasemap() {
             if (wantGpu) {
                 bc.gpuOriginX = r.first.valid() ? (r.first.minx + r.first.maxx) / 2.0 : 0.0;
                 bc.gpuOriginY = r.first.valid() ? (r.first.miny + r.first.maxy) / 2.0 : 0.0;
-                gpubatches::appendCellBatches(*feats, prep, bc.gpuOriginX, bc.gpuOriginY,
-                                              bc.gpuTris, bc.gpuLines);
+                gpubatches::appendCellBatches(*feats, prep, bc, bc.gpuOriginX, bc.gpuOriginY,
+                                              bc.gpuTris, bc.gpuLines, bc.gpuContours);
+                // Basemap features carry no AP/LC symbology, so in GPU mode
+                // nothing strokes these painter paths again — drop them all.
+                bc.paths.clear();
+                bc.paths.shrink_to_fit();
             }
             result.push_back(std::move(bc));
         }
@@ -1152,8 +1227,21 @@ void ChartView::maybeBuildBasemap() {
 void ChartView::onBasemapBuilt(std::vector<BuiltCell> cells, FeatureCache::FeaturesPtr feats) {
     basemapBuilding_ = false;
     if (feats != basemapFeats_) return;     // data was reloaded while building
+    // Swap the retained basemap entries in the GPU layer: the world-copy count
+    // can change (date-line proximity), so remove the old set before pushing
+    // the new one.
+    if (gpuLayer_) {
+        for (int i = 0; i < basemapGpuCount_; ++i)
+            gpuLayer_->removeCell(QStringLiteral("basemap#%1").arg(i));
+        basemapGpuCount_ = 0;
+    }
     basemap_ = std::move(cells);
-    gpuSceneDirty_ = true;                   // new basemap batches must re-assemble
+    if (useGpu_ && gpuLayer_) {
+        for (std::size_t i = 0; i < basemap_.size(); ++i)
+            pushCellToGpu(QStringLiteral("basemap#%1").arg(i), basemap_[i]);
+        basemapGpuCount_ = static_cast<int>(basemap_.size());
+    }
+    gpuDrawListDirty_ = true;
     invalidateChart();
 }
 
@@ -1171,7 +1259,9 @@ void ChartView::setShowText(bool on) {
 }
 void ChartView::setShowDepthContours(bool on) {
     if (on == showDepthContours_) return;
-    showDepthContours_ = on; invalidateChart();
+    // GPU mode keeps contours in their own retained bucket, so the toggle is a
+    // draw-list change — no rebuild.
+    showDepthContours_ = on; gpuDrawListDirty_ = true; invalidateChart();
 }
 
 void ChartView::setShowRasterCharts(bool on) {
@@ -1182,7 +1272,7 @@ void ChartView::setShowRasterCharts(bool on) {
 void ChartView::setVectorOverlay(bool on) {
     if (on == vectorOverlay_) return;
     // Affects GPU cell/basemap fills and the raster underlay, so re-assemble.
-    vectorOverlay_ = on; gpuSceneDirty_ = true; invalidateChart();
+    vectorOverlay_ = on; gpuDrawListDirty_ = true; invalidateChart();
 }
 
 // ---- raster (MBTiles) layer ------------------------------------------------
@@ -1244,8 +1334,9 @@ void ChartView::onRasterTileReady(int chartId, int z, int x, int y,
     } else {
         tileCache_.insert(k, QPixmap::fromImage(img));
     }
-    gpuRasterDirty_ = true;   // recomposite the GPU raster underlay with this tile
-    invalidateChart();
+    // Coalesced refresh (rasterTileTimer_): a burst of tile replies produces one
+    // recomposite/re-render rather than one per tile.
+    if (!rasterTileTimer_->isActive()) rasterTileTimer_->start();
 }
 
 void ChartView::requestRasterTile(const RasterTileKey& k) {
@@ -1267,7 +1358,7 @@ void ChartView::fitToSceneBox(const BBox& b) {
     scy_ = (b.miny + b.maxy) / 2.0;
     normalizeCenter();
     updatePointLOD();
-    update();
+    scheduleFrame();
 }
 
 // Pan/zoom to frame a geographic box (degrees). Builds the scene-frame box
@@ -1290,19 +1381,21 @@ void ChartView::fitToGeoBox(double latMin, double lonMin, double latMax, double 
     fitToSceneBox(b);
 }
 
-// Draw the raster charts in device space: choose each chart's native pyramid
-// zoom from the current scale, blit cached tiles, request missing ones, and fall
-// back to the nearest cached coarser ancestor so zoom/pan never flashes blank.
-void ChartView::drawRasterCharts(QPainter& p, const QTransform& cam, const QRectF& vis) {
-    if (!showRasterCharts_ || rasterCharts_.isEmpty() || ppm_ <= 0.0) return;
+// Choose the raster tiles to draw for `vis`: each chart's native pyramid zoom
+// from the current scale, cached tiles preferred, missing ones requested, and
+// the nearest cached coarser ancestor (sub-rectangled to the tile's footprint)
+// standing in so zoom/pan never flashes blank. Also evicts the pixmap cache to
+// its working set. Shared by the painter path (drawRasterCharts blits the
+// result) and the GPU path (pushGpuRasterTiles turns it into textured quads).
+std::vector<ChartView::RasterTileDraw> ChartView::selectRasterTiles(const QRectF& vis) {
+    std::vector<RasterTileDraw> draws;
+    if (!showRasterCharts_ || rasterCharts_.isEmpty() || ppm_ <= 0.0) return draws;
 
     constexpr int    kTilePx       = 256;   // logical tile edge, pixels
     constexpr int    kMaxCacheTiles = 384;  // ~working set; older tiles evicted
     const double ww = worldWidthM();
     const double W  = ww * 0.5;
 
-    p.resetTransform();                       // draw with explicit device rects
-    p.setRenderHint(QPainter::SmoothPixmapTransform, !interacting_);
     tileNeeded_.clear();
 
     for (int chartId = 0; chartId < rasterCharts_.size(); ++chartId) {
@@ -1345,11 +1438,11 @@ void ChartView::drawRasterCharts(QPainter& p, const QTransform& cam, const QRect
 
                 const RasterTileKey k{chartId, z, tx, ty};
                 tileNeeded_.insert(k);
-                const QRectF dev = cam.mapRect(QRectF(sx, sy, span, span));
+                const QRectF dest(sx, sy, span, span);
 
                 auto it = tileCache_.constFind(k);
                 if (it != tileCache_.constEnd()) {
-                    p.drawPixmap(dev, it.value(), it.value().rect());
+                    draws.push_back({ k, dest, QRectF(it.value().rect()) });
                     continue;
                 }
                 if (!tileAbsent_.contains(k)) requestRasterTile(k);
@@ -1359,13 +1452,15 @@ void ChartView::drawRasterCharts(QPainter& p, const QTransform& cam, const QRect
                 for (int L = 1; z - L >= m.minZoom; ++L) {
                     const int az = z - L;
                     const int ax = tx >> L, ay = ty >> L;
-                    auto ait = tileCache_.constFind(RasterTileKey{chartId, az, ax, ay});
+                    const RasterTileKey ak{chartId, az, ax, ay};
+                    auto ait = tileCache_.constFind(ak);
                     if (ait == tileCache_.constEnd()) continue;
                     const QPixmap& pm = ait.value();
                     const double cell = double(pm.width()) / (1 << L);
                     const QRectF src((tx - (ax << L)) * cell,
                                      (ty - (ay << L)) * cell, cell, cell);
-                    p.drawPixmap(dev, pm, src);
+                    tileNeeded_.insert(ak);   // in use as a stand-in: keep cached
+                    draws.push_back({ ak, dest, src });
                     break;
                 }
             }
@@ -1379,6 +1474,19 @@ void ChartView::drawRasterCharts(QPainter& p, const QTransform& cam, const QRect
             if (tileNeeded_.contains(it.key())) ++it;
             else it = tileCache_.erase(it);
         }
+    }
+    return draws;
+}
+
+// Draw the raster charts in device space: blit the selected tile set.
+void ChartView::drawRasterCharts(QPainter& p, const QTransform& cam, const QRectF& vis) {
+    if (!showRasterCharts_ || rasterCharts_.isEmpty() || ppm_ <= 0.0) return;
+    p.resetTransform();                       // draw with explicit device rects
+    p.setRenderHint(QPainter::SmoothPixmapTransform, !interacting_);
+    for (const RasterTileDraw& d : selectRasterTiles(vis)) {
+        const auto it = tileCache_.constFind(d.key);
+        if (it != tileCache_.constEnd())
+            p.drawPixmap(cam.mapRect(d.dest), it.value(), d.src);
     }
 }
 
@@ -1464,7 +1572,7 @@ void ChartView::setVesselScale(double scale) {
     if (scale > 3.0) scale = 3.0;
     if (scale == vesselScale_) return;
     vesselScale_ = scale;
-    update();
+    scheduleFrame();
 }
 
 void ChartView::setDepthUnit(DepthUnit u) {
@@ -1474,7 +1582,7 @@ void ChartView::setDepthUnit(DepthUnit u) {
 
 void ChartView::setDistanceUnit(DistanceUnit u) {
     if (u == distanceUnit_) return;
-    distanceUnit_ = u; update();   // scale bar relabels on repaint
+    distanceUnit_ = u; scheduleFrame();   // scale bar relabels on repaint
 }
 
 // Soundings come from S-57 in metres. Show one decimal in the shallows (where
@@ -1522,20 +1630,23 @@ void ChartView::beginInteraction() {
 // ---- painting --------------------------------------------------------------
 
 void ChartView::paintEvent(QPaintEvent*) {
+    // GPU backend: the retained RHI layer draws the chart and the translucent
+    // overlay layer draws the dynamic pass on top; this widget (fully covered)
+    // paints nothing. This branch must stay a pure no-op: Qt repaints this
+    // parent to composite the translucent overlay, so scheduling any child
+    // update() from here makes every frame schedule the next one — a
+    // self-sustaining ~60 Hz repaint loop with the app idle. GPU frames are
+    // driven from input/data/timer events via refreshGpuFrame() instead. The
+    // repaint governor is also left alone here: a composition pass does no
+    // frame work, so it must not cancel a pending coalesced repaint.
+    if (useGpu_ && gpuLayer_) return;
+
     // This frame satisfies any pending coalesced repaint request; cancel the
     // governor so a data update arriving mid pan/zoom doesn't fire a second,
     // redundant paint right after this one.
     repaintPending_ = false;
     if (repaintTimer_) repaintTimer_->stop();
-
-    // GPU backend: the retained RHI layer draws the chart and the translucent
-    // overlay layer draws the dynamic pass on top; this widget (fully covered)
-    // paints nothing. Keep both layers in step with the live camera each frame.
-    if (useGpu_ && gpuLayer_) {
-        syncGpuCamera();
-        if (overlayLayer_) overlayLayer_->update();
-        return;
-    }
+    telemetry_.paints++;
 
     QPainter p(this);
     p.fillRect(rect(), QColor(204, 224, 242));
@@ -1548,30 +1659,12 @@ void ChartView::paintEvent(QPaintEvent*) {
         return;
     }
 
-    // Serve the static chart from the offscreen cache. It is reusable when the
-    // zoom and widget size are unchanged and the view has panned no further than
-    // the cached margin; then the frame is just a blit plus the dynamic overlays.
-    const double dxPx = (scx_ - cacheScx_) * ppm_;
-    const double dyPx = (scy_ - cacheScy_) * ppm_;
-    const bool sizeMatch = (cacheW_ == width() && cacheH_ == height());
-    const bool reusable = !staticDirty_ && !staticCache_.isNull()
-                          && ppm_ == cachePpm_ && sizeMatch
-                          && std::abs(dxPx) <= cacheMX_ && std::abs(dyPx) <= cacheMY_;
-    // Re-render only when settled: mid-gesture we blit the last cache (shifted, or
-    // scaled for a zoom) and let the settle frame (aaTimer_) refresh it, so a pan
-    // or zoom never pays the full chart raster per frame.
-    if (!reusable && !interacting_) renderStaticCache();
-
-    if (!staticCache_.isNull()) {
-        // Map cache-pixel space to the live camera. Equal zoom -> pure translation
-        // (crisp); different zoom (mid-gesture placeholder) -> scaled blit.
-        const QTransform blit = cacheCam_.inverted() * cameraTransform();
-        p.save();
-        p.setRenderHint(QPainter::SmoothPixmapTransform, ppm_ != cachePpm_);
-        p.setTransform(blit);
-        p.drawPixmap(0, 0, staticCache_);
-        p.restore();
-    }
+    // Serve the static chart from the offscreen cache. Re-render only when
+    // settled: mid-gesture we blit the last cache (shifted, or scaled for a
+    // zoom) and let the settle frame (aaTimer_) refresh it, so a pan or zoom
+    // never pays the full chart raster per frame.
+    if (!staticCacheReusable() && !interacting_) renderStaticCache();
+    blitStaticCache(p);
 
     // Dynamic overlays at the live camera, composited over the cached chart every
     // frame (these move independently of the chart, so they are never cached).
@@ -1587,16 +1680,17 @@ void ChartView::paintDynamic(QPainter& p) {
     const QTransform cam = cameraTransform();
     p.setRenderHint(QPainter::Antialiasing, true);   // smooth the moving overlays
 
-    // GPU mode: the RHI layer drew only area fills + simple lines, so the
+    // GPU mode: the RHI layer draws only area fills + simple lines, so the
     // constant-size chart symbology (patterns, complex lines, soundings, symbols,
-    // text, light sectors) is drawn here onto the translucent overlay, above the
-    // chart but below the ownship/AIS/route overlays. In painter mode these are
-    // already in the static cache, so this is skipped.
+    // text, light sectors) sits here, above the chart but below the ownship/AIS/
+    // route overlays. It is served from the same offscreen apron cache the
+    // painter path uses — re-rendered only on settle, blitted (shifted, or
+    // scaled mid-zoom) otherwise — so a pan/zoom frame never re-rasterizes S-52
+    // symbology (the Stage 7 pan-smoothness regression). In GPU mode the cache
+    // holds just the symbology over a transparent background (renderStaticCache).
     if (useGpu_) {
-        const double halfW = (width()  / 2.0) / ppm_;
-        const double halfH = (height() / 2.0) / ppm_;
-        const QRectF vis(scx_ - halfW, scy_ - halfH, width() / ppm_, height() / ppm_);
-        drawPointSymbology(p, cam, vis, QRectF(0, 0, width(), height()));
+        if (!staticCacheReusable() && !interacting_) renderStaticCache();
+        blitStaticCache(p);
         p.resetTransform();
         p.setRenderHint(QPainter::Antialiasing, true);
     }
@@ -1623,6 +1717,7 @@ bool ChartView::eventFilter(QObject* obj, QEvent* e) {
     // The translucent overlay layer delegates its painting back here so the
     // dynamic pass is drawn identically to the painter path.
     if (obj == overlayLayer_ && e->type() == QEvent::Paint) {
+        telemetry_.overlayPaints++;
         QPainter p(overlayLayer_);
         paintDynamic(p);
         return true;
@@ -1643,11 +1738,40 @@ void ChartView::applyBackend() {
     if (want == useGpu_) return;   // no backend change
     useGpu_ = want;
 
+    // The offscreen cache holds full-chart content in painter mode but only
+    // transparent symbology in GPU mode — wrong for the other backend either
+    // way. Drop it rather than keep a stale ~1.5×-viewport pixmap alive.
+    staticCache_ = QPixmap();
+    staticDirty_ = true;
+
     if (useGpu_) {
         if (!gpuLayer_) {
             gpuLayer_ = new GpuChartView(this);
             gpuLayer_->setAttribute(Qt::WA_TransparentForMouseEvents, true);  // input -> this
             gpuLayer_->setGeometry(rect());
+            // Device loss (RHI recreated after a window/screen change): every
+            // retained cell buffer died and the CPU batches were freed at
+            // upload, so rebuild the cells and basemap from cached features
+            // (parse-free, same as a backend switch).
+            connect(gpuLayer_, &GpuChartView::deviceLost, this, [this] {
+                if (!useGpu_) return;
+                gpuLayer_->clearCells();   // drop survivors from the old generation
+                ++generation_;
+                loaded_.clear();
+                active_.clear();
+                drawClip_.clear();
+                wanted_.clear();
+                inFlight_.clear();
+                building_.clear();
+                basemapGpuCount_ = 0;
+                staticDirty_ = true;
+                gpuDrawListDirty_ = true;
+                gpuRasterDirty_ = true;
+                updateVisibleCells();
+                basemapBuiltPpm_ = 0.0;
+                maybeBuildBasemap();
+                scheduleFrame();
+            });
         }
         if (!overlayLayer_) {
             overlayLayer_ = new QWidget(this);
@@ -1668,6 +1792,13 @@ void ChartView::applyBackend() {
         if (overlayLayer_) overlayLayer_->hide();
     }
 
+    // Drop every retained GPU entry (cells + basemap): switching to the painter
+    // frees the GPU memory, switching to the GPU starts from a clean slate that
+    // the rebuilds below re-populate.
+    if (gpuLayer_) gpuLayer_->clearCells();
+    basemapGpuCount_ = 0;
+    gpuDrawListDirty_ = true;
+
     // Rebuild the loaded cells for the target backend (GPU batches are emitted by
     // the build worker only when useGpu_). Features stay cached, so this is a
     // parse-free rebuild; the camera and catalog are untouched.
@@ -1680,7 +1811,6 @@ void ChartView::applyBackend() {
         inFlight_.clear();
         building_.clear();
         staticDirty_   = true;
-        gpuSceneDirty_ = true;
         updateVisibleCells();
     }
     // Rebuild the basemap so it gains (or drops) its GPU batches for the new
@@ -1688,92 +1818,155 @@ void ChartView::applyBackend() {
     // no-op when no basemap tier is loaded.
     basemapBuiltPpm_ = 0.0;
     maybeBuildBasemap();
-    update();
+    scheduleFrame();
 }
 
-void ChartView::rebuildGpuScene() {
+void ChartView::pushCellToGpu(const QString& key, BuiltCell& c) {
     if (!gpuLayer_) return;
-    // Re-base every active cell's retained batches to one common origin — the
-    // current view centre in the projected frame (scene X == projected X; scene Y
-    // is north-down, so projected Y = -scy_). This keeps float32 near zero and is
-    // done only when the active set changes, never on pan/zoom.
-    gpuSceneOX_ = scx_;
-    gpuSceneOY_ = -scy_;
-    std::vector<GpuVertex> baseTris, baseLines, cellTris, cellLines;
+    // Per-cell vertex budget — the number the clip/simplify batch generation
+    // keeps near what the painter actually strokes.
+    qCDebug(lcTelemetry).nospace()
+        << "gpuCell " << key << ": tris=" << c.gpuTris.size()
+        << " lines=" << c.gpuLines.size()
+        << " contours=" << c.gpuContours.size();
+    // Culling bounds: the clip region covers all emitted geometry (fills are
+    // filtered to it, lines clipped to it); shift into the draw frame by the
+    // wrap offset. An invalid clip box (never expected) falls back to "never
+    // cull".
+    double minX = -1e12, minY = -1e12, maxX = 1e12, maxY = 1e12;
+    if (c.clipBox.valid()) {
+        minX = c.clipBox.minx + c.drawOffsetX;
+        maxX = c.clipBox.maxx + c.drawOffsetX;
+        minY = c.clipBox.miny;
+        maxY = c.clipBox.maxy;
+    }
+    gpuLayer_->setCell(key, std::move(c.gpuTris), std::move(c.gpuLines),
+                       std::move(c.gpuContours),
+                       c.gpuOriginX + c.drawOffsetX, c.gpuOriginY,
+                       minX, minY, maxX, maxY);
+    // The GPU layer owns the data now (and frees it after upload); drop the
+    // moved-from shells so the BuiltCell holds no vertex memory.
+    c.gpuTris = {};
+    c.gpuLines = {};
+    c.gpuContours = {};
+}
 
-    // Re-base one built cell's retained batches into the common frame, appending
-    // its fills and lines to the given buckets. Vector-overlay mode drops fills so
-    // a raster/imagery base shows through, keeping only the linework.
-    auto append = [&](const BuiltCell& c, std::vector<GpuVertex>& outTris,
-                      std::vector<GpuVertex>& outLines) {
-        const float dx = static_cast<float>(c.gpuOriginX + c.drawOffsetX - gpuSceneOX_);
-        const float dy = static_cast<float>(c.gpuOriginY - gpuSceneOY_);
-        if (!vectorOverlay_) {
-            outTris.reserve(outTris.size() + c.gpuTris.size());
-            for (const GpuVertex& v : c.gpuTris)
-                outTris.push_back({ v.x + dx, v.y + dy, v.r, v.g, v.b });
-        }
-        outLines.reserve(outLines.size() + c.gpuLines.size());
-        for (const GpuVertex& v : c.gpuLines)
-            outLines.push_back({ v.x + dx, v.y + dy, v.r, v.g, v.b });
-    };
-
-    // Basemap underlay (drawn beneath the raster + cells), unless vector-overlay
-    // mode suppresses the opaque base so a raster/imagery layer is the base.
+void ChartView::rebuildGpuDrawList() {
+    if (!gpuLayer_) return;
+    // Basemap world-copies beneath everything — suppressed entirely in
+    // vector-overlay mode, where the raster imagery is the opaque base.
+    QStringList base;
     if (!vectorOverlay_)
-        for (const BuiltCell& bc : basemap_) append(bc, baseTris, baseLines);
-
-    // Cells coarse-band-first so finer detail overprints, matching the painter.
-    std::vector<const BuiltCell*> order;
+        for (int i = 0; i < basemapGpuCount_; ++i)
+            base << QStringLiteral("basemap#%1").arg(i);
+    // Active cells coarse-band-first so finer detail overprints, matching the
+    // painter. This is a list edit — no vertex copying, no upload.
+    std::vector<std::pair<int, QString>> order;
     order.reserve(active_.size());
     for (const QString& path : active_) {
-        auto it = loaded_.constFind(path);
-        if (it != loaded_.constEnd()) order.push_back(&it.value());
+        const auto it = loaded_.constFind(path);
+        if (it != loaded_.constEnd()) order.emplace_back(it->band, path);
     }
-    std::sort(order.begin(), order.end(),
-              [](const BuiltCell* a, const BuiltCell* b) { return a->band < b->band; });
-    for (const BuiltCell* c : order) append(*c, cellTris, cellLines);
-    // Camera centre in the common frame is 0 at assembly (origin == view centre).
-    gpuLayer_->setScene(std::move(baseTris), std::move(baseLines),
-                        std::move(cellTris), std::move(cellLines), 0.0, 0.0, ppm_);
-    composeGpuRaster();          // raster underlay, aligned to this same origin
-    gpuSceneDirty_ = false;
-    gpuRasterDirty_ = false;
+    std::sort(order.begin(), order.end());
+    QStringList cellKeys;
+    for (const auto& pr : order) cellKeys << pr.second;
+    gpuLayer_->setDrawList(base, cellKeys, !vectorOverlay_, showDepthContours_);
+    gpuDrawListDirty_ = false;
+    telemetry_.drawListUpdates++;
 }
 
-void ChartView::composeGpuRaster() {
+// Pack a raster tile's identity for the GPU texture cache: chart id, zoom, and
+// tile coordinates. MBTiles zooms (< 64) and tile coords (< 2^24) fit easily.
+static quint64 tileTexId(const RasterTileKey& k) {
+    return (quint64(quint32(k.chart)) << 54) |
+           (quint64(quint32(k.z) & 0x3F) << 48) |
+           (quint64(quint32(k.x) & 0xFFFFFF) << 24) |
+           quint64(quint32(k.y) & 0xFFFFFF);
+}
+
+void ChartView::pushGpuRasterTiles() {
     if (!gpuLayer_ || ppm_ <= 0.0 || width() <= 0 || height() <= 0) return;
+    // Record the camera this selection is for: syncGpuCamera() reselects once
+    // the settled view moves/zooms/resizes.
+    rasterCompScx_ = scx_;
+    rasterCompScy_ = scy_;
+    rasterCompPpm_ = ppm_;
+    rasterCompW_ = width();
+    rasterCompH_ = height();
     if (!showRasterCharts_ || rasterCharts_.isEmpty()) {
-        gpuLayer_->setRasterLayer(QImage(), 0.0, 0.0);   // clear
+        gpuLayer_->setRasterTiles({});
         return;
     }
-    // Composite centred on the GPU scene origin (not the live camera), so the
-    // texture stays aligned with the vector batches while the view pans between
-    // rebuilds. Scene centre = (gpuSceneOX_, -gpuSceneOY_).
-    const double halfW = (width()  / 2.0) / ppm_;
-    const double halfH = (height() / 2.0) / ppm_;
-    const double sceneCY = -gpuSceneOY_;
-    QTransform camRaster;
-    camRaster.translate(width() / 2.0, height() / 2.0);
-    camRaster.scale(ppm_, ppm_);
-    camRaster.translate(-gpuSceneOX_, -sceneCY);
-    const QRectF vis(gpuSceneOX_ - halfW, sceneCY - halfH, 2.0 * halfW, 2.0 * halfH);
+    QElapsedTimer telemT;
+    telemT.start();
+    // Select with the painter cache's quarter-viewport apron each side, so
+    // mid-gesture pans stay covered until the settle reselection. Tiles the GPU
+    // layer already retains cost nothing; only new ones convert and upload.
+    const double halfW = ((width()  * 1.5) / 2.0) / ppm_;
+    const double halfH = ((height() * 1.5) / 2.0) / ppm_;
+    const QRectF vis(scx_ - halfW, scy_ - halfH, 2.0 * halfW, 2.0 * halfH);
+    const std::vector<RasterTileDraw> draws = selectRasterTiles(vis);
 
-    const qreal dpr = devicePixelRatioF() > 0.0 ? devicePixelRatioF() : 1.0;
-    QImage img(int(std::lround(width() * dpr)), int(std::lround(height() * dpr)),
-               QImage::Format_ARGB32_Premultiplied);
-    img.setDevicePixelRatio(dpr);
-    img.fill(Qt::transparent);
-    { QPainter rp(&img); drawRasterCharts(rp, camRaster, vis); }
-    gpuLayer_->setRasterLayer(img, halfW, halfH);
+    std::vector<GpuChartView::TileQuad> quads;
+    quads.reserve(draws.size());
+    for (const RasterTileDraw& d : draws) {
+        const auto it = tileCache_.constFind(d.key);
+        if (it == tileCache_.constEnd()) continue;
+        const QPixmap& pm = it.value();
+        if (pm.width() <= 0 || pm.height() <= 0) continue;
+        const quint64 id = tileTexId(d.key);
+        if (!gpuLayer_->hasTileTexture(id))
+            gpuLayer_->setTileTexture(id, pm.toImage());
+        GpuChartView::TileQuad q;
+        q.texId = id;
+        q.x0 = d.dest.left();
+        q.x1 = d.dest.right();
+        q.y0 = -d.dest.bottom();   // scene (Y down) -> projected (Y up)
+        q.y1 = -d.dest.top();
+        q.u0 = static_cast<float>(d.src.left()   / pm.width());
+        q.u1 = static_cast<float>(d.src.right()  / pm.width());
+        q.v0 = static_cast<float>(d.src.top()    / pm.height());
+        q.v1 = static_cast<float>(d.src.bottom() / pm.height());
+        quads.push_back(q);
+    }
+    gpuLayer_->setRasterTiles(std::move(quads));
+    telemetry_.rasterComposites++;      // now counts tile (re)selections
+    telemetry_.rasterCompositeMs += telemT.elapsed();
 }
 
 void ChartView::syncGpuCamera() {
     if (!gpuLayer_) return;
-    if (gpuSceneDirty_) { rebuildGpuScene(); return; }   // rebuild also sets camera + raster
-    if (gpuRasterDirty_) { composeGpuRaster(); gpuRasterDirty_ = false; }
-    // Pan/zoom: uniform-only update, no geometry rebuild — the retained win.
-    gpuLayer_->setCamera(scx_ - gpuSceneOX_, -scy_ - gpuSceneOY_, ppm_);
+    if (gpuDrawListDirty_) rebuildGpuDrawList();   // cheap list edit, no upload
+    // Reselect the raster tile set when tiles changed or the settled view
+    // moved/zoomed/resized since the last selection. Selection is cheap and the
+    // GPU layer no-op-guards an unchanged set, so this can run on any settled
+    // camera change; never mid-gesture — the retained tiles are scene-glued and
+    // pan correctly until the settle reselection widens the set.
+    const bool rasterStale = !interacting_ && ppm_ > 0.0 &&
+        (rasterCompScx_ != scx_ || rasterCompScy_ != scy_ || rasterCompPpm_ != ppm_ ||
+         rasterCompW_ != width() || rasterCompH_ != height());
+    if (gpuRasterDirty_ || rasterStale) { pushGpuRasterTiles(); gpuRasterDirty_ = false; }
+    // Pan/zoom: an absolute-camera uniform update, no geometry rebuild — the
+    // retained win. Per-cell origins are applied per draw inside the GPU layer,
+    // so float32 precision never needs a scene re-base.
+    gpuLayer_->setCamera(scx_, -scy_, ppm_);
+}
+
+void ChartView::scheduleFrame() {
+    if (useGpu_ && gpuLayer_) refreshGpuFrame();
+    else update();
+}
+
+void ChartView::refreshGpuFrame() {
+    if (!gpuLayer_) return;
+    // This frame satisfies any pending coalesced repaint request, exactly as a
+    // painter-path paintEvent does (the GPU-mode paintEvent is a no-op and
+    // leaves the governor alone).
+    repaintPending_ = false;
+    if (repaintTimer_) repaintTimer_->stop();
+    telemetry_.gpuFrames++;
+    syncGpuCamera();
+    if (overlayLayer_) overlayLayer_->update();
 }
 
 // Render the static chart into the offscreen cache at the current camera, with a
@@ -1783,6 +1976,8 @@ void ChartView::renderStaticCache() {
     const qreal dpr = devicePixelRatioF() > 0.0 ? devicePixelRatioF() : 1.0;
     const int W = width(), H = height();
     if (W <= 0 || H <= 0) return;
+    QElapsedTimer telemT;
+    telemT.start();
     // Quarter-viewport margin each side == 1.5x the viewport, matching the
     // original cache size. Larger aprons reduce blank-edge exposure during long
     // pans, but they multiply every static-cache render by the apron area.
@@ -1795,7 +1990,8 @@ void ChartView::renderStaticCache() {
     const QSize devSize(int(std::lround(pw * dpr)), int(std::lround(ph * dpr)));
     if (staticCache_.size() != devSize) staticCache_ = QPixmap(devSize);
     staticCache_.setDevicePixelRatio(dpr);
-    staticCache_.fill(QColor(204, 224, 242));
+    // Filled per backend below: opaque sea colour under the painter's full
+    // chart render, transparent under the GPU mode's symbology-only content.
 
     // Cache camera: same centre/zoom as the view, but the oversized pixmap's
     // centre maps to the view centre so the margin is symmetric.
@@ -1807,14 +2003,52 @@ void ChartView::renderStaticCache() {
 
     const QRectF visCache(scx_ - (pw / 2.0) / ppm_, scy_ - (ph / 2.0) / ppm_,
                           pw / ppm_, ph / ppm_);
-    QPainter cp(&staticCache_);
-    renderStatic(cp, cc, visCache, QRectF(0, 0, pw, ph));
+    if (useGpu_) {
+        // GPU mode: the RHI layer draws the chart base (fills, lines, raster),
+        // so the cache holds only the constant-size S-52 symbology over a
+        // transparent background; the overlay layer blits it above the GPU
+        // surface exactly like the painter blits its full-chart cache.
+        staticCache_.fill(Qt::transparent);
+        QPainter cp(&staticCache_);
+        cp.setRenderHint(QPainter::Antialiasing, true);
+        QElapsedTimer symT;
+        symT.start();
+        drawPointSymbology(cp, cc, visCache, QRectF(0, 0, pw, ph));
+        telemetry_.symbologyPasses++;
+        telemetry_.symbologyMs += symT.elapsed();
+    } else {
+        staticCache_.fill(QColor(204, 224, 242));
+        QPainter cp(&staticCache_);
+        renderStatic(cp, cc, visCache, QRectF(0, 0, pw, ph));
+    }
     staticDirty_ = false;
+    telemetry_.staticRenders++;
+    telemetry_.staticRenderMs += telemT.elapsed();
+}
+
+bool ChartView::staticCacheReusable() const {
+    const double dxPx = (scx_ - cacheScx_) * ppm_;
+    const double dyPx = (scy_ - cacheScy_) * ppm_;
+    return !staticDirty_ && !staticCache_.isNull()
+           && ppm_ == cachePpm_ && cacheW_ == width() && cacheH_ == height()
+           && std::abs(dxPx) <= cacheMX_ && std::abs(dyPx) <= cacheMY_;
+}
+
+void ChartView::blitStaticCache(QPainter& p) {
+    if (staticCache_.isNull()) return;
+    // Map cache-pixel space to the live camera. Equal zoom -> pure translation
+    // (crisp); different zoom (mid-gesture placeholder) -> scaled blit.
+    const QTransform blit = cacheCam_.inverted() * cameraTransform();
+    p.save();
+    p.setRenderHint(QPainter::SmoothPixmapTransform, ppm_ != cachePpm_);
+    p.setTransform(blit);
+    p.drawPixmap(0, 0, staticCache_);
+    p.restore();
 }
 
 void ChartView::invalidateChart() {
     staticDirty_ = true;
-    update();
+    scheduleFrame();
 }
 
 // Draw one light sector around the light at device point `c`: the two dashed
@@ -2274,25 +2508,25 @@ void ChartView::setOwnship(const OwnshipState& s) {
 void ChartView::addOverlay(IChartOverlay* overlay) {
     if (overlay && std::find(overlays_.begin(), overlays_.end(), overlay) == overlays_.end()) {
         overlays_.push_back(overlay);
-        update();
+        scheduleFrame();
     }
 }
 
 void ChartView::removeOverlay(IChartOverlay* overlay) {
     auto it = std::find(overlays_.begin(), overlays_.end(), overlay);
-    if (it != overlays_.end()) { overlays_.erase(it); update(); }
+    if (it != overlays_.end()) { overlays_.erase(it); scheduleFrame(); }
 }
 
 void ChartView::setOwnshipPredictionMinutes(double minutes) {
     if (minutes == ownshipPredMin_) return;
     ownshipPredMin_ = minutes;
-    update();
+    scheduleFrame();
 }
 
 void ChartView::setHeadingSource(HeadingSource s) {
     if (s == headingSource_) return;
     headingSource_ = s;
-    update();
+    scheduleFrame();
 }
 
 void ChartView::drawOwnship(QPainter& p, const QTransform& cam) {
@@ -2452,7 +2686,7 @@ void ChartView::zoomBy(double factor) {
     emit chartInteracted();   // zoom dismisses transient popups
     updatePointLOD();
     scheduleUpdate();
-    update();
+    scheduleFrame();
 }
 
 // Place the +/- buttons in the lower-right corner with a fixed margin that
@@ -2499,7 +2733,7 @@ void ChartView::wheelEvent(QWheelEvent* e) {
     emit chartInteracted();   // zoom dismisses transient popups
     updatePointLOD();
     scheduleUpdate();
-    update();
+    scheduleFrame();
     e->accept();
 }
 
@@ -2534,7 +2768,7 @@ void ChartView::mouseMoveEvent(QMouseEvent* e) {
         emit cursorMoved(proj::xToLon(s.x()), proj::yToLat(-s.y()));
         if (editorGrab_) {                    // dragging a node, not panning
             editor_->onMove(e->position());
-            update();
+            scheduleFrame();
             QWidget::mouseMoveEvent(e);
             return;
         }
@@ -2559,7 +2793,7 @@ void ChartView::mouseMoveEvent(QMouseEvent* e) {
             normalizeCenter();
             beginInteraction();
             scheduleUpdate();
-            update();
+            scheduleFrame();
         }
     }
     QWidget::mouseMoveEvent(e);
@@ -2569,7 +2803,7 @@ void ChartView::mouseReleaseEvent(QMouseEvent* e) {
     if (e->button() == Qt::LeftButton && editorGrab_) {
         editorGrab_ = false;
         editor_->onRelease(e->position());
-        update();
+        scheduleFrame();
         QWidget::mouseReleaseEvent(e);
         return;
     }
@@ -2618,5 +2852,5 @@ void ChartView::resizeEvent(QResizeEvent* e) {
     if (ppm_ > 0.0 && ppm_ < minPpm()) ppm_ = minPpm();
     positionZoomButtons();
     maybeBuildBasemap();
-    update();
+    scheduleFrame();
 }

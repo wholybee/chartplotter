@@ -1,24 +1,35 @@
 #pragma once
 // src/gpu_chart_view.hpp
 //
-// Stage 7 (path A): the retained GPU chart canvas.
+// Stage 7: the retained GPU chart canvas.
 //
-// A QRhiWidget renders through Qt's RHI, targeting Direct3D 11 on Windows. This
-// is the rendering core of the future PreparedGpuChartRenderer: it holds retained
-// vertex batches (area-fill triangles + line segments) in scene coordinates and
-// draws them through a camera uniform, so pan/zoom is a uniform update, not a
-// geometry rebuild. Symbols, text, and S-52 niceties come in later increments.
+// A QRhiWidget renders through Qt's RHI, targeting Direct3D 11 on Windows. It
+// holds one retained vertex-buffer set per chart cell (fill triangles + line
+// segments + depth-contour segments), each uploaded once when the cell is
+// built and freed from CPU memory immediately after. Every draw applies the
+// cell's own origin through a per-draw camera uniform (dynamic uniform-buffer
+// offsets), so:
+//   - pan/zoom is a uniform update — no vertex copying, no re-upload;
+//   - float32 precision never needs a scene re-base (vertices stay relative to
+//     their cell-local origin; the origin-minus-camera offset is computed in
+//     double per frame);
+//   - scene changes (quilt updates, toggles) are draw-list edits;
+//   - cells are culled individually against the viewport.
 //
-// It is intentionally decoupled from how the batches are produced: setScene()
+// It is intentionally decoupled from how the batches are produced: setCell()
 // takes ready-made vertex batches, so it can be exercised by the test harness
-// (which builds batches from a cached cell) and later by the app (which builds
-// them from a PreparedCellRender). It is not wired into the app yet.
+// (which builds batches from a cached cell) and by the app (which builds them
+// from a PreparedCellRender + BuiltCell via gpubatches).
 
 #include <QRhiWidget>
 #include <QImage>
 #include <QPointF>
+#include <QString>
+#include <QStringList>
+#include <QHashFunctions>   // std::hash<QString>
 #include <cstdint>
 #include <memory>
+#include <unordered_map>
 #include <vector>
 #include "gpu_vertex.hpp"   // GpuVertex
 
@@ -37,36 +48,74 @@ public:
     explicit GpuChartView(QWidget* parent = nullptr);
     ~GpuChartView() override;
 
-    // Install the scene. The draw order matches the painter:
-    //   basemap fills -> basemap lines -> raster underlay -> cell fills -> cell lines
-    // so the raster (MBTiles) fully covers the basemap but sits beneath the ENC
-    // vector charts. Each argument is a vertex list (triangle list for fills, line
-    // list of endpoint pairs for lines) in scene metres relative to (originX,
-    // originY); the camera is centred on the scene with `ppm` logical px per metre.
-    void setScene(std::vector<GpuVertex> baseTris, std::vector<GpuVertex> baseLines,
-                  std::vector<GpuVertex> cellTris, std::vector<GpuVertex> cellLines,
-                  double centerX, double centerY, double ppm);
+    // Install or replace one retained cell. Vertices are projected metres
+    // relative to (originX, originY), which is absolute (wrap offset folded
+    // in); min/max bound the cell's geometry in absolute projected metres for
+    // per-cell viewport culling. Buffers are (re)uploaded on the next frame and
+    // the passed vectors are freed right after — the GPU copy is then the only
+    // copy. A cell not in the draw list is retained but not drawn.
+    void setCell(const QString& key,
+                 std::vector<GpuVertex> tris,
+                 std::vector<GpuVertex> lines,
+                 std::vector<GpuVertex> contours,
+                 double originX, double originY,
+                 double minX, double minY, double maxX, double maxY);
+    void removeCell(const QString& key);
+    void clearCells();
 
-    // Move the camera without touching the retained scene — this is the whole
-    // point of the retained backend: pan/zoom is a uniform update, not a
-    // geometry rebuild. `centerX/Y` are in the same origin-relative frame as the
-    // vertices last passed to setScene. Used when the app drives the camera
-    // (ChartView owns the touch input); the widget's own pan/zoom handlers stay
-    // for the standalone harness.
+    // Draw order, coarse-band-first within each list. `baseKeys` (the basemap)
+    // draw beneath the raster underlay; `cellKeys` (chart cells) above it.
+    // drawFills=false suppresses fill triangles (vector-overlay mode);
+    // drawContours=false suppresses the depth-contour buckets.
+    void setDrawList(const QStringList& baseKeys, const QStringList& cellKeys,
+                     bool drawFills, bool drawContours);
+
+    // Move the camera without touching the retained cells — pan/zoom is a
+    // uniform update, not a geometry rebuild. `centerX/centerY` are absolute
+    // projected metres (Y north-up); per-cell origins are subtracted per draw.
     void setCamera(double centerX, double centerY, double ppm);
 
-    // Install a raster-chart underlay: one pre-composited image covering the
-    // scene rectangle centred on the current scene origin and spanning ±halfW/
-    // ±halfH metres. Drawn beneath the vector scene. A null image clears it.
-    // (Recomposited by the app when the tile set or view changes, mirroring the
-    // painter's static-cache behaviour.)
-    void setRasterLayer(const QImage& img, double halfWidthM, double halfHeightM);
+    // --- Raster (MBTiles) tile layer ---------------------------------------
+    // One retained texture per tile, drawn as textured quads above the basemap
+    // and beneath the chart cells. Quad extents are absolute projected metres
+    // (Y north-up, x0<x1, y0<y1); u/v select the source sub-rect so a coarser
+    // ancestor tile can stand in for a missing one.
+    struct TileQuad {
+        quint64 texId = 0;
+        double  x0 = 0.0, y0 = 0.0, x1 = 0.0, y1 = 0.0;
+        float   u0 = 0.0f, v0 = 0.0f, u1 = 1.0f, v1 = 1.0f;
+        bool operator==(const TileQuad& o) const {
+            return texId == o.texId && x0 == o.x0 && y0 == o.y0 && x1 == o.x1 &&
+                   y1 == o.y1 && u0 == o.u0 && v0 == o.v0 && u1 == o.u1 && v1 == o.v1;
+        }
+    };
+    // Replace the drawn tile set (in draw order; an empty vector clears the
+    // layer). Unchanged sets are a no-op. Retained textures beyond the budget
+    // are shed once they leave the drawn set.
+    void setRasterTiles(std::vector<TileQuad> quads);
+    // Texture cache: the owner uploads a tile's image once (setTileTexture)
+    // and reuses it across selections while hasTileTexture stays true.
+    bool hasTileTexture(quint64 texId) const;
+    void setTileTexture(quint64 texId, const QImage& img);
 
     // Cheap one-shot probe: can this machine bring up the RHI backend at all?
     // Creates and destroys a throwaway offscreen RHI (Direct3D 11 on Windows).
     // Used to decide auto-fallback to the painter before any GPU widget is shown,
     // so a broken driver can never blank the chart. Result is cached.
     static bool isAvailable();
+
+    // Frame telemetry: RHI frames rendered, cell-buffer uploads, raster texture
+    // uploads, and vertices drawn last frame (after culling). Read-and-reset
+    // once per second by ChartView's telemetry dump.
+    void takeTelemetry(int& frames, int& sceneUploads, int& textureUploads,
+                       quint64& vertsDrawn);
+
+signals:
+    // The QRhi was torn down and recreated (window/screen change, device loss).
+    // Every retained buffer died with it and the CPU copies were freed at
+    // upload, so the owner must re-push all cells (rebuild from cached
+    // features). Emitted queued, never during a render callback's caller.
+    void deviceLost();
 
 protected:
     void initialize(QRhiCommandBuffer* cb) override;
@@ -77,40 +126,71 @@ protected:
     void wheelEvent(QWheelEvent* e) override;
 
 private:
+    struct CellEntry {
+        std::unique_ptr<QRhiBuffer> vbufTris, vbufLines, vbufContours;
+        quint32 triCount = 0, lineCount = 0, contourCount = 0;
+        // Batches waiting for upload on the next frame; freed once uploaded.
+        std::vector<GpuVertex> pendTris, pendLines, pendContours;
+        bool pending = false;
+        double originX = 0.0, originY = 0.0;    // absolute projected metres
+        double minX = 0.0, minY = 0.0, maxX = 0.0, maxY = 0.0;   // culling bounds
+    };
+
     void releaseResources();
+    // Grow the per-draw uniform buffer (and rebind the SRBs) to hold at least
+    // `slotCount` slices. Cheap no-op when capacity suffices. (NB: not named
+    // "slots" — that's a Qt keyword macro.)
+    void ensureUniformCapacity(int slotCount);
+    // A shader-resource-binding set for the textured pipeline: the shared
+    // per-draw camera uniform plus one sampled texture.
+    std::unique_ptr<QRhiShaderResourceBindings> makeTexSrb(QRhiTexture* t);
 
     QRhi* rhi_ = nullptr;
-    std::unique_ptr<QRhiBuffer> ubuf_;      // camera uniform (vec4)
+    // Per-draw camera uniform: one aligned vec4 slice per draw, addressed with
+    // dynamic offsets. Slice = { camX-originX, camY-originY, ndcPerMetreX/Y }.
+    std::unique_ptr<QRhiBuffer> ubuf_;
+    int     ubufSlots_ = 0;
+    quint32 slotStride_ = 0;
     std::unique_ptr<QRhiShaderResourceBindings> srb_;
     std::unique_ptr<QRhiGraphicsPipeline> psTri_;
     std::unique_ptr<QRhiGraphicsPipeline> psLine_;
-    std::unique_ptr<QRhiBuffer> vbufBase_;      // basemap fills (below the raster)
-    std::unique_ptr<QRhiBuffer> vbufBaseLines_; // basemap outlines (below the raster)
-    std::unique_ptr<QRhiBuffer> vbufTris_;      // cell fills (above the raster)
-    std::unique_ptr<QRhiBuffer> vbufLines_;     // cell outlines (topmost geometry)
 
-    // Raster underlay (textured quad).
+    // Raster tile layer: textured pipeline (psTex_ + a 1x1 placeholder texture
+    // whose SRB donates the pipeline layout), one retained texture + SRB per
+    // tile, and one shared quad vertex buffer rebuilt when the drawn set
+    // changes. Quad verts are relative to tileOrigin* (the camera at rebuild
+    // time — refreshed by every settle reselection, so float32 holds).
     std::unique_ptr<QRhiGraphicsPipeline> psTex_;
     std::unique_ptr<QRhiShaderResourceBindings> texSrb_;
     std::unique_ptr<QRhiSampler> sampler_;
-    std::unique_ptr<QRhiTexture> rasterTex_;
-    std::unique_ptr<QRhiBuffer> rasterVbuf_;   // 6 verts (x,y,u,v)
-    QImage  rasterImg_;                        // pending upload (null = none)
-    double  rasterHalfW_ = 0.0, rasterHalfH_ = 0.0;
-    bool    rasterDirty_ = false;              // texture/quad need (re)upload
-    bool    hasRaster_ = false;
+    std::unique_ptr<QRhiTexture> rasterTex_;   // 1x1 layout placeholder
+    struct TileTexEntry {
+        std::unique_ptr<QRhiTexture> tex;
+        std::unique_ptr<QRhiShaderResourceBindings> srb;
+        QImage pending;   // waiting for upload (null once uploaded)
+    };
+    std::unordered_map<quint64, TileTexEntry> tileTex_;
+    std::vector<TileQuad> tileQuads_;
+    std::unique_ptr<QRhiBuffer> tileVbuf_;
+    quint32 tileVbufCap_ = 0;        // capacity, in quads
+    bool    tileQuadsDirty_ = false;
+    double  tileOriginX_ = 0.0, tileOriginY_ = 0.0;
 
-    std::vector<GpuVertex> baseData_;
-    std::vector<GpuVertex> baseLineData_;
-    std::vector<GpuVertex> triData_;
-    std::vector<GpuVertex> lineData_;
-    quint32 baseCount_ = 0;
-    quint32 baseLineCount_ = 0;
-    quint32 triCount_ = 0;
-    quint32 lineCount_ = 0;
-    bool sceneDirty_ = false;               // vertex buffers need (re)upload
+    // Retained cells + the current draw order/options. (std::unordered_map, not
+    // QHash: CellEntry holds unique_ptrs and QHash needs copyable values.)
+    std::unordered_map<QString, CellEntry> cells_;
+    QStringList baseList_, cellList_;
+    bool drawFills_ = true;
+    bool drawContours_ = true;
+    bool firstInit_ = true;
 
-    // Camera: centre in scene metres (origin-relative) + logical px per metre.
+    // Telemetry counters (see takeTelemetry).
+    int telemFrames_ = 0;
+    int telemSceneUploads_ = 0;
+    int telemTexUploads_ = 0;
+    quint64 telemVertsDrawn_ = 0;
+
+    // Camera: centre in absolute projected metres + logical px per metre.
     double camX_ = 0.0, camY_ = 0.0, ppm_ = 1.0;
     QPointF lastDrag_;
     bool dragging_ = false;

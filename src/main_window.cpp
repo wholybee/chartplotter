@@ -208,7 +208,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(settings_, &Settings::ownshipPredictionMinutesChanged,
             this, [this](double m) {
         if (aisOverlay_) aisOverlay_->setPredictionMinutes(m);
-        if (view_) view_->update();
+        if (view_) view_->requestRepaint(RepaintReason::Immediate);
     });
     connect(settings_, &Settings::vesselScaleChanged,
             this, [this](double s) {
@@ -217,7 +217,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(settings_, &Settings::showAisTargetsChanged,
             this, [this](bool on) {
         if (aisOverlay_) aisOverlay_->setVisible(on);
-        if (view_) view_->update();
+        if (view_) view_->requestRepaint(RepaintReason::Immediate);
     });
     // Dangerous-ship rules: push the current values into the overlay and keep
     // them in sync; a change repaints so flags update immediately.
@@ -233,7 +233,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         r.anchoredSafeEnabled = settings_->dangerAnchoredSafeEnabled();
         r.anchoredSogKn       = settings_->dangerAnchoredSogKn();
         aisOverlay_->setDangerRules(r);
-        if (view_) view_->update();
+        if (view_) view_->requestRepaint(RepaintReason::Immediate);
     };
     applyDangerRules();
     connect(settings_, &Settings::dangerousShipsChanged, this, applyDangerRules);
@@ -258,7 +258,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     routeStore_ = new RouteStore(this);
     routeOverlay_ = std::make_unique<RouteOverlay>(routeStore_);
     routeOverlay_->setNavSource(navStore_);   // for the active-waypoint highlight
-    routeOverlay_->setRepaintCallback([this] { if (view_) view_->update(); });
+    routeOverlay_->setRepaintCallback(
+        [this] { if (view_) view_->requestRepaint(RepaintReason::Immediate); });
     routeOverlay_->setWaypointPlacedCallback([this](double lat, double lon) {
         onWaypointPlaced(lat, lon);
     });
@@ -747,7 +748,7 @@ void MainWindow::endRouteMode() {
     if (routeOverlay_) routeOverlay_->endEditing();
     if (view_) view_->setChartEditor(nullptr);
     if (editBar_) editBar_->hide();
-    if (view_) view_->update();
+    if (view_) view_->requestRepaint(RepaintReason::Immediate);
 }
 
 void MainWindow::startCreateRoute() {

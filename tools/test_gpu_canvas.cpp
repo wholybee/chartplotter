@@ -131,7 +131,12 @@ int main(int argc, char** argv) {
         ? QStringLiteral("GPU chart — %1 features (D3D11; drag to pan, wheel to zoom)")
               .arg(feats.size())
         : QStringLiteral("GPU chart — synthetic scene (D3D11; drag to pan, wheel to zoom)"));
-    w.setScene({}, {}, std::move(tris), std::move(lines), 0.0, 0.0, ppm);
+    // One retained "cell" holding the whole scene: vertices are relative to
+    // (ox, oy), so that is its origin; the camera starts there (absolute frame).
+    w.setCell(QStringLiteral("scene"), std::move(tris), std::move(lines), {},
+              ox, oy, bbox.minx, bbox.miny, bbox.maxx, bbox.maxy);
+    w.setDrawList({}, { QStringLiteral("scene") }, /*drawFills*/true, /*drawContours*/true);
+    w.setCamera(ox, oy, ppm);
     w.resize(900, 700);
     w.show();
     return app.exec();

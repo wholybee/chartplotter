@@ -339,16 +339,17 @@ QWidget* SideMenu::buildSettingsPage() {
             [this] { emit editSymbolSizeRequested(); });
     col->addWidget(symSizeBtn);
 
-    // GPU acceleration toggle: checked = Auto (use the GPU backend when it is
-    // available, else the CPU painter), unchecked = force the CPU painter — the
-    // safe choice if a machine's GPU drivers misbehave.
+    // GPU acceleration toggle: checked = explicit Gpu (experimental opt-in while
+    // the retained backend works toward its performance/parity gates), unchecked
+    // = the CPU painter. Auto also resolves to CPU for now, so only an explicit
+    // Gpu preference reads as checked (see chartrender::resolveUseGpu).
     auto* gpuBtn = makeCheckAction(QStringLiteral("Use GPU acceleration"),
-                                   settings_->renderBackend() != RenderBackend::Cpu);
+                                   settings_->renderBackend() == RenderBackend::Gpu);
     connect(gpuBtn, &QPushButton::toggled, settings_, [this](bool on) {
-        settings_->setRenderBackend(on ? RenderBackend::Auto : RenderBackend::Cpu);
+        settings_->setRenderBackend(on ? RenderBackend::Gpu : RenderBackend::Cpu);
     });
     connect(settings_, &Settings::renderBackendChanged, gpuBtn, [gpuBtn](RenderBackend b) {
-        const bool on = (b != RenderBackend::Cpu);
+        const bool on = (b == RenderBackend::Gpu);
         if (gpuBtn->isChecked() != on) gpuBtn->setChecked(on);
     });
     col->addWidget(gpuBtn);

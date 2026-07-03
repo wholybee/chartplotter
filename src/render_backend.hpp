@@ -13,10 +13,11 @@
 //          misbehaves on a particular machine's drivers).
 //
 // The user-facing control is a simple "Use GPU acceleration" toggle mapping to
-// Auto (on) / Cpu (off); the three-way enum is kept for diagnostics and future
-// UI. The retained GPU backend is not wired yet, so Auto/Gpu currently resolve
-// to CPU (see chartrender::resolveUseGpu) until that backend lands and is
-// verified on real hardware.
+// Gpu (on) / Cpu (off); the three-way enum is kept for diagnostics and future
+// UI. The retained GPU backend has not yet passed its performance/parity gates
+// (docs/performance_fix_plan.md, Step 4.5), so Auto currently resolves to CPU
+// and only an explicit Gpu preference opts in for testing. Flip Auto back to
+// GPU-when-available once the gates pass.
 enum class RenderBackend { Auto, Gpu, Cpu };
 
 namespace chartrender {
@@ -40,11 +41,13 @@ inline RenderBackend fromKey(const QString& k, RenderBackend fallback) {
 // Decide whether to actually use the GPU backend, given the user's preference
 // and whether a GPU backend is built and reported its device as usable. This is
 // the single auto-fallback decision point: a Cpu preference never uses the GPU,
-// and Auto/Gpu use it only when `gpuAvailable` is true — so an unavailable or
-// failed GPU device always lands on the CPU painter backend.
+// Auto resolves to the CPU painter until the GPU backend passes its gates
+// (docs/performance_fix_plan.md, Step 4.5), and an explicit Gpu preference uses
+// the GPU only when `gpuAvailable` is true — so an unavailable or failed GPU
+// device always lands on the CPU painter backend.
 inline bool resolveUseGpu(RenderBackend pref, bool gpuAvailable) {
-    if (pref == RenderBackend::Cpu) return false;
-    return gpuAvailable;   // Auto and Gpu both require a usable device
+    if (pref != RenderBackend::Gpu) return false;
+    return gpuAvailable;   // explicit opt-in still requires a usable device
 }
 
 } // namespace chartrender

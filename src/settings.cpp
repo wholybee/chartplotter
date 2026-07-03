@@ -96,8 +96,11 @@ Settings::Settings(QObject* parent) : QObject(parent) {
     ownshipMmsi_ = s.value(QLatin1String(kOwnMmsi)).toString();
     headingSource_ = headingsrc::fromKey(s.value(QLatin1String(kHeadingSrc)).toString(),
                                          HeadingSource::Heading);
+    // Fallback must stay Cpu (not Auto) while the GPU backend is incomplete:
+    // Auto currently resolves to the CPU painter anyway (see resolveUseGpu), and
+    // a fresh install must land on the proven painter path. See settings.hpp.
     renderBackend_ = chartrender::fromKey(s.value(QLatin1String(kRenderBackend)).toString(),
-                                          RenderBackend::Auto);
+                                          RenderBackend::Cpu);
     dangerIgnoreFarEnabled_ = s.value(QLatin1String(kDangIgnoreFarOn), true).toBool();
     dangerIgnoreFarNm_      = s.value(QLatin1String(kDangIgnoreFarNm), 20.0).toDouble();
     dangerCpaEnabled_  = s.value(QLatin1String(kDangCpaOn), true).toBool();
