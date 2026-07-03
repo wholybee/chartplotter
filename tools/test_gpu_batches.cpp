@@ -1,11 +1,10 @@
 // tools/test_gpu_batches.cpp
 //
 // Unit test for the built-cell -> GPU batch converter (src/gpu_batches.cpp,
-// Stage 7). Verifies fills come from the pre-triangulated PreparedFill with
-// painter-matching colours and are filtered to the cell's clip box, that lines
-// come from the BuiltCell's clipped/simplified painter geometry with the
-// painter's pen rules, that depth contours land in their own bucket, and that
-// vertices are emitted origin-relative. No Qt event loop, no GDAL, no RHI.
+// Stage 7). Verifies current fills come from clipped/simplified BuiltPath
+// geometry, legacy PreparedFill batches still work, lines use the painter's pen
+// rules, depth contours land in their own bucket, and vertices are emitted
+// origin-relative. No Qt event loop, no GDAL, no RHI.
 
 #include "gpu_batches.hpp"
 #include "cell_builder.hpp"
@@ -27,6 +26,23 @@ static int g_failures = 0;
 static bool near(float a, float b) { return std::fabs(a - b) < 0.5f / 255.f; }
 static bool rgbNear(const GpuVertex& v, int r, int g, int b) {
     return near(v.r, r / 255.f) && near(v.g, g / 255.f) && near(v.b, b / 255.f);
+}
+static int countRgb(const std::vector<GpuVertex>& verts, int r, int g, int b) {
+    int count = 0;
+    for (const GpuVertex& v : verts)
+        if (rgbNear(v, r, g, b)) ++count;
+    return count;
+}
+static double triArea(const std::vector<GpuVertex>& verts) {
+    double area = 0.0;
+    for (std::size_t i = 0; i + 2 < verts.size(); i += 3) {
+        const GpuVertex& a = verts[i];
+        const GpuVertex& b = verts[i + 1];
+        const GpuVertex& c = verts[i + 2];
+        area += std::fabs((b.x - a.x) * (c.y - a.y) -
+                          (c.x - a.x) * (b.y - a.y)) * 0.5;
+    }
+    return area;
 }
 
 // A unit square ring, triangulated as two triangles {0,1,2, 0,2,3}.
@@ -129,6 +145,36 @@ int main() {
     CHECK(near(lines2[0].x, lines[0].x - 10.0f) && near(lines2[0].y, lines[0].y - 20.0f),
           "line vertices are emitted relative to the origin");
 
+    // Basemap path: fills can be triangulated from the already-instantiated
+    // BuiltCell, avoiding pre-triangulation of raw unclipped source polygons.
+    std::vector<GpuVertex> builtFillTris;
+    gpubatches::appendBuiltCellFills(cell, 0.0, 0.0, builtFillTris);
+    CHECK(builtFillTris.size() == 18, "built-cell fills: 18 triangle vertices (3 quads)");
+    CHECK(countRgb(builtFillTris, 184, 217, 240) == 6,
+          "built-cell fills: depth-area colour matches painter");
+    CHECK(countRgb(builtFillTris, 217, 199, 148) == 6,
+          "built-cell fills: land-area colour matches painter");
+    CHECK(countRgb(builtFillTris, 10, 20, 30) == 6,
+          "built-cell fills: OtherArea wash colour matches painter");
+
+    std::vector<Feature> holeFeats(1);
+    holeFeats[0].kind = FeatureKind::LandArea;
+    holeFeats[0].rings = {
+        { {0, 0}, {100, 0}, {100, 100}, {0, 100} },
+        { {20, 20}, {80, 20}, {80, 80}, {20, 80} }
+    };
+    setBBoxes(holeFeats);
+    PreparedCellRender holePrep;
+    holePrep.hits.resize(holeFeats.size());
+    holePrep.hasHit.assign(holeFeats.size(), 0);
+    const BuiltCell holeCell =
+        cellbuilder::instantiateCell(QString(), holeFeats, holePrep, 0, BBox{}, 0.0);
+    std::vector<GpuVertex> holeTris;
+    gpubatches::appendBuiltCellFills(holeCell, 0.0, 0.0, holeTris);
+    CHECK(!holeTris.empty(), "built-cell fills: holed polygon triangulates");
+    CHECK(std::fabs(triArea(holeTris) - 6400.0) < 1.0,
+          "built-cell fills: holed polygon preserves odd-even fill area");
+
     // Clip filtering: a clip box around the left column only. The land quad
     // (x 200..300) and the OtherArea wash (y 200..300) are outside — their fill
     // triangles must be dropped, leaving the depth-area quad's 6 vertices. The
@@ -143,6 +189,12 @@ int main() {
                                   trisC, linesC, contoursC);
     CHECK(trisC.size() == 6, "clip: out-of-box fill triangles are dropped");
     CHECK(rgbNear(trisC[0], 184, 217, 240), "clip: surviving fill is the depth area");
+    std::vector<GpuVertex> builtFillTrisC;
+    gpubatches::appendBuiltCellFills(clipped, 0.0, 0.0, builtFillTrisC);
+    CHECK(builtFillTrisC.size() == 6,
+          "built-cell fills clip: out-of-box fill paths are dropped before triangulation");
+    CHECK(rgbNear(builtFillTrisC[0], 184, 217, 240),
+          "built-cell fills clip: surviving fill is the depth area");
     bool landInClipped = false;
     for (const GpuVertex& v : linesC)
         if (rgbNear(v, 115, 97, 64)) landInClipped = true;

@@ -16,20 +16,19 @@
 // simplified, turned into QPainterPath batches) by ChartView::instantiateCell,
 // which reads these SymHits instead of calling the portrayal engine.
 //
-// Area fills are additionally pre-triangulated into PreparedFill (vertex +
-// index buffers) ready for the retained GPU backend (Stage 7). The current
-// QPainter path does not consume PreparedFill — it fills the rings directly —
-// so the triangulation cannot affect today's on-screen output.
+// Older prepared-render caches stored area fills as PreparedFill vertex/index
+// buffers. Current builds leave `fills` empty and generate GPU fill triangles
+// from the clipped/simplified BuiltCell paths instead, avoiding expensive raw
+// cell triangulation during cache generation.
 
 #include <QString>
 #include <cstdint>
 #include <vector>
 #include "portrayal_ir.hpp"   // SymHit
 
-// A pre-triangulated area fill, ready for a GPU vertex/index draw. `verts` holds
-// interleaved scene-space x,y pairs (Y still north-up-positive, as in Feature
-// rings); `indices` are triangle triples into those vertices. `featureIndex` ties
-// it back to the cell's feature vector for styling/picking.
+// Legacy pre-triangulated area fill, retained for serialization compatibility
+// and tests. Current PreparedCellRender instances normally leave this vector
+// empty.
 struct PreparedFill {
     quint32 featureIndex = 0;
     std::vector<float>   verts;     // x0,y0, x1,y1, ...

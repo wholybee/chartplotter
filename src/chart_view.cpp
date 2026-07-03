@@ -991,6 +991,8 @@ void ChartView::dispatchBuild(const QString& path, FeatureCache::FeaturesPtr fea
         if (wantGpu) {
             bc.gpuOriginX = clipBox.valid() ? (clipBox.minx + clipBox.maxx) / 2.0 : 0.0;
             bc.gpuOriginY = clipBox.valid() ? (clipBox.miny + clipBox.maxy) / 2.0 : 0.0;
+            gpubatches::appendBuiltCellFills(bc, bc.gpuOriginX, bc.gpuOriginY,
+                                             bc.gpuTris);
             gpubatches::appendCellBatches(*feats, prep, bc, bc.gpuOriginX, bc.gpuOriginY,
                                           bc.gpuTris, bc.gpuLines, bc.gpuContours);
             // The GPU draws fills/lines from the retained buffers just built, so
@@ -1201,16 +1203,22 @@ void ChartView::maybeBuildBasemap() {
     watcher->setFuture(QtConcurrent::run(pool_, [feats, reqs, tol, wantGpu]() {
         std::vector<BuiltCell> result;
         result.reserve(reqs.size());
-        // Basemap features carry no symbology (no atlas), so the prepared scene
-        // is just fills; compile it once and instantiate per world-copy. Not
-        // disk-cached (GSHHG geometry is transient and regenerated per zoom).
-        const PreparedCellRender prep = scene::compileScene(QString(), *feats, nullptr);
+        // Basemap fills are intentionally not precompiled: compiling the raw
+        // GSHHG tier triangulates huge unclipped polygons and dominated idle CPU
+        // in profiles. Instantiate first, then triangulate the clipped +
+        // simplified BuiltPath geometry for the GPU copy below.
+        PreparedCellRender prep;
+        prep.formatVersion = scene::kPreparedRenderFormat;
+        prep.hits.resize(feats->size());
+        prep.hasHit.assign(feats->size(), 0);
         for (const auto& r : reqs) {
             BuiltCell bc = cellbuilder::instantiateCell(QString(), *feats, prep, 0, r.first, tol);
             bc.drawOffsetX = r.second;
             if (wantGpu) {
                 bc.gpuOriginX = r.first.valid() ? (r.first.minx + r.first.maxx) / 2.0 : 0.0;
                 bc.gpuOriginY = r.first.valid() ? (r.first.miny + r.first.maxy) / 2.0 : 0.0;
+                gpubatches::appendBuiltCellFills(bc, bc.gpuOriginX, bc.gpuOriginY,
+                                                 bc.gpuTris);
                 gpubatches::appendCellBatches(*feats, prep, bc, bc.gpuOriginX, bc.gpuOriginY,
                                               bc.gpuTris, bc.gpuLines, bc.gpuContours);
                 // Basemap features carry no AP/LC symbology, so in GPU mode

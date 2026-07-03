@@ -4,15 +4,11 @@
 // Stage 7: turn a built cell (Stage 7 A3) plus its prepared render (Stage 5)
 // into retained GPU vertex batches for the QRhiWidget backend.
 //
-// Area fills come from the pre-triangulated PreparedFill batches, filtered to
-// the cell's clip box so an oversized cell doesn't upload geometry far outside
-// the kept region; their colours mirror the painter (cellbuilder::fillColor for
-// base depth/land areas, the portrayal AC() wash otherwise). Line segments come
-// from the BuiltCell's BuiltPath geometry — the same keep-area-clipped,
-// per-band-simplified polylines the painter strokes — so the GPU draws the
-// painter's vertex budget, not the raw full-resolution source rings. Depth
-// contours land in their own bucket so the show/hide toggle is a draw-list
-// decision, not a rebuild.
+// Area fills are normally triangulated from the BuiltCell's already clipped and
+// simplified BuiltPath geometry, so the GPU draws the painter's vertex budget
+// instead of raw full-resolution source rings. Line segments come from the same
+// BuiltPath geometry. Depth contours land in their own bucket so the show/hide
+// toggle is a draw-list decision, not a rebuild.
 //
 // This is deliberately widget-free (no QRhi types), so it is unit-testable and
 // callable from either the harness or the app. Full S-52 parity — complex
@@ -30,11 +26,11 @@ namespace gpubatches {
 
 // Append one cell's fill triangles (to `tris`, a triangle list) and line
 // segments (to `lines` / `contourLines`, line lists of endpoint pairs), in
-// projected metres relative to (originX, originY) — the origin-relative
-// convention the QRhiWidget camera expects. `prep` supplies the
-// pre-triangulated fills and portrayal hits, index-aligned to `feats`; `cell`
-// supplies the clipped/simplified painter geometry (its BuiltPath set) and the
-// clip box used to filter the fills.
+// projected metres relative to (originX, originY), the origin-relative
+// convention the QRhiWidget camera expects. `prep` supplies portrayal hits and
+// may also contain legacy pre-triangulated fills; current builds append normal
+// fills with appendBuiltCellFills() before calling this function. `cell`
+// supplies the clipped/simplified painter geometry (its BuiltPath set).
 void appendCellBatches(const std::vector<Feature>& feats,
                        const PreparedCellRender& prep,
                        const BuiltCell& cell,
@@ -42,5 +38,13 @@ void appendCellBatches(const std::vector<Feature>& feats,
                        std::vector<GpuVertex>& tris,
                        std::vector<GpuVertex>& lines,
                        std::vector<GpuVertex>& contourLines);
+
+// Append filled BuiltPath geometry from an already-instantiated cell. Used by
+// GPU builds after clipping/simplification, avoiding full raw-cell
+// triangulation during prepared-render compilation. Vertices are projected-
+// frame metres relative to (originX, originY), same as appendCellBatches().
+void appendBuiltCellFills(const BuiltCell& cell,
+                          double originX, double originY,
+                          std::vector<GpuVertex>& tris);
 
 } // namespace gpubatches

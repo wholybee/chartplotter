@@ -5,8 +5,10 @@
 #include <QPainterPath>
 
 #include <algorithm>
+#include <limits>
 
 #include "cell_builder.hpp"   // cellbuilder::fillColor
+#include "geom_tessellate.hpp"
 
 namespace gpubatches {
 namespace {
@@ -19,7 +21,135 @@ Rgb toRgb(const QColor& c) {
              static_cast<float>(c.blueF()) };
 }
 
+bool samePoint(const Pt& a, const Pt& b) {
+    return a.x == b.x && a.y == b.y;
+}
+
+void cleanRing(std::vector<Pt>& ring) {
+    if (ring.empty()) return;
+    std::vector<Pt> clean;
+    clean.reserve(ring.size());
+    for (const Pt& p : ring) {
+        if (clean.empty() || !samePoint(clean.back(), p))
+            clean.push_back(p);
+    }
+    if (clean.size() > 1 && samePoint(clean.front(), clean.back()))
+        clean.pop_back();
+    ring.swap(clean);
+}
+
+void appendTriangulatedRing(std::vector<Pt> ring, const Rgb& col,
+                            double originX, double originY,
+                            std::vector<GpuVertex>& tris) {
+    cleanRing(ring);
+    if (ring.size() < 3) return;
+    const std::vector<uint32_t> idx = geomtess::triangulate(ring);
+    tris.reserve(tris.size() + idx.size());
+    for (uint32_t i : idx) {
+        if (i >= ring.size()) continue;
+        const Pt& p = ring[i];
+        tris.push_back({ static_cast<float>(p.x - originX),
+                         static_cast<float>(p.y - originY),
+                         col.r, col.g, col.b });
+    }
+}
+
+struct RingInfo {
+    std::vector<Pt> pts;
+    double area = 0.0;
+    int parent = -1;
+    int depth = 0;
+};
+
+int ringDepth(const std::vector<RingInfo>& rings, int i) {
+    int d = 0;
+    for (int p = rings[i].parent; p >= 0; p = rings[p].parent) ++d;
+    return d;
+}
+
+void appendTriangulatedPathRings(std::vector<std::vector<Pt>> rings, const Rgb& col,
+                                 double originX, double originY,
+                                 std::vector<GpuVertex>& tris) {
+    std::vector<RingInfo> clean;
+    clean.reserve(rings.size());
+    for (std::vector<Pt>& ring : rings) {
+        cleanRing(ring);
+        if (ring.size() < 3) continue;
+        RingInfo ri;
+        ri.area = std::abs(geomtess::signedArea2(ring));
+        ri.pts = std::move(ring);
+        clean.push_back(std::move(ri));
+    }
+    if (clean.empty()) return;
+    if (clean.size() == 1) {
+        appendTriangulatedRing(std::move(clean[0].pts), col, originX, originY, tris);
+        return;
+    }
+
+    for (std::size_t i = 0; i < clean.size(); ++i) {
+        double parentArea = std::numeric_limits<double>::max();
+        for (std::size_t j = 0; j < clean.size(); ++j) {
+            if (i == j || clean[j].area <= clean[i].area) continue;
+            if (!geomtess::pointInRing(clean[i].pts[0], clean[j].pts)) continue;
+            if (clean[j].area < parentArea) {
+                parentArea = clean[j].area;
+                clean[i].parent = static_cast<int>(j);
+            }
+        }
+    }
+    for (std::size_t i = 0; i < clean.size(); ++i)
+        clean[i].depth = ringDepth(clean, static_cast<int>(i));
+
+    for (std::size_t i = 0; i < clean.size(); ++i) {
+        if ((clean[i].depth % 2) != 0) continue;   // odd-even hole
+        std::vector<const std::vector<Pt>*> holes;
+        for (std::size_t j = 0; j < clean.size(); ++j) {
+            if (clean[j].parent == static_cast<int>(i) &&
+                (clean[j].depth % 2) != 0)
+                holes.push_back(&clean[j].pts);
+        }
+        if (holes.empty()) {
+            appendTriangulatedRing(clean[i].pts, col, originX, originY, tris);
+        } else {
+            appendTriangulatedRing(geomtess::mergeHoles(clean[i].pts, std::move(holes)),
+                                   col, originX, originY, tris);
+        }
+    }
+}
+
 } // namespace
+
+void appendBuiltCellFills(const BuiltCell& cell,
+                          double originX, double originY,
+                          std::vector<GpuVertex>& tris) {
+    for (const BuiltPath& bp : cell.paths) {
+        if (!bp.filled) continue;
+        const Rgb col = toRgb(bp.brush);
+        std::vector<Pt> ring;
+        std::vector<std::vector<Pt>> rings;
+
+        auto flush = [&]() {
+            if (!ring.empty()) rings.push_back(std::move(ring));
+            ring.clear();
+        };
+
+        const int n = bp.path.elementCount();
+        ring.reserve(static_cast<std::size_t>(n));
+        for (int i = 0; i < n; ++i) {
+            const QPainterPath::Element e = bp.path.elementAt(i);
+            if (e.type == QPainterPath::MoveToElement) {
+                flush();
+                ring.push_back({ e.x, -e.y });   // scene -> projected
+                continue;
+            }
+            if (e.type == QPainterPath::LineToElement) {
+                ring.push_back({ e.x, -e.y });   // scene -> projected
+            }
+        }
+        flush();
+        appendTriangulatedPathRings(std::move(rings), col, originX, originY, tris);
+    }
+}
 
 void appendCellBatches(const std::vector<Feature>& feats,
                        const PreparedCellRender& prep,
@@ -32,12 +162,11 @@ void appendCellBatches(const std::vector<Feature>& feats,
         return (i < prep.hasHit.size() && prep.hasHit[i]) ? &prep.hits[i] : nullptr;
     };
 
-    // --- Area fills: the Stage 5 pre-triangulated batches, filtered to the
-    // cell's clip box. The triangles are whole-cell (the painter's clipped fill
-    // geometry is QPainterPath, not triangles, so it can't be reused here);
-    // instead cull per triangle by bounding-box overlap — that drops the bulk
-    // of an oversized cell while keeping every triangle that could touch the
-    // kept region (the GPU clips the survivors at the viewport).
+    // Legacy area fills: older prepared-render caches may still carry Stage 5
+    // pre-triangulated batches. Current GPU builds append normal fill triangles
+    // from clipped/simplified BuiltPath geometry before calling this function.
+    // Keep this branch for compatibility and for tests covering malformed
+    // PreparedFill input.
     const BBox& clip = cell.clipBox;
     const bool doClip = clip.valid();
     for (const PreparedFill& pf : prep.fills) {

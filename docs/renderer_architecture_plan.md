@@ -277,12 +277,12 @@ Use three cache levels, each separately versioned:
    - no final portrayal baked in
 
 3. **Prepared render cache**
-   - portrayal-resolved render commands
-   - triangulated area fills
-   - line batches / line LODs
-   - symbol instance data
-   - text candidates
-   - display priority and viewing group tags
+    - portrayal-resolved render commands
+    - fill style metadata; avoid raw full-cell triangulation in this layer
+    - line batches / line LODs
+    - symbol instance data
+    - text candidates
+    - display priority and viewing group tags
 
 The parsed product cache survives portrayal changes. The prepared render cache is
 invalidated when the portrayal package, style settings, or renderer format
@@ -424,18 +424,21 @@ struct PreparedCellRender {
 
 ### Area fills
 
-Pre-triangulate polygons at prepare time, not in the frame loop.
+Do not pre-triangulate raw, full-cell polygons in the view-independent prepared
+render cache. Profiles showed `geomtess::triangulate` dominating worker-thread
+CPU when this layer tessellated unclipped ENC and basemap geometry. Instead,
+build GPU fill triangles from the instantiated `BuiltCell` geometry after the
+view clip and simplification steps have reduced the vertex budget.
 
 Store:
 
-- vertex positions
-- triangle indices
 - fill style id
 - display priority
 - feature id / pick id
 
-Ear clipping is acceptable initially for simple rings, but long term use a robust
-tessellator that handles holes and complex polygons deterministically.
+The current ear-clipping tessellator is acceptable only after clipping and
+simplification. Long term use a robust tessellator that handles holes and
+complex polygons deterministically.
 
 ### Lines
 
@@ -689,7 +692,8 @@ Goal: precompute the expensive render representation.
 Tasks:
 
 - Convert portrayal IR to prepared render objects.
-- Pre-triangulate area fills.
+- Cache fill styles, but leave fill tessellation to the clipped/simplified
+  `BuiltCell` GPU build.
 - Prebuild line batches and symbol/text candidates.
 - Serialize prepared render cache to disk.
 - Keep prepared cache invalidation separate from parsed cache invalidation.
@@ -791,4 +795,3 @@ Concrete first implementation:
 
 Then add the normalized product model and portrayal IR. Those are the seams that
 make S-101 a product-package addition instead of a renderer rewrite.
-
