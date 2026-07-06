@@ -175,4 +175,104 @@ inline std::vector<Pt> simplify(const std::vector<Pt>& pts, double tol) {
     return out;
 }
 
+namespace detail {
+
+// Douglas–Peucker over one arc of a ring, given as an ordered index list `ids`
+// into `pts`. The arc's endpoints (ids.front()/ids.back()) are anchors kept by
+// the caller; this marks keep[] for interior vertices whose deviation from the
+// arc chord exceeds sqrt(tol2). Iterative (explicit stack) like simplify().
+inline void dpArc(const std::vector<Pt>& pts, const std::vector<int>& ids,
+                  double tol2, std::vector<bool>& keep) {
+    const int m = static_cast<int>(ids.size());
+    if (m < 3) return;
+    std::vector<std::pair<int, int>> stack;   // [lo,hi] indices into ids
+    stack.emplace_back(0, m - 1);
+    while (!stack.empty()) {
+        const int lo = stack.back().first, hi = stack.back().second;
+        stack.pop_back();
+        if (hi - lo < 2) continue;
+
+        const double ax = pts[ids[lo]].x, ay = pts[ids[lo]].y;
+        const double dx = pts[ids[hi]].x - ax, dy = pts[ids[hi]].y - ay;
+        const double len2 = dx * dx + dy * dy;
+
+        double maxD2 = 0.0;
+        int split = -1;
+        for (int k = lo + 1; k < hi; ++k) {
+            const double px = pts[ids[k]].x, py = pts[ids[k]].y;
+            double d2;
+            if (len2 <= 0.0) {                    // degenerate chord: distance to endpoint
+                const double ex = px - ax, ey = py - ay;
+                d2 = ex * ex + ey * ey;
+            } else {
+                double t = ((px - ax) * dx + (py - ay) * dy) / len2;
+                t = t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+                const double ex = px - (ax + t * dx), ey = py - (ay + t * dy);
+                d2 = ex * ex + ey * ey;
+            }
+            if (d2 > maxD2) { maxD2 = d2; split = k; }
+        }
+
+        if (split > 0 && maxD2 > tol2) {
+            keep[ids[split]] = true;
+            stack.emplace_back(lo, split);
+            stack.emplace_back(split, hi);
+        }
+    }
+}
+
+} // namespace detail
+
+// Ring-aware Douglas–Peucker: simplify a CLOSED ring without the endpoint
+// artifacts of the open simplify(). simplify() force-keeps pts[0] and pts[n-1];
+// for a ring stored open (first != last) those are *adjacent* vertices, so the
+// whole ring gets approximated against one short baseline edge — which at large
+// zoom-out tolerances collapses area rings into wildly wrong shapes (or makes
+// them self-intersect). Instead, anchor two vertices that are far apart (a
+// coordinate extreme and the vertex farthest from it) and simplify the two arcs
+// between them, treating the ring cyclically. This removes the gross deformation
+// that produced spurious "large triangles" in GPU fills; the tessellator's area
+// check (gpu_batches) remains the backstop for any residual non-simple result.
+inline std::vector<Pt> simplifyRing(const std::vector<Pt>& pts, double tol) {
+    const int n = static_cast<int>(pts.size());
+    if (n < 4 || tol <= 0.0) return pts;   // a triangle can't be simplified further
+
+    // Anchor A: lexicographic coordinate extreme (deterministic, on the hull).
+    int a = 0;
+    for (int i = 1; i < n; ++i)
+        if (pts[i].x < pts[a].x || (pts[i].x == pts[a].x && pts[i].y < pts[a].y))
+            a = i;
+    // Anchor B: the vertex farthest from A, so the two anchors span the ring.
+    int b = a;
+    double best = -1.0;
+    for (int i = 0; i < n; ++i) {
+        const double dx = pts[i].x - pts[a].x, dy = pts[i].y - pts[a].y;
+        const double d2 = dx * dx + dy * dy;
+        if (d2 > best) { best = d2; b = i; }
+    }
+    if (b == a) return pts;   // all vertices coincide — nothing to do
+
+    std::vector<bool> keep(n, false);
+    keep[a] = keep[b] = true;
+
+    std::vector<int> arc;
+    arc.reserve(static_cast<std::size_t>(n) + 1);
+    auto buildArc = [&](int from, int to) {          // indices from..to, cyclic
+        arc.clear();
+        int i = from;
+        arc.push_back(i);
+        while (i != to) { i = (i + 1) % n; arc.push_back(i); }
+    };
+
+    const double tol2 = tol * tol;
+    buildArc(a, b); detail::dpArc(pts, arc, tol2, keep);
+    buildArc(b, a); detail::dpArc(pts, arc, tol2, keep);
+
+    std::vector<Pt> out;
+    out.reserve(n);
+    for (int i = 0; i < n; ++i)
+        if (keep[i]) out.push_back(pts[i]);
+    return out;
+}
+
 } // namespace geom

@@ -9,7 +9,11 @@
 #include "gpu_batches.hpp"
 #include "cell_builder.hpp"
 #include "chart_loader.hpp"
+#include "geom_clip.hpp"        // geom::simplifyRing (D)
 #include "prepared_render.hpp"
+
+#include <QColor>
+#include <QPainterPath>
 
 #include <cmath>
 #include <cstdio>
@@ -58,6 +62,40 @@ static void setBBoxes(std::vector<Feature>& feats) {
     for (Feature& f : feats)
         for (const auto& ring : f.rings)
             for (const Pt& p : ring) f.bbox.expand(p.x, p.y);
+}
+
+// Shoelace area (signed) of a ring.
+static double polyArea(const std::vector<Pt>& r) {
+    double a = 0.0;
+    const std::size_t n = r.size();
+    for (std::size_t i = 0, j = n - 1; i < n; j = i++)
+        a += r[j].x * r[i].y - r[i].x * r[j].y;
+    return a * 0.5;
+}
+
+// True if segments ab and cd cross at an interior point (strict).
+static bool segCross(const Pt& a, const Pt& b, const Pt& c, const Pt& d) {
+    auto cr = [](const Pt& o, const Pt& p, const Pt& q) {
+        return (p.x - o.x) * (q.y - o.y) - (p.y - o.y) * (q.x - o.x);
+    };
+    const double d1 = cr(c, d, a), d2 = cr(c, d, b);
+    const double d3 = cr(a, b, c), d4 = cr(a, b, d);
+    return ((d1 > 0) != (d2 > 0)) && ((d3 > 0) != (d4 > 0));
+}
+
+// O(n^2) simplicity check: no two non-adjacent edges of the closed ring cross.
+static bool isSimplePolygon(const std::vector<Pt>& r) {
+    const int n = static_cast<int>(r.size());
+    if (n < 4) return true;
+    for (int i = 0; i < n; ++i) {
+        const Pt& a = r[i];
+        const Pt& b = r[(i + 1) % n];
+        for (int j = i + 1; j < n; ++j) {
+            if (j == (i + 1) % n || (j + 1) % n == i) continue;   // adjacent edges
+            if (segCross(a, b, r[j], r[(j + 1) % n])) return false;
+        }
+    }
+    return true;
 }
 
 int main() {
@@ -200,6 +238,63 @@ int main() {
         if (rgbNear(v, 115, 97, 64)) landInClipped = true;
     CHECK(!landInClipped, "clip: out-of-box outlines are dropped");
     CHECK(contoursC.size() == 4, "clip: in-box contour survives");
+
+    // ---- D: ring-aware simplification ----------------------------------------
+    // A 64-gon (radius 500) with fine sub-tolerance boundary serration. The
+    // ring-aware simplifier must shed vertices, keep the ring simple, and
+    // preserve area — the endpoint-anchored open simplifier would approximate
+    // the whole ring against one short baseline edge and could deform it badly.
+    {
+        std::vector<Pt> ring;
+        const int N = 64;
+        for (int i = 0; i < N; ++i) {
+            const double ang = 2.0 * 3.14159265358979323846 * i / N;
+            const double rad = 500.0 + ((i % 2) ? 6.0 : -6.0);   // ±6 m (< tol)
+            ring.push_back({ rad * std::cos(ang), rad * std::sin(ang) });
+        }
+        const std::vector<Pt> simp = geom::simplifyRing(ring, 40.0);
+        CHECK(simp.size() >= 3 && simp.size() < ring.size(),
+              "D: simplifyRing sheds sub-tolerance vertices");
+        CHECK(isSimplePolygon(simp),
+              "D: simplified ring stays simple (no self-intersection)");
+        const double a0 = std::fabs(polyArea(ring));
+        const double a1 = std::fabs(polyArea(simp));
+        CHECK(a0 > 0.0 && std::fabs(a1 - a0) < 0.08 * a0,
+              "D: simplified ring preserves area within 8%");
+        // A bare triangle can't be simplified further (guarded, returned as-is).
+        const std::vector<Pt> tri = { {0, 0}, {100, 0}, {50, 100} };
+        CHECK(geom::simplifyRing(tri, 1000.0).size() == 3,
+              "D: simplifyRing leaves a triangle intact");
+    }
+
+    // ---- E: area-validated fallback to a bounded convex hull -----------------
+    // A fill path shaped as a self-intersecting bowtie — the degenerate ring
+    // aggressive simplification can rarely emit. The area check must reject the
+    // bowtie's triangulation and fall back to the convex hull of the same
+    // vertices: a bounded fill (never a cell-spanning triangle) that costs
+    // nothing near the old full-resolution re-triangulation. The four bowtie
+    // corners hull to their 100x100 square, so the fallback area is 10000.
+    {
+        BuiltCell bad;
+        BuiltPath bp;
+        bp.filled = true;
+        bp.brush = QColor(217, 199, 148);
+        bp.path.moveTo(0, 0);                // edges (0,0)-(100,100) and
+        bp.path.lineTo(100, 100);            // (100,0)-(0,100) cross => bowtie
+        bp.path.lineTo(100, 0);
+        bp.path.lineTo(0, 100);
+        bp.path.closeSubpath();
+        bad.paths.push_back(bp);
+
+        std::vector<GpuVertex> ft;
+        gpubatches::appendBuiltCellFills(bad, 0.0, 0.0, ft);
+        CHECK(ft.size() == 6,
+              "E: rejected bowtie falls back to a bounded convex-hull fill");
+        CHECK(std::fabs(triArea(ft) - 10000.0) < 1.0,
+              "E: fallback fill stays within the ring's own extent");
+        CHECK(!ft.empty() && rgbNear(ft[0], 217, 199, 148),
+              "E: fallback fill keeps the path's brush colour");
+    }
 
     if (g_failures == 0) { std::printf("\nAll gpu_batches tests passed.\n"); return 0; }
     std::printf("\n%d gpu_batches test(s) failed.\n", g_failures);

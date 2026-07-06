@@ -87,12 +87,16 @@ BuiltCell instantiateCell(const QString& path, const std::vector<Feature>& feats
     std::vector<std::vector<Pt>> clipBuf;
     std::vector<std::vector<Pt>> simpBuf;
 
-    auto reduce = [&](const std::vector<std::vector<Pt>>& src, std::size_t minPts)
-            -> const std::vector<std::vector<Pt>>& {
+    auto reduce = [&](const std::vector<std::vector<Pt>>& src, std::size_t minPts,
+                      bool closed) -> const std::vector<std::vector<Pt>>& {
         if (tol <= 0.0) return src;
         simpBuf.clear();
         for (const auto& ring : src) {
-            std::vector<Pt> s = geom::simplify(ring, tol);
+            // Closed area rings use the ring-aware simplifier so aggressive
+            // zoom-out tolerances can't collapse or self-intersect them; open
+            // polylines keep the plain endpoint-anchored Douglas–Peucker.
+            std::vector<Pt> s = closed ? geom::simplifyRing(ring, tol)
+                                       : geom::simplify(ring, tol);
             if (s.size() >= minPts) simpBuf.push_back(std::move(s));
         }
         return simpBuf;
@@ -139,7 +143,7 @@ BuiltCell instantiateCell(const QString& path, const std::vector<Feature>& feats
                     if (clipBuf.empty()) break;
                     rings = &clipBuf;
                 }
-                const std::vector<std::vector<Pt>>& use = reduce(*rings, 3);
+                const std::vector<std::vector<Pt>>& use = reduce(*rings, 3, /*closed=*/true);
                 if (use.empty()) break;
 
                 BuiltPath bp;
@@ -189,7 +193,8 @@ BuiltCell instantiateCell(const QString& path, const std::vector<Feature>& feats
                     if (clipBuf.empty()) break;
                     rings = &clipBuf;
                 }
-                const std::vector<std::vector<Pt>>& use = reduce(*rings, fillArea ? 3 : 2);
+                const std::vector<std::vector<Pt>>& use =
+                    reduce(*rings, fillArea ? 3 : 2, /*closed=*/fillArea);
                 if (use.empty()) break;
 
                 BuiltPath bp;

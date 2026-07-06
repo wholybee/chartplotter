@@ -43,6 +43,13 @@ void appendCellBatches(const std::vector<Feature>& feats,
 // GPU builds after clipping/simplification, avoiding full raw-cell
 // triangulation during prepared-render compilation. Vertices are projected-
 // frame metres relative to (originX, originY), same as appendCellBatches().
+//
+// Each fill is area-validated: if triangulating the simplified path doesn't
+// cover the ring's area (the signature of a self-intersecting/collapsed ring the
+// simplifier can still rarely produce), the fill falls back to the convex hull
+// of the same few simplified vertices — a bounded, O(k log k) result that can't
+// produce cell-spanning triangles. It never re-triangulates full-resolution
+// rings, so a bad ring can't reintroduce the raw-cell tessellation hotspot.
 void appendBuiltCellFills(const BuiltCell& cell,
                           double originX, double originY,
                           std::vector<GpuVertex>& tris);

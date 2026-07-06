@@ -38,12 +38,36 @@ void cleanRing(std::vector<Pt>& ring) {
     ring.swap(clean);
 }
 
-void appendTriangulatedRing(std::vector<Pt> ring, const Rgb& col,
+// Triangulate one simple polygon (already hole-merged) and append its triangles.
+// Returns false when the ear-clip result doesn't cover the ring's area — the
+// signature of a self-intersecting or collapsed ring, which the ring-aware
+// simplifier makes rare but can't fully rule out — so the caller can fall back
+// to safer geometry (E). Nothing is appended on failure. A ring with < 3
+// vertices or ~zero net area draws nothing and is reported as success.
+bool appendTriangulatedRing(std::vector<Pt> ring, const Rgb& col,
                             double originX, double originY,
                             std::vector<GpuVertex>& tris) {
     cleanRing(ring);
-    if (ring.size() < 3) return;
+    if (ring.size() < 3) return true;
     const std::vector<uint32_t> idx = geomtess::triangulate(ring);
+
+    // Area check: a correct ear-clip of a simple polygon tiles it exactly, so
+    // the emitted triangle areas sum to the ring's area. Overlapping "large
+    // triangles" (self-intersection) inflate the sum; an early bail-out
+    // deflates it. Either way the sums diverge and we reject the result.
+    const double want = std::abs(geomtess::signedArea2(ring)) * 0.5;
+    double got = 0.0;
+    for (std::size_t t = 0; t + 2 < idx.size(); t += 3) {
+        const Pt& a = ring[idx[t]];
+        const Pt& b = ring[idx[t + 1]];
+        const Pt& c = ring[idx[t + 2]];
+        got += std::abs((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)) * 0.5;
+    }
+    constexpr double kAreaEps = 1e-6;
+    const bool bad = (want <= kAreaEps) ? (got > kAreaEps)          // net-zero ring, spurious coverage
+                                        : (std::abs(got - want) > 0.01 * want);
+    if (bad) return false;
+
     tris.reserve(tris.size() + idx.size());
     for (uint32_t i : idx) {
         if (i >= ring.size()) continue;
@@ -52,6 +76,7 @@ void appendTriangulatedRing(std::vector<Pt> ring, const Rgb& col,
                          static_cast<float>(p.y - originY),
                          col.r, col.g, col.b });
     }
+    return true;
 }
 
 struct RingInfo {
@@ -67,7 +92,10 @@ int ringDepth(const std::vector<RingInfo>& rings, int i) {
     return d;
 }
 
-void appendTriangulatedPathRings(std::vector<std::vector<Pt>> rings, const Rgb& col,
+// Returns false (and appends nothing more) as soon as any ring fails its area
+// check, so the caller can roll back and retry the whole path on full-resolution
+// geometry. Returns true when every ring triangulated cleanly.
+bool appendTriangulatedPathRings(std::vector<std::vector<Pt>> rings, const Rgb& col,
                                  double originX, double originY,
                                  std::vector<GpuVertex>& tris) {
     std::vector<RingInfo> clean;
@@ -80,11 +108,9 @@ void appendTriangulatedPathRings(std::vector<std::vector<Pt>> rings, const Rgb& 
         ri.pts = std::move(ring);
         clean.push_back(std::move(ri));
     }
-    if (clean.empty()) return;
-    if (clean.size() == 1) {
-        appendTriangulatedRing(std::move(clean[0].pts), col, originX, originY, tris);
-        return;
-    }
+    if (clean.empty()) return true;
+    if (clean.size() == 1)
+        return appendTriangulatedRing(std::move(clean[0].pts), col, originX, originY, tris);
 
     for (std::size_t i = 0; i < clean.size(); ++i) {
         double parentArea = std::numeric_limits<double>::max();
@@ -108,12 +134,83 @@ void appendTriangulatedPathRings(std::vector<std::vector<Pt>> rings, const Rgb& 
                 (clean[j].depth % 2) != 0)
                 holes.push_back(&clean[j].pts);
         }
-        if (holes.empty()) {
-            appendTriangulatedRing(clean[i].pts, col, originX, originY, tris);
-        } else {
-            appendTriangulatedRing(geomtess::mergeHoles(clean[i].pts, std::move(holes)),
-                                   col, originX, originY, tris);
+        const bool ok = holes.empty()
+            ? appendTriangulatedRing(clean[i].pts, col, originX, originY, tris)
+            : appendTriangulatedRing(geomtess::mergeHoles(clean[i].pts, std::move(holes)),
+                                     col, originX, originY, tris);
+        if (!ok) return false;
+    }
+    return true;
+}
+
+// Rebuild the ring set of a filled BuiltPath from its QPainterPath, mapping the
+// scene frame (Y = -projected Y) back to the projected frame the batches use.
+std::vector<std::vector<Pt>> ringsFromPath(const QPainterPath& path) {
+    std::vector<std::vector<Pt>> rings;
+    std::vector<Pt> ring;
+    auto flush = [&]() {
+        if (!ring.empty()) rings.push_back(std::move(ring));
+        ring.clear();
+    };
+    const int n = path.elementCount();
+    ring.reserve(static_cast<std::size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        const QPainterPath::Element e = path.elementAt(i);
+        if (e.type == QPainterPath::MoveToElement) {
+            flush();
+            ring.push_back({ e.x, -e.y });
+        } else if (e.type == QPainterPath::LineToElement) {
+            ring.push_back({ e.x, -e.y });
         }
+    }
+    flush();
+    return rings;
+}
+
+// Convex hull (Andrew's monotone chain), CCW, collinear points dropped. O(k log
+// k). Used only as the bounded fallback fill for a ring that failed its area
+// check — small input (already-simplified vertices), so this is cheap.
+std::vector<Pt> convexHull(std::vector<Pt> pts) {
+    std::sort(pts.begin(), pts.end(), [](const Pt& a, const Pt& b) {
+        return a.x < b.x || (a.x == b.x && a.y < b.y);
+    });
+    pts.erase(std::unique(pts.begin(), pts.end(), samePoint), pts.end());
+    const int n = static_cast<int>(pts.size());
+    if (n < 3) return pts;
+
+    auto cross = [](const Pt& o, const Pt& a, const Pt& b) {
+        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+    };
+    std::vector<Pt> h(static_cast<std::size_t>(2 * n));
+    int k = 0;
+    for (int i = 0; i < n; ++i) {                        // lower hull
+        while (k >= 2 && cross(h[k - 2], h[k - 1], pts[i]) <= 0.0) --k;
+        h[k++] = pts[i];
+    }
+    for (int i = n - 2, t = k + 1; i >= 0; --i) {        // upper hull
+        while (k >= t && cross(h[k - 2], h[k - 1], pts[i]) <= 0.0) --k;
+        h[k++] = pts[i];
+    }
+    h.resize(static_cast<std::size_t>(k - 1));
+    return h;
+}
+
+// Fill the convex hull of `verts` as a triangle fan. Bounded fallback for a fill
+// whose simplified rings didn't triangulate cleanly: it fills the ring's own
+// extent (a concavity fills in — a small local loss at zoom-out scales), never a
+// cell-spanning triangle, and costs nothing near the full-resolution path.
+void appendConvexHullFan(const std::vector<Pt>& verts, const Rgb& col,
+                         double originX, double originY,
+                         std::vector<GpuVertex>& tris) {
+    const std::vector<Pt> hull = convexHull(verts);
+    if (hull.size() < 3) return;
+    tris.reserve(tris.size() + (hull.size() - 2) * 3);
+    for (std::size_t i = 1; i + 1 < hull.size(); ++i) {
+        const Pt fan[3] = { hull[0], hull[i], hull[i + 1] };
+        for (const Pt& p : fan)
+            tris.push_back({ static_cast<float>(p.x - originX),
+                             static_cast<float>(p.y - originY),
+                             col.r, col.g, col.b });
     }
 }
 
@@ -125,29 +222,21 @@ void appendBuiltCellFills(const BuiltCell& cell,
     for (const BuiltPath& bp : cell.paths) {
         if (!bp.filled) continue;
         const Rgb col = toRgb(bp.brush);
-        std::vector<Pt> ring;
-        std::vector<std::vector<Pt>> rings;
 
-        auto flush = [&]() {
-            if (!ring.empty()) rings.push_back(std::move(ring));
-            ring.clear();
-        };
+        const std::size_t start = tris.size();
+        if (appendTriangulatedPathRings(ringsFromPath(bp.path), col,
+                                        originX, originY, tris))
+            continue;   // simplified geometry triangulated cleanly (the common case)
 
-        const int n = bp.path.elementCount();
-        ring.reserve(static_cast<std::size_t>(n));
-        for (int i = 0; i < n; ++i) {
-            const QPainterPath::Element e = bp.path.elementAt(i);
-            if (e.type == QPainterPath::MoveToElement) {
-                flush();
-                ring.push_back({ e.x, -e.y });   // scene -> projected
-                continue;
-            }
-            if (e.type == QPainterPath::LineToElement) {
-                ring.push_back({ e.x, -e.y });   // scene -> projected
-            }
-        }
-        flush();
-        appendTriangulatedPathRings(std::move(rings), col, originX, originY, tris);
+        // Fallback: the simplified path failed its area check (self-intersecting
+        // or collapsed). Discard its triangles and fill the convex hull of the
+        // same simplified vertices — bounded and cheap, so a bad ring can never
+        // stall the build the way re-triangulating full-resolution rings would.
+        tris.resize(start);
+        std::vector<Pt> verts;
+        for (const std::vector<Pt>& r : ringsFromPath(bp.path))
+            verts.insert(verts.end(), r.begin(), r.end());
+        appendConvexHullFan(verts, col, originX, originY, tris);
     }
 }
 
