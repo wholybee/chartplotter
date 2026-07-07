@@ -40,6 +40,10 @@ public:
     // pan turns it off). Does not re-emit autoFollowToggled.
     void setAutoFollowChecked(bool on);
 
+    // Reflect the view's course-up state in the menu's checkmark (e.g. when a pan
+    // turns it off along with auto-follow). Does not re-emit courseUpToggled.
+    void setCourseUpChecked(bool on);
+
     // Reflect the current route-navigation state in the "Navigating" checkbox
     // (e.g. when the user starts navigating from a route popup, or navigation
     // stops on its own). Guards against re-emitting navigatingToggled.
@@ -63,6 +67,7 @@ signals:
     void centerOnOwnshipRequested();                  // recenter on ownship
     void zoomToChartsRequested();                      // fit view to the chart set
     void autoFollowToggled(bool on);                  // auto-follow on/off
+    void courseUpToggled(bool on);                    // course-up rotate on/off
     void chartSetToggled(const QString& directory);   // user tapped a set to add/remove
     void manageChartSetsRequested();                  // open the Chart Sets dialog
     void prepareChartCacheRequested();                // build the parsed-cell cache
@@ -126,6 +131,7 @@ private:
     QStackedWidget* stack_ = nullptr;
     QVBoxLayout* chartSetsBox_ = nullptr;   // container for the dynamic set buttons
     QPushButton* autoFollowBtn_ = nullptr;  // checkable Auto Follow item
+    QPushButton* courseUpBtn_ = nullptr;    // checkable Course Up item
     QPushButton* navigatingBtn_ = nullptr;  // checkable Navigating item
     QLabel*      pluginHeader_ = nullptr;   // "Plugins" header (hidden until used)
     QVBoxLayout* pluginBox_ = nullptr;      // container for plugin-contributed items

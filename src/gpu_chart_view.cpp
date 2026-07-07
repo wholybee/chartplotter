@@ -9,6 +9,7 @@
 #include <QSize>
 #include <QOffscreenSurface>
 #include <algorithm>
+#include <cmath>
 #include <unordered_set>
 
 namespace {
@@ -21,7 +22,7 @@ QShader loadShader(const QString& name) {
 }
 
 constexpr int kStride = 5 * sizeof(float);       // x,y,r,g,b
-constexpr int kCamSlice = 4 * sizeof(float);     // one vec4 camera slice
+constexpr int kCamSlice = 8 * sizeof(float);     // vec4 cam + vec4 rot
 constexpr int kTileVertFloats = 6 * 4;           // one quad: 6 verts × (x,y,u,v)
 constexpr std::size_t kMaxTileTextures = 384;    // matches the pixmap cache budget
 
@@ -74,16 +75,22 @@ void GpuChartView::setDrawList(const QStringList& baseKeys, const QStringList& c
     update();
 }
 
-void GpuChartView::setCamera(double centerX, double centerY, double ppm) {
+void GpuChartView::setCamera(double centerX, double centerY, double ppm,
+                             double upBearingDeg) {
     const double p = (ppm > 0.0) ? ppm : 1.0;
     // No-op guard: an unchanged camera must not schedule an RHI frame. Data-driven
     // repaints (AIS/ownship) re-push the same camera every governor tick; without
     // this the retained scene is re-rendered for frames where nothing moved, and
     // any accidental repaint loop feeds itself instead of dying out.
-    if (centerX == camX_ && centerY == camY_ && p == ppm_) return;
+    if (centerX == camX_ && centerY == camY_ && p == ppm_ && upBearingDeg == camUpDeg_)
+        return;
     camX_ = centerX;
     camY_ = centerY;
     ppm_  = p;
+    camUpDeg_ = upBearingDeg;
+    const double rad = upBearingDeg * 0.017453292519943295;   // deg -> rad
+    camCos_ = std::cos(rad);
+    camSin_ = std::sin(rad);
     update();   // uniform-only refresh; no geometry rebuild
 }
 
@@ -410,9 +417,18 @@ void GpuChartView::render(QRhiCommandBuffer* cb) {
     const float sx = 2.0f * ppmDev / w;
     const float sy = 2.0f * ppmDev / h;
 
-    // Viewport in absolute projected metres, for per-cell culling.
-    const double halfWm = (w / dpr / 2.0) / ppm_;
-    const double halfHm = (h / dpr / 2.0) / ppm_;
+    // Viewport in absolute projected metres, for per-cell culling. When the
+    // scene is rotated (course-up), the visible region is a rotated rectangle, so
+    // expand the axis-aligned cull box to its bounding box (|w·cos|+|h·sin|, …).
+    double halfWpx = w / dpr / 2.0, halfHpx = h / dpr / 2.0;
+    if (camSin_ != 0.0) {
+        const double c = std::abs(camCos_), s = std::abs(camSin_);
+        const double hw = halfWpx, hh = halfHpx;
+        halfWpx = hw * c + hh * s;
+        halfHpx = hw * s + hh * c;
+    }
+    const double halfWm = halfWpx / ppm_;
+    const double halfHm = halfHpx / ppm_;
     const double vx0 = camX_ - halfWm, vx1 = camX_ + halfWm;
     const double vy0 = camY_ - halfHm, vy1 = camY_ + halfHm;
 
@@ -435,12 +451,16 @@ void GpuChartView::render(QRhiCommandBuffer* cb) {
 
     ensureUniformCapacity(static_cast<int>(baseDraw.size() + cellDraw.size()) + 1);
 
+    const float rc = static_cast<float>(camCos_);
+    const float rs = static_cast<float>(camSin_);
     quint32 nextSlot = 0;
     auto writeSlot = [&](double originX, double originY) -> quint32 {
         // Origin-minus-camera in double, then to float: small for anything near
         // the viewport, so float32 precision holds without any global re-base.
-        const float u[4] = { static_cast<float>(camX_ - originX),
-                             static_cast<float>(camY_ - originY), sx, sy };
+        // Slots 4..7 carry the course-up rotation (cos, sin); same for every draw.
+        const float u[8] = { static_cast<float>(camX_ - originX),
+                             static_cast<float>(camY_ - originY), sx, sy,
+                             rc, rs, 0.0f, 0.0f };
         const quint32 slot = nextSlot++;
         up->updateDynamicBuffer(ubuf_.get(), slot * slotStride_, sizeof(u), u);
         return slot;

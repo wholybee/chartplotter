@@ -175,6 +175,10 @@ void AisOverlay::paint(QPainter& p, const ChartViewport& vp) {
             if (t.headingDegTrue)  headingDeg = *t.headingDegTrue;
             else if (t.cogDegTrue) headingDeg = *t.cogDegTrue;
         }
+        // In course-up the top of the screen is a bearing (vp.upDegrees), not
+        // north, so orient the wedge relative to it (drawSymbol works from
+        // screen-up). No-op when north-up.
+        if (headingDeg && vp.upDegrees != 0.0) headingDeg = *headingDeg - vp.upDegrees;
 
         // CPA danger flagging is for vessels under way — a fixed aid or a SAR
         // asset is never treated as a collision threat.

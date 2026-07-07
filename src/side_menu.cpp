@@ -231,6 +231,14 @@ QWidget* SideMenu::buildMainPage() {
     });
     col->addWidget(centerBtn);
 
+    // Course Up: rotate the chart so the ownship's course points up. Enabling it
+    // also engages auto-follow (the view keeps the boat centered); a pan turns
+    // both back off, which the view reports back via setCourseUpChecked().
+    courseUpBtn_ = makeCheckAction(QStringLiteral("Course Up"), false);
+    connect(courseUpBtn_, &QPushButton::toggled, this,
+            [this](bool on) { emit courseUpToggled(on); });
+    col->addWidget(courseUpBtn_);
+
     auto* zoomChartsBtn = makeIndentedAction(QStringLiteral("Zoom to Charts"));
     connect(zoomChartsBtn, &QPushButton::clicked, this, [this] {
         emit zoomToChartsRequested();
@@ -620,6 +628,13 @@ void SideMenu::setAutoFollowChecked(bool on) {
     // an unchanged state, but this avoids the redundant toggle/text churn).
     if (autoFollowBtn_ && autoFollowBtn_->isChecked() != on)
         autoFollowBtn_->setChecked(on);
+}
+
+void SideMenu::setCourseUpChecked(bool on) {
+    // Same feedback-loop guard as setAutoFollowChecked (the view already no-ops on
+    // an unchanged state; this avoids the redundant toggle/text churn).
+    if (courseUpBtn_ && courseUpBtn_->isChecked() != on)
+        courseUpBtn_->setChecked(on);
 }
 
 void SideMenu::setNavigatingChecked(bool on) {

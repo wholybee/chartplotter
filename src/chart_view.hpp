@@ -124,6 +124,12 @@ public:
     // turns it off (zooming does not). No-op-until-data if no fix yet.
     void setAutoFollow(bool on);
     bool autoFollow() const { return autoFollow_; }
+    // Course-up: rotate the chart so the ownship's course points to the top of
+    // the screen (instead of north). Implies auto-follow — the boat stays
+    // centered — and turns off when auto-follow does (e.g. a pan). No-op-until-
+    // data if there is no course yet.
+    void setCourseUp(bool on);
+    bool courseUp() const { return courseUp_; }
 
     // Coalesced repaint request for data-driven updates (GPS fixes, AIS target
     // changes, route/nav changes, plugin overlays). Unlike update(), which
@@ -221,6 +227,12 @@ signals:
     // Auto-follow turned on/off (e.g. off when the user pans). Lets the menu
     // keep its checkmark in sync.
     void autoFollowChanged(bool on);
+    // Course-up turned on/off (also off when auto-follow ends). Keeps the menu
+    // checkmark in sync.
+    void courseUpChanged(bool on);
+    // The view's rotation changed: `upDegrees` is the bearing now pointing to the
+    // top of the screen (0 = north-up). Lets a compass indicator track true north.
+    void viewRotationChanged(double upDegrees);
     // The user interacted with the chart itself — an empty-space click, a pan,
     // or a zoom. Transient popups (e.g. the AIS quick-info window) listen for
     // this to dismiss themselves. Not emitted when a click hits a chart overlay
@@ -323,6 +335,13 @@ private:
     bool   currentView(double& lon, double& lat, double& scale) const;
     void   beginInteraction();
     bool   recenterOnOwnship();   // move center to the ownship; false if no fix
+    // The bearing (deg true) the ownship glyph points to, using the configured
+    // heading source with fallback; NaN when no course/heading is available.
+    double viewUpBearingDeg() const;
+    // In course-up, re-derive the view rotation from the current course and
+    // repaint/re-cull if it changed by a degree or more (quantised to bound the
+    // static-cache re-renders and cell re-culls while turning).
+    void   updateCourseUpRotation();
 
     bool soundingVisible() const { return showSoundings_ && pointLodVisible_; }
     bool symbolVisible()   const { return showSymbols_   && pointLodVisible_; }
@@ -572,6 +591,8 @@ private:
     DistanceUnit distanceUnit_ = DistanceUnit::NauticalMiles;   // scale-bar units
     bool userInteracted_ = false;
     bool autoFollow_ = false;                 // keep view centered on ownship
+    bool courseUp_ = false;                   // rotate chart to ownship course
+    double viewUpDeg_ = 0.0;                  // bearing pointing to top (0=north-up)
     std::vector<IChartOverlay*> overlays_;    // plugin overlays (not owned)
     IChartEditor* editor_ = nullptr;          // active chart editor (not owned)
     bool    editorGrab_ = false;              // editor claimed the current gesture

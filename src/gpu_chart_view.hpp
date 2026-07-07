@@ -73,7 +73,11 @@ public:
     // Move the camera without touching the retained cells — pan/zoom is a
     // uniform update, not a geometry rebuild. `centerX/centerY` are absolute
     // projected metres (Y north-up); per-cell origins are subtracted per draw.
-    void setCamera(double centerX, double centerY, double ppm);
+    // `upBearingDeg` rotates the scene so that compass bearing points to the top
+    // of the view (0 = north-up); it applies in the vertex shader, so it too is a
+    // uniform-only update.
+    void setCamera(double centerX, double centerY, double ppm,
+                   double upBearingDeg = 0.0);
 
     // --- Raster (MBTiles) tile layer ---------------------------------------
     // One retained texture per tile, drawn as textured quads above the basemap
@@ -193,6 +197,8 @@ private:
 
     // Camera: centre in absolute projected metres + logical px per metre.
     double camX_ = 0.0, camY_ = 0.0, ppm_ = 1.0;
+    double camUpDeg_ = 0.0;              // scene rotation: bearing pointing up
+    double camCos_ = 1.0, camSin_ = 0.0; // cached cos/sin of camUpDeg_
     QPointF lastDrag_;
     bool dragging_ = false;
 };

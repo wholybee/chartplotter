@@ -36,6 +36,11 @@ struct ChartViewport {
     QSize      size;            // viewport size in device px
     double     worldWidthM = 0.0;
     double     centerSceneX = 0.0;
+    // Course-up rotation: the compass bearing (deg true) currently pointing to
+    // the top of the view (0 = north-up). sceneToScreen already bakes this in for
+    // positions; overlays that orient a glyph by a true bearing must subtract it
+    // (a bearing points (bearing - upDegrees) clockwise from screen-up).
+    double     upDegrees = 0.0;
 
     QSize  viewportSize()   const { return size; }
     double pixelsPerMetre() const { return ppm; }

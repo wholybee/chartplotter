@@ -109,6 +109,31 @@ QPixmap makeLayersIcon(const QColor& c, int px) {
     p.drawPolygon(sheet(mid - gap));
     return pm;
 }
+
+// Paint a compass-needle glyph for the course-up toggle: a two-tone diamond
+// needle (red north half, `c`-tinted south half). `c` is the themed foreground
+// so it reads on the button; callers pass white for the active (checked) state.
+// `rotDeg` turns the needle clockwise so it can point to true north as the chart
+// rotates (0 = needle up).
+QPixmap makeCompassIcon(const QColor& c, int px, double rotDeg = 0.0) {
+    QPixmap pm(px, px);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    p.setPen(Qt::NoPen);
+    const double mid = px / 2.0;
+    p.translate(mid, mid);
+    if (rotDeg != 0.0) p.rotate(rotDeg);
+    const double hw  = px * 0.17;   // needle half-width at the waist
+    const double tip = px * 0.34;   // centre-to-tip length
+    QPainterPath north; north.moveTo(0, -tip);
+    north.lineTo(-hw, 0); north.lineTo(hw, 0); north.closeSubpath();
+    QPainterPath south; south.moveTo(0, tip);
+    south.lineTo(-hw, 0); south.lineTo(hw, 0); south.closeSubpath();
+    p.setBrush(QColor(210, 40, 40)); p.drawPath(north);   // north half (red)
+    p.setBrush(c);                   p.drawPath(south);   // south half (themed)
+    return pm;
+}
 } // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
@@ -336,6 +361,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(sideMenu_, &SideMenu::zoomToChartsRequested,    view_, &ChartView::zoomToCharts);
     connect(sideMenu_, &SideMenu::autoFollowToggled,        view_, &ChartView::setAutoFollow);
     connect(view_, &ChartView::autoFollowChanged,           sideMenu_, &SideMenu::setAutoFollowChecked);
+    connect(sideMenu_, &SideMenu::courseUpToggled,          view_, &ChartView::setCourseUp);
+    connect(view_, &ChartView::courseUpChanged,             sideMenu_, &SideMenu::setCourseUpChecked);
     connect(sideMenu_, &SideMenu::chartSetToggled,          this,  &MainWindow::onChartSetToggled);
     connect(sideMenu_, &SideMenu::manageChartSetsRequested, this,  &MainWindow::manageChartSets);
     connect(sideMenu_, &SideMenu::prepareChartCacheRequested, this, &MainWindow::prepareChartCache);
@@ -446,6 +473,29 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(layersButton_, &QPushButton::clicked, this, &MainWindow::showLayersDialog);
     layersButton_->show();
 
+    // Floating "Course Up" toggle: a compass button under the Layers button that
+    // turns course-up chart rotation on/off. Checkable, always visible; its state
+    // mirrors the view (a pan that drops auto-follow also drops course-up, which
+    // the view reports back via courseUpChanged -> syncCourseUpButton).
+    courseUpButton_ = new QPushButton(view_);
+    courseUpButton_->setFixedSize(48, 48);
+    courseUpButton_->setCheckable(true);
+    courseUpButton_->setCursor(Qt::PointingHandCursor);
+    courseUpButton_->setFocusPolicy(Qt::NoFocus);
+    courseUpButton_->setIconSize(QSize(26, 26));
+    courseUpButton_->setStyleSheet(QStringLiteral(
+        "QPushButton{ border:1px solid %1; border-radius:24px; background:%2; }"
+        "QPushButton:checked{ background:#2f6bad; border-color:#2f6bad; }"
+        "QPushButton:pressed{ background:%3; }")
+        .arg(ob.border, ob.bg, ob.pressed));
+    courseUpButton_->setToolTip(QStringLiteral("Course up"));
+    connect(courseUpButton_, &QPushButton::clicked, this,
+            [this](bool on) { view_->setCourseUp(on); });
+    connect(view_, &ChartView::courseUpChanged, this, &MainWindow::syncCourseUpButton);
+    connect(view_, &ChartView::viewRotationChanged, this, &MainWindow::setCompassHeading);
+    syncCourseUpButton(false);   // initial icon (unchecked, north-up)
+    courseUpButton_->show();
+
     // Long-press on the chart opens the same popup at the tap.
     connect(view_, &ChartView::longPressed, this, &MainWindow::onChartLongPressed);
 
@@ -453,6 +503,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     positionMenuButton();
     positionAddButton();
     positionLayersButton();
+    positionCourseUpButton();
 
     statusLeft_  = new QLabel(QStringLiteral("No chart folder selected"));
     statusMid_   = new QLabel(QString());
@@ -485,6 +536,7 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
         positionMenuButton();
         positionAddButton();
         positionLayersButton();
+        positionCourseUpButton();
         positionEditBar();
         positionNavBanner();
     }
@@ -525,6 +577,34 @@ void MainWindow::positionLayersButton() {
     // Stack directly below the "+" button, same left edge, matching gap.
     layersButton_->move(12, addButton_->y() + addButton_->height() + 8);
     if (!sideMenu_ || !sideMenu_->isOpen()) layersButton_->raise();
+}
+
+void MainWindow::positionCourseUpButton() {
+    if (!courseUpButton_ || !layersButton_) return;
+    // Stack directly below the Layers button, same left edge, matching gap.
+    courseUpButton_->move(12, layersButton_->y() + layersButton_->height() + 8);
+    if (!sideMenu_ || !sideMenu_->isOpen()) courseUpButton_->raise();
+}
+
+void MainWindow::syncCourseUpButton(bool on) {
+    if (!courseUpButton_) return;
+    if (courseUpButton_->isChecked() != on) courseUpButton_->setChecked(on);
+    if (!on) courseUpAngle_ = 0.0;   // north-up when course-up is off
+    refreshCompassIcon();
+}
+
+void MainWindow::setCompassHeading(double upDegrees) {
+    courseUpAngle_ = upDegrees;
+    refreshCompassIcon();
+}
+
+void MainWindow::refreshCompassIcon() {
+    if (!courseUpButton_) return;
+    // White needle on the blue "on" fill; themed foreground otherwise. The needle
+    // points to true north = screen-up rotated back by the view's up-bearing.
+    const QColor col = courseUpButton_->isChecked() ? QColor(255, 255, 255)
+                                                    : QColor(theme::overlayBtn().fg);
+    courseUpButton_->setIcon(QIcon(makeCompassIcon(col, 26, -courseUpAngle_)));
 }
 
 void MainWindow::showLayersDialog() {

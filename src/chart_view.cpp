@@ -42,6 +42,7 @@
 #include <QLoggingCategory>
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
@@ -378,6 +379,11 @@ double ChartView::minPpm() const {
 QTransform ChartView::cameraTransform() const {
     QTransform t;
     t.translate(width() / 2.0, height() / 2.0);
+    // Course-up: rotate the scene so the chosen bearing points to the top. The
+    // rotation sits between the centre translate and the zoom so it pivots about
+    // the view centre. (Derivation: with scene +y = south, a rotate of -upDeg
+    // maps the up-bearing direction to straight up.) Zero => north-up, no cost.
+    if (viewUpDeg_ != 0.0) t.rotate(-viewUpDeg_);
     t.scale(ppm_, ppm_);
     t.translate(-scx_, -scy_);
     return t;
@@ -385,8 +391,9 @@ QTransform ChartView::cameraTransform() const {
 
 QPointF ChartView::screenToScene(const QPointF& s) const {
     if (ppm_ <= 0.0) return QPointF();
-    return QPointF((s.x() - width() / 2.0) / ppm_ + scx_,
-                   (s.y() - height() / 2.0) / ppm_ + scy_);
+    // Invert the full camera (incl. any course-up rotation). Identical to the
+    // closed-form north-up inverse when unrotated.
+    return cameraTransform().inverted().map(s);
 }
 
 void ChartView::normalizeCenter() {
@@ -710,8 +717,62 @@ void ChartView::setAutoFollow(bool on) {
         userInteracted_ = true;
         recenterOnOwnship();      // jump to the boat now; stays armed if no fix yet
         saveTimer_->start();
+    } else if (courseUp_) {
+        setCourseUp(false);       // dropping follow (e.g. a pan) drops course-up too
     }
     emit autoFollowChanged(on);
+}
+
+// The bearing the ownship glyph points to (deg true), using the configured
+// heading source with the same fallback drawOwnship() uses. NaN when neither
+// COG nor heading is available yet.
+double ChartView::viewUpBearingDeg() const {
+    if (headingSource_ == HeadingSource::Cog) {
+        if (ownship_.cogDegTrue.valid())          return ownship_.cogDegTrue.value;
+        if (ownship_.headingDegTrue.valid())      return ownship_.headingDegTrue.value;
+    } else {
+        if (ownship_.headingDegTrue.valid())      return ownship_.headingDegTrue.value;
+        if (ownship_.cogDegTrue.valid())          return ownship_.cogDegTrue.value;
+    }
+    return std::numeric_limits<double>::quiet_NaN();
+}
+
+void ChartView::updateCourseUpRotation() {
+    if (!courseUp_) return;
+    const double b = viewUpBearingDeg();
+    if (std::isnan(b)) return;   // no course yet: keep the current rotation
+    // Quantise to whole degrees so a jittery COG doesn't re-render the static
+    // cache / re-cull cells every fix; only act on a real change.
+    const double q = std::round(b);
+    if (q == viewUpDeg_) return;
+    viewUpDeg_ = q;
+    // Chart geometry rotates for free via the blit, but the upright symbology
+    // (text, soundings, buoys) is counter-rotated by the current angle when the
+    // cache is baked, so a new angle means the cache must be re-rendered. Re-cull
+    // cells for the rotated viewport box too, then repaint.
+    staticDirty_ = true;
+    scheduleUpdate();
+    scheduleFrame();
+    emit viewRotationChanged(viewUpDeg_);
+}
+
+void ChartView::setCourseUp(bool on) {
+    if (on == courseUp_) return;
+    courseUp_ = on;
+    // Toggling changes the cache apron size (course-up needs the larger diagonal
+    // apron), so the cache must be rebuilt once here; rotation changes afterwards
+    // are re-blits only.
+    staticDirty_ = true;
+    if (on) {
+        setAutoFollow(true);         // course-up keeps the boat centered
+        updateCourseUpRotation();    // rotate to the current course now, if known
+    } else {
+        viewUpDeg_ = 0.0;            // back to north-up
+        emit viewRotationChanged(viewUpDeg_);
+    }
+    scheduleUpdate();
+    scheduleFrame();
+    emit courseUpChanged(on);
 }
 
 // ---- viewport-driven cell selection ---------------------------------------
@@ -815,8 +876,18 @@ PickResult ChartView::pick(const QPointF& screenPos) {
 
 bool ChartView::computeViewBoxes(BBox& view, BBox& wanted, BBox& keep, int& target) const {
     if (ppm_ <= 0.0 || width() <= 0) return false;
-    const double halfW = (width()  / 2.0) / ppm_;
-    const double halfH = (height() / 2.0) / ppm_;
+    double halfWpx = width() / 2.0, halfHpx = height() / 2.0;
+    // Course-up: the visible region is a rotated rectangle, so widen the axis-
+    // aligned box to its bounding box so cells at the rotated corners still load.
+    if (viewUpDeg_ != 0.0) {
+        const double a = viewUpDeg_ * proj::kDeg2Rad;
+        const double c = std::abs(std::cos(a)), s = std::abs(std::sin(a));
+        const double hw = halfWpx, hh = halfHpx;
+        halfWpx = hw * c + hh * s;
+        halfHpx = hw * s + hh * c;
+    }
+    const double halfW = halfWpx / ppm_;
+    const double halfH = halfHpx / ppm_;
     // Scene -> projected (north up): proj x = sx, proj y = -sy.
     view.minx = scx_ - halfW; view.maxx = scx_ + halfW;
     view.miny = -(scy_ + halfH); view.maxy = -(scy_ - halfH);
@@ -1727,6 +1798,7 @@ void ChartView::paintDynamic(QPainter& p) {
         vp.size          = size();
         vp.worldWidthM   = worldWidthM();
         vp.centerSceneX  = scx_;
+        vp.upDegrees     = viewUpDeg_;
         p.resetTransform();
         for (IChartOverlay* o : overlays_) o->paint(p, vp);
     }
@@ -1970,7 +2042,7 @@ void ChartView::syncGpuCamera() {
     // Pan/zoom: an absolute-camera uniform update, no geometry rebuild — the
     // retained win. Per-cell origins are applied per draw inside the GPU layer,
     // so float32 precision never needs a scene re-base.
-    gpuLayer_->setCamera(scx_, -scy_, ppm_);
+    gpuLayer_->setCamera(scx_, -scy_, ppm_, viewUpDeg_);
 }
 
 void ChartView::scheduleFrame() {
@@ -2002,7 +2074,17 @@ void ChartView::renderStaticCache() {
     // Quarter-viewport margin each side == 1.5x the viewport, matching the
     // original cache size. Larger aprons reduce blank-edge exposure during long
     // pans, but they multiply every static-cache render by the apron area.
-    const int mx = W / 4, my = H / 4;
+    int mx = W / 4, my = H / 4;
+    // Course-up: the cache is rendered north-up and rotated into place by the
+    // blit, so a rotation change costs only a re-blit (no re-render). But the
+    // rotated viewport sweeps out to the diagonal, so the apron must cover the
+    // whole-turn worst case (half the diagonal minus the half-extent) or the
+    // screen corners would show blank wedges as the boat turns.
+    if (courseUp_) {
+        const double diag = std::hypot(double(W), double(H));
+        mx = std::max(mx, int(std::ceil((diag - W) / 2.0)));
+        my = std::max(my, int(std::ceil((diag - H) / 2.0)));
+    }
     cacheMX_ = mx; cacheMY_ = my;
     cacheW_ = W; cacheH_ = H;
     cacheScx_ = scx_; cacheScy_ = scy_; cachePpm_ = ppm_;
@@ -2074,7 +2156,9 @@ void ChartView::blitStaticCache(QPainter& p) {
     wrap.translate(wrapOffsetFor(cacheScx_), 0.0);
     const QTransform blit = cacheCam_.inverted() * wrap * cameraTransform();
     p.save();
-    p.setRenderHint(QPainter::SmoothPixmapTransform, ppm_ != cachePpm_);
+    // Smooth when the blit isn't an axis-aligned 1:1 copy: a zoom placeholder or
+    // a course-up rotation both resample the cached pixmap.
+    p.setRenderHint(QPainter::SmoothPixmapTransform, ppm_ != cachePpm_ || viewUpDeg_ != 0.0);
     p.setTransform(blit);
     p.drawPixmap(0, 0, staticCache_);
     p.restore();
@@ -2384,7 +2468,16 @@ void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
                     if (!farEnough(d)) continue;
                     const QString text = s.hasDepth ? formatSounding(s.depthM)
                                                     : QStringLiteral(".");
-                    p.drawText(QPointF(d.x() + 1.0, d.y() + asc), text);
+                    // Course-up: the whole cache is blitted rotated, so counter-
+                    // rotate the label about its point to keep the number upright.
+                    if (viewUpDeg_ != 0.0) {
+                        p.save();
+                        p.translate(d); p.rotate(viewUpDeg_);
+                        p.drawText(QPointF(1.0, asc), text);
+                        p.restore();
+                    } else {
+                        p.drawText(QPointF(d.x() + 1.0, d.y() + asc), text);
+                    }
                     remember(d);
                 }
                 if (clipped) p.restore();
@@ -2448,7 +2541,15 @@ void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
                         continue;
 
                     if (atlasOk && sym.symIdx != SymAtlas::kNoSymbol) {
-                        symAtlas_.draw(p, sym.symIdx, d, sym.rotationDeg,
+                        // Course-up (cache blitted rotated): an upright symbol
+                        // (no baked orientation, e.g. a buoy) is counter-rotated
+                        // by the view angle so it stays upright; an oriented
+                        // symbol (arrow/topmark with a real-world ORIENT) keeps
+                        // its bearing and so rotates with the chart.
+                        double drawRot = sym.rotationDeg;
+                        if (viewUpDeg_ != 0.0 && sym.rotationDeg == 0.0)
+                            drawRot = viewUpDeg_;
+                        symAtlas_.draw(p, sym.symIdx, d, drawRot,
                                        static_cast<float>(symbolScale_));
                     } else {
                         // Fallback: magenta dot (pen/brush set above).
@@ -2514,13 +2615,19 @@ void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
                                                        : py + asc - th / 2.0;
                     const QPointF at(tx, base);
                     // Cheap halo: white at the four neighbours, then ink on top.
+                    // Course-up (cache blitted rotated): counter-rotate the label
+                    // about its anchor so text stays horizontal and readable.
+                    const bool rot = (viewUpDeg_ != 0.0);
+                    if (rot) { p.save(); p.translate(d); p.rotate(viewUpDeg_); }
+                    const QPointF a = rot ? at - d : at;
                     p.setPen(halo);
-                    p.drawText(at + QPointF(-1, 0), t.text);
-                    p.drawText(at + QPointF( 1, 0), t.text);
-                    p.drawText(at + QPointF( 0,-1), t.text);
-                    p.drawText(at + QPointF( 0, 1), t.text);
+                    p.drawText(a + QPointF(-1, 0), t.text);
+                    p.drawText(a + QPointF( 1, 0), t.text);
+                    p.drawText(a + QPointF( 0,-1), t.text);
+                    p.drawText(a + QPointF( 0, 1), t.text);
                     p.setPen(t.color);
-                    p.drawText(at, t.text);
+                    p.drawText(a, t.text);
+                    if (rot) p.restore();
                 }
                 if (clipped) p.restore();
             }
@@ -2532,6 +2639,9 @@ void ChartView::setOwnship(const OwnshipState& s) {
     ownship_ = s;
     // The ownship symbol's freshness follows the position fix specifically.
     ownshipFreshness_ = s.latitudeDeg.freshness;
+    // Course-up: track the new course before recentering so the rotation and the
+    // recenter fold into one coalesced repaint.
+    if (courseUp_) updateCourseUpRotation();
     // When following, keep the boat centered as it moves. recenterOnOwnship()
     // repaints on success; otherwise repaint here for the symbol's new position.
     // Coalesced: ownship fixes arrive at the GPS rate, so this must not force a
@@ -2583,6 +2693,9 @@ void ChartView::drawOwnship(QPainter& p, const QTransform& cam) {
         if (ownship_.headingDegTrue.valid())  headingDeg = ownship_.headingDegTrue.value;
         else if (ownship_.cogDegTrue.valid()) headingDeg = ownship_.cogDegTrue.value;
     }
+    // drawSymbol orients the glyph clockwise from screen-up; in course-up the top
+    // of the screen is viewUpDeg_, so subtract it to keep the boat pointing true.
+    if (headingDeg && viewUpDeg_ != 0.0) headingDeg = *headingDeg - viewUpDeg_;
 
     // Red ownship glyph: a simplified boat hull (distinct from the AIS wedges).
     static const vessel::SymbolStyle kOwnship{

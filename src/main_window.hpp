@@ -89,6 +89,10 @@ private:
     void positionMenuButton();
     void positionLayersButton();  // stack the Layers button under the "+" button
     void showLayersDialog();      // open the floating layer-toggle panel
+    void positionCourseUpButton();// stack the Course-Up button under Layers
+    void syncCourseUpButton(bool on);       // reflect course-up on/off on the button
+    void setCompassHeading(double upDegrees);// rotate the needle to true north
+    void refreshCompassIcon();               // repaint the needle (colour + angle)
 
     // Routes & Waypoints helpers ---------------------------------------------
     void buildEditBar();              // construct the floating action bar (hidden)
@@ -187,6 +191,8 @@ private:
     QPushButton*  addButton_  = nullptr;   // floating "+" next to menu button
     QPushButton*  layersButton_ = nullptr; // floating layers toggle, under "+"
     QPointer<LayersDialog> layersDlg_;     // floating layer-toggle panel (one at a time)
+    QPushButton*  courseUpButton_ = nullptr; // floating course-up toggle, under Layers
+    double        courseUpAngle_ = 0.0;      // bearing at screen-top (for the needle)
     // Quick-look popup for a tapped saved route/waypoint. One at a time; chart
     // interaction dismisses it. QPointer clears when it self-deletes.
     QPointer<RouteQuickInfoWindow> routeQuickInfo_;
