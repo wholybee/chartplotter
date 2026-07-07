@@ -32,6 +32,7 @@
 #include "waypoint_properties_dialog.hpp"
 #include "route_quick_info_window.hpp"
 #include "chart_object_info_window.hpp"
+#include "layers_dialog.hpp"
 #include "name_dialog.hpp"
 #include "nav_data_store.hpp"
 #include "ais_target_store.hpp"
@@ -69,8 +70,46 @@
 #include <QCloseEvent>
 #include <QSettings>
 #include <QCursor>
+#include <QIcon>
+#include <QPixmap>
+#include <QPainter>
+#include <QPolygonF>
+#include <QColor>
 #include <algorithm>
 #include <cmath>
+
+namespace {
+// Paint the "layers" glyph — three stacked sheets (diamonds), the top one
+// filled — tinted to `c` so it matches the button's themed foreground. Drawn in
+// code rather than a font glyph so it renders identically on every platform.
+QPixmap makeLayersIcon(const QColor& c, int px) {
+    QPixmap pm(px, px);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(c);
+    pen.setWidthF(std::max(1.5, px * 0.06));
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+
+    const double mid = px / 2.0;
+    const double hw  = px * 0.34;   // sheet half-width
+    const double hh  = px * 0.17;   // sheet half-height
+    const double gap = px * 0.19;   // vertical spacing between sheets
+    auto sheet = [&](double cy) {
+        QPolygonF d;
+        d << QPointF(mid, cy - hh) << QPointF(mid + hw, cy)
+          << QPointF(mid, cy + hh) << QPointF(mid - hw, cy);
+        return d;
+    };
+    p.setBrush(Qt::NoBrush);
+    p.drawPolygon(sheet(mid + gap));   // bottom sheet (outline)
+    p.drawPolygon(sheet(mid));         // middle sheet (outline)
+    p.setBrush(c);                     // top sheet filled = the active layer
+    p.drawPolygon(sheet(mid - gap));
+    return pm;
+}
+} // namespace
 
 MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(appinfo::name());
@@ -365,7 +404,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     const theme::OverlayBtnPalette& ob = theme::overlayBtn();
     menuButton_->setStyleSheet(QStringLiteral(
         "QPushButton{ font-size:22px; color:%1; border:1px solid %2;"
-        " border-radius:6px; background:%3; }"
+        " border-radius:24px; background:%3; }"
         "QPushButton:pressed{ background:%4; }")
         .arg(ob.fg, ob.border, ob.bg, ob.pressed));
     connect(menuButton_, &QPushButton::clicked, sideMenu_, &SideMenu::openMenu);
@@ -379,7 +418,8 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     addButton_->setCursor(Qt::PointingHandCursor);
     addButton_->setStyleSheet(QStringLiteral(
         "QPushButton{ font-size:26px; font-weight:600; color:%1;"
-        " border:1px solid %2; border-radius:6px; background:%3; }"
+        " border:1px solid %2; border-radius:24px; background:%3;"
+        " padding-bottom:4px; }"
         "QPushButton:pressed{ background:%4; }")
         .arg(ob.fg, ob.border, ob.bg, ob.pressed));
     addButton_->setToolTip(QStringLiteral("Add a route or waypoint"));
@@ -390,12 +430,29 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     });
     addButton_->show();
 
+    // Floating "Layers" button: opens a small panel to toggle chart display
+    // layers (Soundings, Symbols, Text, Depth Contours). Same round look, sits
+    // just below the "+" button. The glyph is a painted stacked-sheets icon.
+    layersButton_ = new QPushButton(view_);
+    layersButton_->setFixedSize(48, 48);
+    layersButton_->setCursor(Qt::PointingHandCursor);
+    layersButton_->setIcon(QIcon(makeLayersIcon(QColor(ob.fg), 26)));
+    layersButton_->setIconSize(QSize(26, 26));
+    layersButton_->setStyleSheet(QStringLiteral(
+        "QPushButton{ border:1px solid %1; border-radius:24px; background:%2; }"
+        "QPushButton:pressed{ background:%3; }")
+        .arg(ob.border, ob.bg, ob.pressed));
+    layersButton_->setToolTip(QStringLiteral("Chart layers"));
+    connect(layersButton_, &QPushButton::clicked, this, &MainWindow::showLayersDialog);
+    layersButton_->show();
+
     // Long-press on the chart opens the same popup at the tap.
     connect(view_, &ChartView::longPressed, this, &MainWindow::onChartLongPressed);
 
     view_->installEventFilter(this);   // reposition the buttons when the view resizes
     positionMenuButton();
     positionAddButton();
+    positionLayersButton();
 
     statusLeft_  = new QLabel(QStringLiteral("No chart folder selected"));
     statusMid_   = new QLabel(QString());
@@ -427,6 +484,7 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
     if (obj == view_ && e->type() == QEvent::Resize) {
         positionMenuButton();
         positionAddButton();
+        positionLayersButton();
         positionEditBar();
         positionNavBanner();
     }
@@ -460,6 +518,34 @@ void MainWindow::positionAddButton() {
     // Stack directly below the menu button, same left edge, small gap.
     addButton_->move(12, 12 + menuButton_->height() + 8);
     if (!sideMenu_ || !sideMenu_->isOpen()) addButton_->raise();
+}
+
+void MainWindow::positionLayersButton() {
+    if (!layersButton_ || !addButton_) return;
+    // Stack directly below the "+" button, same left edge, matching gap.
+    layersButton_->move(12, addButton_->y() + addButton_->height() + 8);
+    if (!sideMenu_ || !sideMenu_->isOpen()) layersButton_->raise();
+}
+
+void MainWindow::showLayersDialog() {
+    // One panel at a time; reuse it if it's already open (QPointer clears itself
+    // when the WA_DeleteOnClose window is dismissed, so this recreates a fresh
+    // one after a close).
+    if (!layersDlg_) {
+        layersDlg_ = new LayersDialog(settings_, this);
+        layersDlg_->setAttribute(Qt::WA_DeleteOnClose);
+    }
+    layersDlg_->adjustSize();
+    // Anchor to the right of the layers button, clamped to the screen.
+    QPoint anchor = layersButton_->mapToGlobal(QPoint(layersButton_->width() + 10, 0));
+    const QRect screen = view_->screen() ? view_->screen()->availableGeometry()
+                                         : QRect(0, 0, 1920, 1080);
+    anchor.setX(std::min(anchor.x(), screen.right()  - layersDlg_->width()  - 12));
+    anchor.setY(std::min(anchor.y(), screen.bottom() - layersDlg_->height() - 12));
+    layersDlg_->move(anchor);
+    layersDlg_->show();
+    layersDlg_->raise();
+    layersDlg_->activateWindow();
 }
 
 void MainWindow::onChartSetToggled(const QString& dir) {

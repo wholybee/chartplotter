@@ -244,6 +244,7 @@ qt_add_executable(chartviewer
     src/ais_overlay.cpp
     src/about_dialog.cpp
     src/frameless_info_dialog.cpp
+    src/layers_dialog.cpp
     src/ais_target_info_window.cpp
     src/ais_target_list_dialog.cpp
     src/ais_quick_info_window.cpp

@@ -29,6 +29,7 @@ class RouteWaypointDialog;
 class RoutePropertiesDialog;
 class RouteQuickInfoWindow;
 class ChartObjectInfoWindow;
+class LayersDialog;
 struct ClickedRouteObject;
 class CoreApi;
 class PluginManager;
@@ -86,6 +87,8 @@ private:
     void rescanSelected();       // (re)load all currently-selected chart sets
     void refreshChartStatus();   // compose status from ENC + raster results
     void positionMenuButton();
+    void positionLayersButton();  // stack the Layers button under the "+" button
+    void showLayersDialog();      // open the floating layer-toggle panel
 
     // Routes & Waypoints helpers ---------------------------------------------
     void buildEditBar();              // construct the floating action bar (hidden)
@@ -182,6 +185,8 @@ private:
     std::unique_ptr<PluginManager> plugins_;     // owns built-in plugins
     QPushButton*  menuButton_ = nullptr;
     QPushButton*  addButton_  = nullptr;   // floating "+" next to menu button
+    QPushButton*  layersButton_ = nullptr; // floating layers toggle, under "+"
+    QPointer<LayersDialog> layersDlg_;     // floating layer-toggle panel (one at a time)
     // Quick-look popup for a tapped saved route/waypoint. One at a time; chart
     // interaction dismisses it. QPointer clears when it self-deletes.
     QPointer<RouteQuickInfoWindow> routeQuickInfo_;

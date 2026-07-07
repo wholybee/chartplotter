@@ -248,29 +248,41 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
     });
     telemetryTimer_->start();
 
-    // Touch zoom buttons (lower-right, just left of the scale bar). Circular,
-    // translucent so they sit nicely over the chart. Auto-repeat lets the user
-    // hold to keep zooming on a phone/tablet. Colours follow the OS theme so the
-    // glyph stays readable on both light and dark systems.
+    // Touch zoom buttons (lower-right, just left of the scale bar). Styled as a
+    // single vertically-connected pill: (+) on top with rounded top corners, (−)
+    // on the bottom with rounded bottom corners, sharing one divider line where
+    // they meet. Translucent so they sit nicely over the chart. Auto-repeat lets
+    // the user hold to keep zooming on a phone/tablet. Colours follow the OS
+    // theme so the glyph stays readable on both light and dark systems.
     const theme::OverlayBtnPalette& ob = theme::overlayBtn();
-    auto makeZoomBtn = [this, &ob](const QString& glyph) {
+    auto makeZoomBtn = [this, &ob](const QString& glyph, bool top) {
         auto* b = new QPushButton(glyph, this);
-        b->setFixedSize(48, 48);
+        b->setFixedSize(48, 46);
         b->setCursor(Qt::PointingHandCursor);
         b->setFocusPolicy(Qt::NoFocus);   // taps shouldn't steal keyboard focus
         b->setAutoRepeat(true);
         b->setAutoRepeatDelay(350);
         b->setAutoRepeatInterval(110);
+        // Only the outer end of each half is rounded; the shared seam stays
+        // square so the two halves read as one continuous pill. The (−) glyph
+        // renders low in its box, so the bottom half gets a small bottom padding
+        // to lift it back to the optical centre.
+        const QString radii = top
+            ? QStringLiteral("border-top-left-radius:24px; border-top-right-radius:24px;"
+                             " border-bottom-left-radius:0; border-bottom-right-radius:0;")
+            : QStringLiteral("border-bottom-left-radius:24px; border-bottom-right-radius:24px;"
+                             " border-top-left-radius:0; border-top-right-radius:0;"
+                             " padding-bottom:6px;");
         b->setStyleSheet(QStringLiteral(
             "QPushButton{ font-size:26px; font-weight:600; color:%1;"
-            " border:1px solid %2; border-radius:24px; background:%3; }"
+            " border:1px solid %2; %5 background:%3; }"
             "QPushButton:pressed{ background:%4; }")
-            .arg(ob.fg, ob.border, ob.bg, ob.pressed));
+            .arg(ob.fg, ob.border, ob.bg, ob.pressed, radii));
         return b;
     };
     constexpr double kZoomStep = 1.15;
-    zoomOutBtn_ = makeZoomBtn(QStringLiteral("−"));
-    zoomInBtn_  = makeZoomBtn(QStringLiteral("+"));
+    zoomOutBtn_ = makeZoomBtn(QStringLiteral("−"), /*top=*/false);
+    zoomInBtn_  = makeZoomBtn(QStringLiteral("+"), /*top=*/true);
     connect(zoomOutBtn_, &QPushButton::clicked, this, [this] { zoomBy(1.0 / kZoomStep); });
     connect(zoomInBtn_,  &QPushButton::clicked, this, [this] { zoomBy(kZoomStep); });
     zoomOutBtn_->show();
@@ -2711,21 +2723,24 @@ void ChartView::zoomBy(double factor) {
     scheduleFrame();
 }
 
-// Place the +/- buttons in the lower-right corner with a fixed margin that
-// keeps them clear of the scale bar (which draws at the same baseline).
+// Place the +/- buttons in the lower-right corner as a single vertical pill:
+// (+) on top, (−) below it, with a fixed margin that keeps them clear of the
+// scale bar (which draws at the same baseline). The two halves overlap by 1px so
+// their borders merge into one divider line rather than doubling up.
 void ChartView::positionZoomButtons() {
     if (!zoomInBtn_ || !zoomOutBtn_) return;
-    constexpr int kBtnSize    = 48;
-    constexpr int kBtnGap     = 8;
+    constexpr int kBtnW       = 48;
+    constexpr int kBtnH       = 46;
+    constexpr int kSeam       = 1;     // overlap so the shared edge is a single line
     constexpr int kBottomPad  = 14;
     constexpr int kScaleBarPx = 110;   // reserved width for the scale bar
-    const int y = height() - kBottomPad - kBtnSize;
-    const int inX  = width() - kScaleBarPx - kBtnSize;            // (+) right of (-)
-    const int outX = inX - kBtnGap - kBtnSize;
-    zoomOutBtn_->move(outX, y);
-    zoomInBtn_->move(inX,  y);
-    zoomOutBtn_->raise();
+    const int x    = width() - kScaleBarPx - kBtnW;
+    const int outY = height() - kBottomPad - kBtnH;              // (−) on the bottom
+    const int inY  = outY - kBtnH + kSeam;                       // (+) stacked on top
+    zoomInBtn_->move(x, inY);
+    zoomOutBtn_->move(x, outY);
     zoomInBtn_->raise();
+    zoomOutBtn_->raise();   // bottom half on top so its border draws the divider
 }
 
 void ChartView::wheelEvent(QWheelEvent* e) {

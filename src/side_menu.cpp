@@ -203,17 +203,24 @@ QWidget* SideMenu::buildMainPage() {
         emit editChartDetailLevelRequested();
     });
     col->addWidget(detailLvlBtn);
+    // Each toggle is wired both ways to its Settings flag so the menu stays in
+    // sync with the floating Layers panel (which drives the same flags). The
+    // setters no-op on an unchanged value, so the round trip can't loop.
     auto* snd = makeCheckAction(QStringLiteral("Soundings"), settings_->showSoundings());
     connect(snd, &QPushButton::toggled, settings_, &Settings::setShowSoundings);
+    connect(settings_, &Settings::showSoundingsChanged, snd, &QPushButton::setChecked);
     col->addWidget(snd);
     auto* sym = makeCheckAction(QStringLiteral("Symbols"), settings_->showSymbols());
     connect(sym, &QPushButton::toggled, settings_, &Settings::setShowSymbols);
+    connect(settings_, &Settings::showSymbolsChanged, sym, &QPushButton::setChecked);
     col->addWidget(sym);
     auto* txt = makeCheckAction(QStringLiteral("Text"), settings_->showText());
     connect(txt, &QPushButton::toggled, settings_, &Settings::setShowText);
+    connect(settings_, &Settings::showTextChanged, txt, &QPushButton::setChecked);
     col->addWidget(txt);
     auto* con = makeCheckAction(QStringLiteral("Depth Contours"), settings_->showDepthContours());
     connect(con, &QPushButton::toggled, settings_, &Settings::setShowDepthContours);
+    connect(settings_, &Settings::showDepthContoursChanged, con, &QPushButton::setChecked);
     col->addWidget(con);
 
     col->addWidget(makeHeader(QStringLiteral("View")));
