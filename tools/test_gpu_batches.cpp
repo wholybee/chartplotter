@@ -267,13 +267,13 @@ int main() {
               "D: simplifyRing leaves a triangle intact");
     }
 
-    // ---- E: area-validated fallback to a bounded convex hull -----------------
+    // ---- E: area-validated fill drops a degenerate ring (no giant fallback) ---
     // A fill path shaped as a self-intersecting bowtie — the degenerate ring
     // aggressive simplification can rarely emit. The area check must reject the
-    // bowtie's triangulation and fall back to the convex hull of the same
-    // vertices: a bounded fill (never a cell-spanning triangle) that costs
-    // nothing near the old full-resolution re-triangulation. The four bowtie
-    // corners hull to their 100x100 square, so the fallback area is 10000.
+    // bowtie's triangulation and append NOTHING for it. A convex-hull substitute
+    // would flood the ring's whole extent with the fill colour (the giant-
+    // triangle artifact for a concave/basemap ring), so the fill is dropped: its
+    // outline still strokes elsewhere and the layer beneath shows through.
     {
         BuiltCell bad;
         BuiltPath bp;
@@ -288,12 +288,8 @@ int main() {
 
         std::vector<GpuVertex> ft;
         gpubatches::appendBuiltCellFills(bad, 0.0, 0.0, ft);
-        CHECK(ft.size() == 6,
-              "E: rejected bowtie falls back to a bounded convex-hull fill");
-        CHECK(std::fabs(triArea(ft) - 10000.0) < 1.0,
-              "E: fallback fill stays within the ring's own extent");
-        CHECK(!ft.empty() && rgbNear(ft[0], 217, 199, 148),
-              "E: fallback fill keeps the path's brush colour");
+        CHECK(ft.empty(),
+              "E: rejected bowtie appends no fill (no cell-spanning fallback)");
     }
 
     if (g_failures == 0) { std::printf("\nAll gpu_batches tests passed.\n"); return 0; }

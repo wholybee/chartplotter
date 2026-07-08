@@ -46,10 +46,13 @@ void appendCellBatches(const std::vector<Feature>& feats,
 //
 // Each fill is area-validated: if triangulating the simplified path doesn't
 // cover the ring's area (the signature of a self-intersecting/collapsed ring the
-// simplifier can still rarely produce), the fill falls back to the convex hull
-// of the same few simplified vertices — a bounded, O(k log k) result that can't
-// produce cell-spanning triangles. It never re-triangulates full-resolution
-// rings, so a bad ring can't reintroduce the raw-cell tessellation hotspot.
+// simplifier can still rarely produce), that ring's fill is dropped rather than
+// substituted. A convex-hull substitute would flood a concave ring's whole
+// extent (a coastline, or a basemap land/ocean polygon clipped to the view) with
+// the fill colour — the cell-/view-spanning "giant triangle" artifact — so
+// dropping the fill (its outline still strokes; the layer beneath shows through)
+// is the safe choice. It never re-triangulates full-resolution rings either, so
+// a bad ring can't reintroduce the raw-cell tessellation hotspot.
 void appendBuiltCellFills(const BuiltCell& cell,
                           double originX, double originY,
                           std::vector<GpuVertex>& tris);

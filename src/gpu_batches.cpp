@@ -167,53 +167,6 @@ std::vector<std::vector<Pt>> ringsFromPath(const QPainterPath& path) {
     return rings;
 }
 
-// Convex hull (Andrew's monotone chain), CCW, collinear points dropped. O(k log
-// k). Used only as the bounded fallback fill for a ring that failed its area
-// check — small input (already-simplified vertices), so this is cheap.
-std::vector<Pt> convexHull(std::vector<Pt> pts) {
-    std::sort(pts.begin(), pts.end(), [](const Pt& a, const Pt& b) {
-        return a.x < b.x || (a.x == b.x && a.y < b.y);
-    });
-    pts.erase(std::unique(pts.begin(), pts.end(), samePoint), pts.end());
-    const int n = static_cast<int>(pts.size());
-    if (n < 3) return pts;
-
-    auto cross = [](const Pt& o, const Pt& a, const Pt& b) {
-        return (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
-    };
-    std::vector<Pt> h(static_cast<std::size_t>(2 * n));
-    int k = 0;
-    for (int i = 0; i < n; ++i) {                        // lower hull
-        while (k >= 2 && cross(h[k - 2], h[k - 1], pts[i]) <= 0.0) --k;
-        h[k++] = pts[i];
-    }
-    for (int i = n - 2, t = k + 1; i >= 0; --i) {        // upper hull
-        while (k >= t && cross(h[k - 2], h[k - 1], pts[i]) <= 0.0) --k;
-        h[k++] = pts[i];
-    }
-    h.resize(static_cast<std::size_t>(k - 1));
-    return h;
-}
-
-// Fill the convex hull of `verts` as a triangle fan. Bounded fallback for a fill
-// whose simplified rings didn't triangulate cleanly: it fills the ring's own
-// extent (a concavity fills in — a small local loss at zoom-out scales), never a
-// cell-spanning triangle, and costs nothing near the full-resolution path.
-void appendConvexHullFan(const std::vector<Pt>& verts, const Rgb& col,
-                         double originX, double originY,
-                         std::vector<GpuVertex>& tris) {
-    const std::vector<Pt> hull = convexHull(verts);
-    if (hull.size() < 3) return;
-    tris.reserve(tris.size() + (hull.size() - 2) * 3);
-    for (std::size_t i = 1; i + 1 < hull.size(); ++i) {
-        const Pt fan[3] = { hull[0], hull[i], hull[i + 1] };
-        for (const Pt& p : fan)
-            tris.push_back({ static_cast<float>(p.x - originX),
-                             static_cast<float>(p.y - originY),
-                             col.r, col.g, col.b });
-    }
-}
-
 } // namespace
 
 void appendBuiltCellFills(const BuiltCell& cell,
@@ -229,14 +182,16 @@ void appendBuiltCellFills(const BuiltCell& cell,
             continue;   // simplified geometry triangulated cleanly (the common case)
 
         // Fallback: the simplified path failed its area check (self-intersecting
-        // or collapsed). Discard its triangles and fill the convex hull of the
-        // same simplified vertices — bounded and cheap, so a bad ring can never
-        // stall the build the way re-triangulating full-resolution rings would.
+        // or collapsed). Discard its triangles and draw NO fill for this ring.
+        //
+        // We must not substitute the convex hull here: for a concave ring (a
+        // coastline, or any basemap land/ocean polygon clipped to the view) the
+        // hull is far larger than the polygon and would flood the whole view with
+        // the fill colour — the giant-triangle artifact, back again. Dropping the
+        // fill leaves at most a small unfilled gap for a rare bad ring (its
+        // outline still strokes, and the layer beneath shows through), which is
+        // far less objectionable than a cell- or view-spanning fill.
         tris.resize(start);
-        std::vector<Pt> verts;
-        for (const std::vector<Pt>& r : ringsFromPath(bp.path))
-            verts.insert(verts.end(), r.begin(), r.end());
-        appendConvexHullFan(verts, col, originX, originY, tris);
     }
 }
 
