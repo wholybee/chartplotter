@@ -218,6 +218,10 @@ public:
 signals:
     void cursorMoved(double lon, double lat);
     void statusChanged(const QString& text);
+    // The GPU backend was requested but produced no frame after being shown, so
+    // the view auto-fell-back to the CPU painter. Carries a short, user-facing
+    // note the shell shows briefly (e.g. in the status bar). See checkGpuWatchdog.
+    void gpuFellBackToCpu(const QString& message);
     // Touch-friendly long-press (press-and-hold) on the chart. Fires after ~500 ms
     // with the finger held within a few pixels of pressPos; suppressed when an
     // IChartEditor is active so it doesn't fight with route-editing gestures.
@@ -259,6 +263,10 @@ protected:
     void mouseMoveEvent(QMouseEvent* e) override;
     void mouseReleaseEvent(QMouseEvent* e) override;
     void resizeEvent(QResizeEvent* e) override;
+    // Arms the GPU fallback watchdog once the widget is actually on screen (the
+    // GPU layer only renders once visible), covering the normal startup path
+    // where the backend is applied before the top-level window is shown.
+    void showEvent(QShowEvent* e) override;
 
 private slots:
     void onCatalogFinished(bool ok, const QString& message);
@@ -424,6 +432,15 @@ private:
     // which would re-trigger itself through the translucent overlay (see
     // paintEvent).
     void refreshGpuFrame();
+    // GPU device watchdog. armGpuWatchdog() starts a one-shot timer once the layer
+    // is shown; checkGpuWatchdog() fires when it elapses and, if the layer has
+    // never rendered a single frame (the RHI device came up dead — the random
+    // black-screen fault), auto-falls back to the CPU painter and emits
+    // gpuFellBackToCpu(). Only the "no frame at all" failure is caught here; a
+    // device that renders but shows black would still have rendered frames (the
+    // gpu_log.hpp trace is what distinguishes those two cases in the field).
+    void armGpuWatchdog();
+    void checkGpuWatchdog();
     // Touch-friendly zoom: same step as the wheel, anchored at the screen
     // centre (no cursor on touch devices).
     void zoomBy(double factor);
@@ -535,6 +552,9 @@ private:
     bool          useGpu_ = false;
     GpuChartView* gpuLayer_ = nullptr;
     QWidget*      overlayLayer_ = nullptr;
+    // GPU fallback watchdog (see armGpuWatchdog/checkGpuWatchdog). Single-shot;
+    // on expiry it condemns the GPU only if the layer never rendered a frame.
+    QTimer*       gpuWatchdog_ = nullptr;
     bool          gpuDrawListDirty_ = true;
     int           basemapGpuCount_ = 0;
     bool          gpuRasterDirty_ = false;   // raster underlay needs recompositing

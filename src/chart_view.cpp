@@ -14,6 +14,7 @@
 #include "chart_quilt.hpp"
 #include "gpu_chart_view.hpp"
 #include "gpu_batches.hpp"
+#include "gpu_log.hpp"
 #include "bundle_paths.hpp"
 #include "debug_trace.hpp"
 
@@ -22,6 +23,7 @@
 #include <QWheelEvent>
 #include <QMouseEvent>
 #include <QResizeEvent>
+#include <QShowEvent>
 #include <QFont>
 #include <QFontMetricsF>
 #include <QTimer>
@@ -57,6 +59,13 @@ namespace {
 using geom::clipRingToRect;
 using geom::clipPolylineToRect;
 using geom::pointInRect;
+
+// How long the GPU layer has to produce its first frame after being shown before
+// the view gives up and falls back to the CPU painter. Generous enough to absorb
+// a slow cold-start on modest hardware (e.g. a Raspberry Pi compiling shaders on
+// first use) without a false fallback; the sea-colour fill keeps the wait from
+// reading as black. A dead device that never renders is caught this soon.
+constexpr int kGpuWatchdogMs = 3000;
 
 // Rough in-memory footprint of a parsed cell, for the LRU byte budget.
 std::size_t approxBytes(const std::vector<Feature>& feats) {
@@ -207,6 +216,15 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
         repaintPending_ = false;
         scheduleFrame();
     });
+
+    // GPU device watchdog: armed once the GPU layer is shown, fires once if the
+    // RHI never produced a frame and falls the view back to the CPU painter (see
+    // checkGpuWatchdog). Single-shot; VeryCoarse — a few seconds' slack is fine.
+    gpuWatchdog_ = new QTimer(this);
+    gpuWatchdog_->setSingleShot(true);
+    gpuWatchdog_->setInterval(kGpuWatchdogMs);
+    gpuWatchdog_->setTimerType(Qt::VeryCoarseTimer);
+    connect(gpuWatchdog_, &QTimer::timeout, this, [this] { checkGpuWatchdog(); });
 
     // Coalesce bursts of decoded raster tiles: during load-in dozens arrive per
     // second, and each refresh is a full static-cache re-render (painter) or a
@@ -1731,7 +1749,20 @@ void ChartView::paintEvent(QPaintEvent*) {
     // driven from input/data/timer events via refreshGpuFrame() instead. The
     // repaint governor is also left alone here: a composition pass does no
     // frame work, so it must not cancel a pending coalesced repaint.
-    if (useGpu_ && gpuLayer_) return;
+    //
+    // Safety net: fill the sea colour rather than leaving this a bare no-op. The
+    // RHI child composites the chart over this area, but should its first frame
+    // ever lag the parent's first composite (a compositor race on show), an
+    // unfilled WA_OpaquePaintEvent surface reads as black. Painting the sea makes
+    // any such gap read as empty water instead. This is pure fill — it must NOT
+    // schedule a child update() (Qt repaints this parent to composite the
+    // translucent overlay, so a child update() here would self-sustain a repaint
+    // loop); GpuChartView::showEvent is what actually guarantees the first frame.
+    if (useGpu_ && gpuLayer_) {
+        QPainter p(this);
+        p.fillRect(rect(), QColor(204, 224, 242));
+        return;
+    }
 
     // This frame satisfies any pending coalesced repaint request; cancel the
     // governor so a data update arriving mid pan/zoom doesn't fire a second,
@@ -1880,9 +1911,14 @@ void ChartView::applyBackend() {
         overlayLayer_->raise();      // dynamic pass above the chart
         if (zoomInBtn_)  zoomInBtn_->raise();   // buttons stay clickable on top
         if (zoomOutBtn_) zoomOutBtn_->raise();
+        // Watch for a dead device. If we're already on screen (a runtime toggle),
+        // arm now; if not (the usual startup path, applied before the window is
+        // shown), showEvent arms it once the layer can actually render.
+        if (isVisible()) armGpuWatchdog();
     } else {
         if (gpuLayer_)     gpuLayer_->hide();
         if (overlayLayer_) overlayLayer_->hide();
+        if (gpuWatchdog_)  gpuWatchdog_->stop();   // not in GPU mode; nothing to watch
     }
 
     // Drop every retained GPU entry (cells + basemap): switching to the painter
@@ -2060,6 +2096,44 @@ void ChartView::refreshGpuFrame() {
     telemetry_.gpuFrames++;
     syncGpuCamera();
     if (overlayLayer_) overlayLayer_->update();
+}
+
+void ChartView::armGpuWatchdog() {
+    if (!useGpu_ || !gpuLayer_ || !gpuWatchdog_) return;
+    // Just (re)start the one-shot. The check is "did the device ever render a
+    // frame", not "did it render more since now" — a healthy device with no
+    // charts loaded renders exactly one frame on show and then legitimately
+    // idles, so a since-armed delta would falsely condemn it. GpuChartView::
+    // showEvent guarantees that one frame on a working device.
+    gpuWatchdog_->start();
+}
+
+void ChartView::checkGpuWatchdog() {
+    if (!useGpu_ || !gpuLayer_) return;   // already on the painter; nothing to judge
+    if (gpuLayer_->renderedFrames() > 0)
+        return;                            // the device produced a frame — healthy
+    // No frame in the whole watchdog window: the RHI device came up dead. This is
+    // the random black-screen fault — and because the GPU widget's device is
+    // created once and reused, nothing in-process would ever recover it. Fall the
+    // whole view back to the CPU painter (which never touches the RHI) and tell
+    // the shell so it can show a brief note. The persisted "use GPU" preference is
+    // left untouched: the next launch tries the GPU again, in case the driver has
+    // since recovered.
+    gpulog::write(QStringLiteral("watchdog: no GPU frame in %1 ms - falling back "
+                                 "to CPU painter").arg(kGpuWatchdogMs));
+    backendPref_ = RenderBackend::Cpu;
+    applyBackend();                        // hides the GPU layers, rebuilds for the painter
+    emit gpuFellBackToCpu(
+        QStringLiteral("GPU acceleration unavailable — using CPU rendering. "
+                       "Details logged to %1").arg(gpulog::path()));
+}
+
+void ChartView::showEvent(QShowEvent* e) {
+    QWidget::showEvent(e);
+    // Startup applies the backend before the top-level window is shown, so the GPU
+    // layer couldn't render (or be judged) yet. Now that we're on screen, arm the
+    // watchdog; the GPU layer's own showEvent has just forced its first frame.
+    if (useGpu_ && gpuLayer_) armGpuWatchdog();
 }
 
 // Render the static chart into the offscreen cache at the current camera, with a

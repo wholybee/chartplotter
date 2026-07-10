@@ -285,6 +285,13 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // the painter automatically if the GPU device can't be created.
     view_->setRenderBackend(settings_->renderBackend());
     connect(settings_, &Settings::renderBackendChanged,     view_, &ChartView::setRenderBackend);
+    // If the GPU backend comes up dead, the view auto-falls-back to the CPU
+    // painter; surface a brief, self-clearing note so the user knows why the
+    // "GPU acceleration" toggle didn't take (the transient status message clears
+    // itself and doesn't disturb the permanent status widgets).
+    connect(view_, &ChartView::gpuFellBackToCpu, this, [this](const QString& msg) {
+        statusBar()->showMessage(msg, 10000);
+    });
     connect(view_, &ChartView::rasterChartsChanged, this, &MainWindow::onRasterChartsChanged);
     view_->setChartDetailLevel(settings_->chartDetailLevel());
     connect(settings_, &Settings::chartDetailLevelChanged,

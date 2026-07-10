@@ -1,13 +1,14 @@
 // src/gpu_chart_view.cpp
 #include "gpu_chart_view.hpp"
+#include "gpu_log.hpp"
 
 #include <rhi/qrhi.h>
 #include <QColor>
 #include <QFile>
 #include <QMouseEvent>
+#include <QShowEvent>
 #include <QWheelEvent>
 #include <QSize>
-#include <QOffscreenSurface>
 #include <algorithm>
 #include <cmath>
 #include <unordered_set>
@@ -31,6 +32,9 @@ constexpr std::size_t kMaxTileTextures = 384;    // matches the pixmap cache bud
 GpuChartView::GpuChartView(QWidget* parent) : QRhiWidget(parent) {
 #if defined(Q_OS_WIN)
     setApi(QRhiWidget::Api::Direct3D11);
+    gpulog::write(QStringLiteral("GpuChartView constructed (api=Direct3D11)"));
+#else
+    gpulog::write(QStringLiteral("GpuChartView constructed (api=default)"));
 #endif
 }
 
@@ -126,44 +130,22 @@ void GpuChartView::setTileTexture(quint64 texId, const QImage& img) {
 }
 
 bool GpuChartView::isAvailable() {
-    // Cache the probe: -1 unknown, 0 no, 1 yes. RHI creation is not free, and the
-    // answer can't change during a run.
-    static int cached = -1;
-    if (cached >= 0)
-        return cached == 1;
-    // Probe the *same* backend the widget will actually use (see the constructor
-    // and QRhiWidget's per-platform default) by bringing up and tearing down a
-    // throwaway offscreen device. A Null-backend probe always succeeds and so
-    // would never trigger the CPU fallback; a headless session or a broken GPU
-    // driver must fail *this* create to be caught here.
-    bool ok = false;
-#if defined(Q_OS_WIN)
-    QRhiD3D11InitParams params;
-    if (QRhi* rhi = QRhi::create(QRhi::D3D11, &params)) {
-        delete rhi;
-        ok = true;
-    }
-#elif defined(Q_OS_MACOS)
-    QRhiMetalInitParams params;
-    if (QRhi* rhi = QRhi::create(QRhi::Metal, &params)) {
-        delete rhi;
-        ok = true;
-    }
-#else
-    // Linux/other: QRhiWidget defaults to the OpenGL backend, which needs an
-    // offscreen surface to create a probe context. The surface must outlive the
-    // QRhi, so free it only after the throwaway device is gone.
-    QRhiGles2InitParams params;
-    QOffscreenSurface* surface = QRhiGles2InitParams::newFallbackSurface();
-    params.fallbackSurface = surface;
-    if (QRhi* rhi = QRhi::create(QRhi::OpenGLES2, &params)) {
-        delete rhi;
-        ok = true;
-    }
-    delete surface;
-#endif
-    cached = ok ? 1 : 0;
-    return ok;
+    // This used to pre-flight the GPU by bringing up and tearing down a throwaway
+    // RHI device before the widget was ever shown, so a broken driver could be
+    // caught early. That backfired: it doubled device create/destroy churn at
+    // startup (the probe device, then the widget's own real device moments
+    // later), and on some drivers (Raspberry Pi V3D/Mesa; certain Windows
+    // drivers) the two racing inits could bring the *real* device up dead — a
+    // random black chart that no in-process action could recover, because the
+    // widget's device is created once and reused for the process lifetime.
+    //
+    // Device validation now happens at runtime instead: ChartView arms a watchdog
+    // when it shows the GPU layer and falls back to the CPU painter if the RHI
+    // produces no frame (see ChartView::checkGpuWatchdog). That is strictly more
+    // accurate (it tests the device the widget actually uses, in situ) and adds
+    // no extra device creation. So this now only reports that the GPU backend is
+    // compiled in; the runtime watchdog is the real gate.
+    return true;
 }
 
 void GpuChartView::takeTelemetry(int& frames, int& sceneUploads, int& textureUploads,
@@ -175,6 +157,8 @@ void GpuChartView::takeTelemetry(int& frames, int& sceneUploads, int& textureUpl
 }
 
 void GpuChartView::releaseResources() {
+    if (rhi_) gpulog::write(QStringLiteral("releaseResources: RHI torn down "
+                                           "(device loss or shutdown)"));
     psTri_.reset();
     psLine_.reset();
     srb_.reset();
@@ -247,6 +231,25 @@ void GpuChartView::initialize(QRhiCommandBuffer*) {
         const bool lost = (rhi_ != nullptr);
         releaseResources();
         rhi_ = rhi();
+        // Record what device we actually got. This is the line that matters when a
+        // black-screen report comes in: it proves initialize() ran, on which
+        // backend, against which GPU, and — critically — the render-target pixel
+        // size (a 0×0 target renders nothing and reads as black).
+        if (rhi_) {
+            const QRhiDriverInfo di = rhi_->driverInfo();
+            const QRhiRenderTarget* rt = renderTarget();
+            const QSize rts = rt ? rt->pixelSize() : QSize();
+            gpulog::write(QStringLiteral("initialize: backend=%1 device=\"%2\" "
+                                         "vendorId=0x%3 deviceType=%4 rt=%5x%6 lost=%7")
+                              .arg(QString::fromLatin1(rhi_->backendName()))
+                              .arg(QString::fromUtf8(di.deviceName))
+                              .arg(QString::number(di.vendorId, 16))
+                              .arg(int(di.deviceType))
+                              .arg(rts.width()).arg(rts.height())
+                              .arg(lost ? 1 : 0));
+        } else {
+            gpulog::write(QStringLiteral("initialize: rhi() is NULL - no device"));
+        }
         if (lost && !firstInit_) {
             // The RHI was recreated: retained cells are gone. Tell the owner to
             // re-push them (queued — never re-enter it from inside the render
@@ -326,6 +329,16 @@ void GpuChartView::initialize(QRhiCommandBuffer*) {
 
 void GpuChartView::render(QRhiCommandBuffer* cb) {
     ++telemFrames_;
+    // Monotonic (never reset): the fallback watchdog reads this to confirm the
+    // device produced output after the widget was shown. Log the first frame and
+    // its render-target size — the proof that the RHI path is live, and the value
+    // that would reveal a 0×0 (black) swapchain if that is ever the failure mode.
+    if (++renderedFrames_ == 1) {
+        const QRhiRenderTarget* rt = renderTarget();
+        const QSize rts = rt ? rt->pixelSize() : QSize();
+        gpulog::write(QStringLiteral("render: first frame, rt=%1x%2")
+                          .arg(rts.width()).arg(rts.height()));
+    }
     QRhiResourceUpdateBatch* up = rhi_->nextResourceUpdateBatch();
 
     // Upload cells whose batches arrived since the last frame: one Immutable
@@ -536,6 +549,28 @@ void GpuChartView::render(QRhiCommandBuffer* cb) {
         }
     }
     cb->endPass();
+}
+
+void GpuChartView::showEvent(QShowEvent* e) {
+    QRhiWidget::showEvent(e);
+    // Guarantee a first RHI frame whenever the widget is (re)shown. The owner
+    // pushes the camera through setCamera(), but that no-op-guards an unchanged
+    // camera — and at startup with no charts the pushed camera equals this
+    // widget's default, so nothing there ever schedules the first frame. The
+    // widget is then at the mercy of Qt's implicit expose paint landing before
+    // the parent composites the translucent overlay drawn on top of the RHI
+    // surface; when it loses that race the chart comes up black and, because no
+    // camera/scene change ever follows, stays black until an unrelated repaint.
+    // Forcing an update() here renders a frame and recomposites the parent, so
+    // the sea/chart is always visible from the first shown frame.
+    //
+    // A child shown while its top-level is still hidden receives this showEvent
+    // only when the window finally becomes visible, which is exactly the moment
+    // the first frame must be produced. showEvent fires on visibility
+    // transitions, not per frame, so the cost is one render on show.
+    gpulog::write(QStringLiteral("showEvent: size=%1x%2 - forcing first frame")
+                      .arg(width()).arg(height()));
+    update();
 }
 
 // ---- interaction (pan/zoom the camera; no geometry rebuild) -----------------

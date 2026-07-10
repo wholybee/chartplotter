@@ -115,6 +115,13 @@ public:
     void takeTelemetry(int& frames, int& sceneUploads, int& textureUploads,
                        quint64& vertsDrawn);
 
+    // Monotonic count of frames the RHI has actually rendered since construction.
+    // Never reset (unlike the telemetry counter), so ChartView's fallback watchdog
+    // can tell whether the device produced any output after the widget was shown:
+    // a value that never advances past the moment of show means the GPU device
+    // came up dead and the view must fall back to the CPU painter.
+    quint64 renderedFrames() const { return renderedFrames_; }
+
 signals:
     // The QRhi was torn down and recreated (window/screen change, device loss).
     // Every retained buffer died with it and the CPU copies were freed at
@@ -125,6 +132,13 @@ signals:
 protected:
     void initialize(QRhiCommandBuffer* cb) override;
     void render(QRhiCommandBuffer* cb) override;
+
+    // Force a render (and therefore a backing-store recomposite) every time the
+    // widget becomes visible. Without this the very first RHI frame relies on
+    // Qt's implicit expose paint, which can race the parent's first composite of
+    // the translucent overlay stacked on top — leaving the chart black until some
+    // later event happens to schedule a repaint. See the .cpp for the full story.
+    void showEvent(QShowEvent* e) override;
 
     void mousePressEvent(QMouseEvent* e) override;
     void mouseMoveEvent(QMouseEvent* e) override;
@@ -188,6 +202,9 @@ private:
     bool drawFills_ = true;
     bool drawContours_ = true;
     bool firstInit_ = true;
+
+    // Monotonic frame count for the fallback watchdog (see renderedFrames()).
+    quint64 renderedFrames_ = 0;
 
     // Telemetry counters (see takeTelemetry).
     int telemFrames_ = 0;
