@@ -36,8 +36,15 @@ GpuChartView::GpuChartView(QWidget* parent) : QRhiWidget(parent) {
 #if defined(Q_OS_WIN)
     setApi(QRhiWidget::Api::Direct3D11);
     qCInfo(lcGpu).noquote() << "GpuChartView constructed (api=Direct3D11)";
+#elif defined(Q_OS_MACOS)
+    // Leave the platform default (Metal).
+    qCInfo(lcGpu).noquote() << "GpuChartView constructed (api=default/Metal)";
 #else
-    qCInfo(lcGpu).noquote() << "GpuChartView constructed (api=default)";
+    // Linux/Raspberry Pi: pin OpenGL so the widget requests the same backend the
+    // window's RHI backing store uses, ruling out an API mismatch as a cause of
+    // "QRhiWidget: No QRhi".
+    setApi(QRhiWidget::Api::OpenGL);
+    qCInfo(lcGpu).noquote() << "GpuChartView constructed (api=OpenGL)";
 #endif
 }
 

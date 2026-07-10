@@ -9,6 +9,12 @@
 #include "debug_trace.hpp"
 
 int main(int argc, char** argv) {
+    // Share GL resources across all contexts. The GPU chart layer is a
+    // QRhiWidget composited into the top-level window's RHI backing store; on the
+    // OpenGL path (Linux/Raspberry Pi) that composition is more reliable when
+    // contexts share. Must be set before QApplication is constructed.
+    QApplication::setAttribute(Qt::AA_ShareOpenGLContexts);
+
     // QApplication must come first: we need applicationDirPath() to locate the
     // bundled gdal-data/ folder before initialising GDAL.
     QApplication app(argc, argv);
@@ -26,6 +32,11 @@ int main(int argc, char** argv) {
     // (Key must match settings.cpp's kLogToFile.)
     applog::install();
     applog::setEnabled(QSettings().value(QStringLiteral("system/logToFile"), false).toBool());
+    // One self-describing startup line: which build, Qt version, and QPA platform
+    // (e.g. "wayland" vs "xcb") — the context needed to read a GPU/RHI report.
+    qInfo().noquote() << "Startup:" << appinfo::name() << appinfo::version()
+                      << "| Qt" << qVersion()
+                      << "| platform" << QGuiApplication::platformName();
 
     // Resolve the bundled GDAL data directory (contains s57objectclasses.csv
     // etc.). CMake copies this from the GDAL installation next to the executable
