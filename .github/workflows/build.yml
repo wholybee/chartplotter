@@ -40,11 +40,14 @@ jobs:
         run: |
           set -eux
           apt-get update
+          # qt6-multimedia-dev: the AIS dangerous-target alarm plays its tone
+          # through QSoundEffect, so Qt6::Multimedia is a hard link-time dep.
           apt-get install -y \
             ca-certificates git \
             cmake ninja-build g++ pkg-config \
             qt6-base-dev qt6-base-dev-tools qt6-base-private-dev \
-            qt6-shadertools-dev qt6-websockets-dev libgdal-dev \
+            qt6-shadertools-dev qt6-websockets-dev qt6-multimedia-dev \
+            libgdal-dev \
             dpkg-dev fakeroot apt-utils
 
       - uses: actions/checkout@v4
@@ -206,6 +209,7 @@ jobs:
             ${{ matrix.prefix }}-qt6-base
             ${{ matrix.prefix }}-qt6-shadertools
             ${{ matrix.prefix }}-qt6-websockets
+            ${{ matrix.prefix }}-qt6-multimedia
             ${{ matrix.prefix }}-gdal
             git
             p7zip
@@ -315,11 +319,14 @@ jobs:
         run: |
           set -eux
           apt-get update
+          # qt6-multimedia-dev: the AIS dangerous-target alarm plays its tone
+          # through QSoundEffect, so Qt6::Multimedia is a hard link-time dep.
           apt-get install -y \
             ca-certificates git \
             cmake ninja-build g++ pkg-config \
             qt6-base-dev qt6-base-dev-tools qt6-base-private-dev \
-            qt6-shadertools-dev qt6-websockets-dev libgdal-dev \
+            qt6-shadertools-dev qt6-websockets-dev qt6-multimedia-dev \
+            libgdal-dev \
             dpkg-dev fakeroot
 
       - uses: actions/checkout@v4
