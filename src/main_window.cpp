@@ -39,6 +39,7 @@
 #include "units.hpp"
 #include "cpa_calculator.hpp"
 #include "ais_overlay.hpp"
+#include "ais_alarm.hpp"
 #include "ais_target_info_window.hpp"
 #include "ais_quick_info_window.hpp"
 #include "core_api.hpp"
@@ -197,6 +198,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(settings_, &Settings::depthUnitChanged, view_, &ChartView::setDepthUnit);
     view_->setDistanceUnit(settings_->distanceUnit());
     connect(settings_, &Settings::distanceUnitChanged, view_, &ChartView::setDistanceUnit);
+    // Bearing reference (true/magnetic) drives the route overlay's per-leg heading
+    // labels; repaint when it changes. (Distance-unit changes already repaint via
+    // ChartView::setDistanceUnit relabelling the scale bar.)
+    connect(settings_, &Settings::bearingModeChanged, this,
+            [this](BearingMode) { if (view_) view_->requestRepaint(); });
 
     // Coordinate (lat/lon) display format: update the shared format and refresh
     // the live displays (status-bar cursor + the open routes/waypoints browser).
@@ -284,8 +290,12 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         if (aisOverlay_) aisOverlay_->setVisible(on);
         if (view_) view_->requestRepaint(RepaintReason::Immediate);
     });
-    // Dangerous-ship rules: push the current values into the overlay and keep
-    // them in sync; a change repaints so flags update immediately.
+    // Audible alarm on dangerous targets. Created before the danger-rule sync
+    // below so it receives the initial rules/enable state.
+    aisAlarm_ = new AisAlarm(aisStore_, this);
+
+    // Dangerous-ship rules: push the current values into the overlay (and the
+    // alarm) and keep them in sync; a change repaints so flags update immediately.
     auto applyDangerRules = [this] {
         if (!aisOverlay_) return;
         DangerRules r;
@@ -298,6 +308,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
         r.anchoredSafeEnabled = settings_->dangerAnchoredSafeEnabled();
         r.anchoredSogKn       = settings_->dangerAnchoredSogKn();
         aisOverlay_->setDangerRules(r);
+        if (aisAlarm_) {
+            aisAlarm_->setRules(r);
+            aisAlarm_->setSoundEnabled(settings_->dangerAlarmSound());
+        }
         if (view_) view_->requestRepaint(RepaintReason::Immediate);
     };
     applyDangerRules();
@@ -323,6 +337,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     routeStore_ = new RouteStore(this);
     routeOverlay_ = std::make_unique<RouteOverlay>(routeStore_);
     routeOverlay_->setNavSource(navStore_);   // for the active-waypoint highlight
+    routeOverlay_->setUnitsSource(settings_);  // leg distance/heading label units
     routeOverlay_->setRepaintCallback(
         [this] { if (view_) view_->requestRepaint(RepaintReason::Immediate); });
     routeOverlay_->setWaypointPlacedCallback([this](double lat, double lon) {
@@ -786,12 +801,14 @@ void MainWindow::editDangerousShips() {
                              settings_->dangerCpaEnabled(), settings_->dangerCpaNm(),
                              settings_->dangerTcpaEnabled(), settings_->dangerTcpaMin(),
                              settings_->dangerAnchoredSafeEnabled(), settings_->dangerAnchoredSogKn(),
+                             settings_->dangerAlarmSound(),
                              this);
     if (dlg.exec() == QDialog::Accepted)
         settings_->setDangerousShips(dlg.ignoreFarEnabled(), dlg.ignoreFarNm(),
                                      dlg.cpaEnabled(), dlg.cpaNm(),
                                      dlg.tcpaEnabled(), dlg.tcpaMin(),
-                                     dlg.anchoredSafeEnabled(), dlg.anchoredSogKn());
+                                     dlg.anchoredSafeEnabled(), dlg.anchoredSogKn(),
+                                     dlg.alarmSoundEnabled());
 }
 
 // ---- Routes & Waypoints ----------------------------------------------------

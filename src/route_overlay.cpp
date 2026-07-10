@@ -1,6 +1,9 @@
 #include "route_overlay.hpp"
 #include "route_store.hpp"
 #include "nav_data_store.hpp"
+#include "settings.hpp"
+#include "units.hpp"
+#include "geo_nav.hpp"
 
 #include <QPainter>
 #include <QPen>
@@ -20,6 +23,11 @@ constexpr double kNodeRadius   = 5.0;
 constexpr double kEditNode     = 6.0;
 constexpr double kPickRadiusPx = 18.0;
 constexpr double kActiveRing   = 11.0;   // red highlight around the next waypoint
+// A leg must be at least this long on screen to be worth labelling; shorter legs
+// (e.g. a many-point route seen zoomed out) would just pile labels on top of each
+// other, so they are left unlabelled until the user zooms in.
+constexpr double kMinLegLabelPx = 44.0;
+constexpr double kLegLabelOffset = 12.0;   // px the label sits off the leg line
 const QColor kRouteLine   (0xB0, 0x30, 0xD0);
 const QColor kRouteNode   (0x80, 0x10, 0xA0);
 const QColor kWptFill      (0xFF, 0x8C, 0x00);
@@ -46,12 +54,82 @@ void drawLabel(QPainter& p, const QPointF& at, const QString& text) {
     p.setPen(kLabelFg);
     p.drawText(bg.adjusted(4.0, 0, -4.0, 0), Qt::AlignVCenter | Qt::AlignLeft, text);
 }
+
+// Like drawLabel but centred on `at`, and optionally rotated by `angleDeg`
+// (clockwise, screen space) so the text runs along a route leg. Used for leg
+// labels sitting at a midpoint.
+void drawCenteredLabel(QPainter& p, const QPointF& at, const QString& text,
+                       double angleDeg = 0.0) {
+    if (text.isEmpty()) return;
+    const QFontMetrics fm(p.font());
+    const QRectF tr = fm.boundingRect(text);
+    const double w = tr.width() + 8.0, h = tr.height() + 4.0;
+    p.save();
+    p.translate(at);
+    p.rotate(angleDeg);
+    const QRectF bg(-w / 2.0, -h / 2.0, w, h);   // centred on the rotation origin
+    p.setPen(Qt::NoPen);
+    p.setBrush(kLabelBg);
+    p.drawRoundedRect(bg, 3.0, 3.0);
+    p.setPen(kLabelFg);
+    p.drawText(bg, Qt::AlignCenter, text);
+    p.restore();
+}
+
+// Label one route leg (a -> b) with its distance and compass heading, in the
+// user's chosen units, at the leg's on-screen midpoint. `sa`/`sb` are the leg's
+// screen endpoints; `a`/`b` the geographic ones (distance/bearing are computed on
+// the sphere, not from pixels). Skipped when the leg is too short on screen or its
+// midpoint falls outside the cull rect.
+void drawLegLabel(QPainter& p, const RoutePoint& a, const RoutePoint& b,
+                  const QPointF& sa, const QPointF& sb,
+                  DistanceUnit distUnit, BearingMode brgMode, double variationDeg,
+                  const QRectF& cull) {
+    const QPointF d = sb - sa;
+    const double lenPx = std::hypot(d.x(), d.y());
+    if (lenPx < kMinLegLabelPx) return;
+    const QPointF mid = (sa + sb) * 0.5;
+    if (!cull.contains(mid)) return;
+
+    const double distNm = geonav::distanceNm(a.lat, a.lon, b.lat, b.lon);
+    double brg = geonav::initialBearingDeg(a.lat, a.lon, b.lat, b.lon);
+    if (brgMode == BearingMode::Magnetic)
+        brg = geonav::magneticFromTrue(brg, variationDeg);
+
+    const QString text = units::formatDistance(distNm, distUnit)
+                       + QStringLiteral("   ") + units::formatBearing(brg, brgMode);
+
+    // Run the text along the leg, but flip any leg pointing "backwards" by 180°
+    // so the label is never upside down.
+    double angleDeg = std::atan2(d.y(), d.x()) * geonav::R2D;
+    if (angleDeg > 90.0)       angleDeg -= 180.0;
+    else if (angleDeg < -90.0) angleDeg += 180.0;
+
+    // Offset perpendicular to the leg so the label sits just off the line; keep it
+    // on the upper side on screen regardless of the leg's direction.
+    QPointF perp = QPointF(-d.y(), d.x()) / lenPx;
+    if (perp.y() > 0.0) perp = -perp;
+    drawCenteredLabel(p, mid + perp * kLegLabelOffset, text, angleDeg);
+}
 }  // namespace
 
 void RouteOverlay::repaint() { if (repaint_) repaint_(); }
 
 void RouteOverlay::notifySelection() {
     if (onSelectionChanged_) onSelectionChanged_(hasSelectedNode());
+}
+
+// Local magnetic variation for magnetic-mode leg headings. Prefer a published
+// variation; otherwise derive it from true vs magnetic heading if both are
+// present. Mirrors RouteNavigator's approach so on-chart and navigator headings
+// agree. Falls back to 0 (magnetic == true) when nothing is available.
+double RouteOverlay::magneticVariation() const {
+    if (!nav_) return 0.0;
+    const OwnshipState& os = nav_->ownship();
+    if (os.variationDeg.valid()) return os.variationDeg.value;
+    if (os.headingDegTrue.valid() && os.headingDegMag.valid())
+        return os.headingDegTrue.value - os.headingDegMag.value;
+    return 0.0;
 }
 
 // ---- drawing ---------------------------------------------------------------
@@ -67,6 +145,14 @@ void RouteOverlay::paint(QPainter& p, const ChartViewport& vp) {
     QFont f = p.font();
     f.setPointSizeF(9.0);
     p.setFont(f);
+
+    // Unit preferences for the per-leg distance/heading labels. Read once per
+    // frame; default to nm + true when no settings source is wired.
+    const DistanceUnit distUnit = settings_ ? settings_->distanceUnit()
+                                            : DistanceUnit::NauticalMiles;
+    const BearingMode  brgMode  = settings_ ? settings_->bearingMode()
+                                            : BearingMode::True;
+    const double variation = magneticVariation();
 
     // Saved routes ----------------------------------------------------------
     if (store_) {
@@ -90,6 +176,11 @@ void RouteOverlay::paint(QPainter& p, const ChartViewport& vp) {
             p.setPen(QPen(kRouteLine, 2.0));
             p.setBrush(Qt::NoBrush);
             for (size_t i = 1; i < pts.size(); ++i) p.drawLine(pts[i - 1], pts[i]);
+
+            // Distance + heading of each leg, in the user's chosen units.
+            for (size_t i = 1; i < pts.size(); ++i)
+                drawLegLabel(p, r.points[int(i) - 1], r.points[int(i)],
+                             pts[i - 1], pts[i], distUnit, brgMode, variation, cull);
 
             p.setPen(QPen(QColor(255, 255, 255), 1.0));
             p.setBrush(kRouteNode);
@@ -135,6 +226,11 @@ void RouteOverlay::paint(QPainter& p, const ChartViewport& vp) {
         p.setPen(QPen(kEditLine, 2.5));
         p.setBrush(Qt::NoBrush);
         for (size_t i = 1; i < pts.size(); ++i) p.drawLine(pts[i - 1], pts[i]);
+
+        // Live leg distance + heading as the route is built or reshaped.
+        for (size_t i = 1; i < pts.size(); ++i)
+            drawLegLabel(p, work_.points[int(i) - 1], work_.points[int(i)],
+                         pts[i - 1], pts[i], distUnit, brgMode, variation, cull);
 
         for (int i = 0; i < int(pts.size()); ++i) {
             const bool sel = (i == selected_);

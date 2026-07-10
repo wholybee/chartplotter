@@ -45,6 +45,7 @@ constexpr auto kDangTcpaOn  = "ships/dangerTcpaEnabled";
 constexpr auto kDangTcpaMin = "ships/dangerTcpaMin";
 constexpr auto kDangAnchoredOn  = "ships/dangerAnchoredSafeEnabled";
 constexpr auto kDangAnchoredKn  = "ships/dangerAnchoredSogKn";
+constexpr auto kDangAlarmSound  = "ships/dangerAlarmSound";
 } // namespace
 
 Settings::Settings(QObject* parent) : QObject(parent) {
@@ -109,6 +110,7 @@ Settings::Settings(QObject* parent) : QObject(parent) {
     dangerTcpaMin_     = s.value(QLatin1String(kDangTcpaMin), 30.0).toDouble();
     dangerAnchoredSafeEnabled_ = s.value(QLatin1String(kDangAnchoredOn), true).toBool();
     dangerAnchoredSogKn_       = s.value(QLatin1String(kDangAnchoredKn), 0.1).toDouble();
+    dangerAlarmSound_          = s.value(QLatin1String(kDangAlarmSound), false).toBool();
     loadChartSets();
 
     // Migrate a pre-chart-sets install: if no sets are defined yet but a chart
@@ -262,12 +264,14 @@ void Settings::setRenderBackend(RenderBackend b) {
 void Settings::setDangerousShips(bool ignoreFarEnabled, double ignoreFarNm,
                                  bool cpaEnabled, double cpaNm,
                                  bool tcpaEnabled, double tcpaMin,
-                                 bool anchoredSafeEnabled, double anchoredSogKn) {
+                                 bool anchoredSafeEnabled, double anchoredSogKn,
+                                 bool alarmSoundEnabled) {
     if (ignoreFarEnabled == dangerIgnoreFarEnabled_ && ignoreFarNm == dangerIgnoreFarNm_
         && cpaEnabled == dangerCpaEnabled_ && cpaNm == dangerCpaNm_
         && tcpaEnabled == dangerTcpaEnabled_ && tcpaMin == dangerTcpaMin_
         && anchoredSafeEnabled == dangerAnchoredSafeEnabled_
-        && anchoredSogKn == dangerAnchoredSogKn_)
+        && anchoredSogKn == dangerAnchoredSogKn_
+        && alarmSoundEnabled == dangerAlarmSound_)
         return;
     dangerIgnoreFarEnabled_ = ignoreFarEnabled;
     dangerIgnoreFarNm_      = ignoreFarNm;
@@ -277,6 +281,7 @@ void Settings::setDangerousShips(bool ignoreFarEnabled, double ignoreFarNm,
     dangerTcpaMin_     = tcpaMin;
     dangerAnchoredSafeEnabled_ = anchoredSafeEnabled;
     dangerAnchoredSogKn_       = anchoredSogKn;
+    dangerAlarmSound_          = alarmSoundEnabled;
     QSettings s;
     s.setValue(QLatin1String(kDangIgnoreFarOn), ignoreFarEnabled);
     s.setValue(QLatin1String(kDangIgnoreFarNm), ignoreFarNm);
@@ -286,6 +291,7 @@ void Settings::setDangerousShips(bool ignoreFarEnabled, double ignoreFarNm,
     s.setValue(QLatin1String(kDangTcpaMin), tcpaMin);
     s.setValue(QLatin1String(kDangAnchoredOn), anchoredSafeEnabled);
     s.setValue(QLatin1String(kDangAnchoredKn), anchoredSogKn);
+    s.setValue(QLatin1String(kDangAlarmSound), alarmSoundEnabled);
     emit dangerousShipsChanged();
 }
 

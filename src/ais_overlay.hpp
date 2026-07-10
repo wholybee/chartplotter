@@ -24,6 +24,13 @@ struct DangerRules {
     double anchoredSogKn       = 0.1;  // SOG (knots) at/below which it's anchored
 };
 
+// Whether an AIS target counts as a dangerous vessel under the given rules. This
+// is the single source of truth shared by the overlay (which draws the flag) and
+// the audible alarm (which sounds on it), so the two can never disagree. Only
+// under-way Class A/B vessels are ever dangerous — fixed aids and SAR assets are
+// not collision threats.
+bool aisTargetDangerous(const AisTarget& t, const DangerRules& rules);
+
 // Draws AIS targets on the chart through the overlay API. Each vessel uses the
 // same glyph as ownship (triangle + course-prediction line) but green, dimmed
 // with a cancellation slash when its data is stale. Reads the core AIS store;

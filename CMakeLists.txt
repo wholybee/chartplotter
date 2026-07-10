@@ -9,7 +9,7 @@ if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent Network Sql WebSockets)
+find_package(Qt6 REQUIRED COMPONENTS Widgets Concurrent Network Sql WebSockets Multimedia)
 
 # Prefer GDAL's own CMake config; fall back to pkg-config (e.g. MSYS2).
 find_package(GDAL QUIET)
@@ -242,6 +242,7 @@ qt_add_executable(chartviewer
     src/cpa_calculator.cpp
     src/ais_decoder.cpp
     src/ais_overlay.cpp
+    src/ais_alarm.cpp
     src/about_dialog.cpp
     src/frameless_info_dialog.cpp
     src/layers_dialog.cpp
@@ -290,7 +291,7 @@ if(MSVC)
     )
 endif()
 
-target_link_libraries(chartviewer PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network Qt6::Sql ${QT_GUI_PRIVATE} ${GDAL_LINK})
+target_link_libraries(chartviewer PRIVATE Qt6::Widgets Qt6::Concurrent Qt6::Network Qt6::Sql Qt6::Multimedia ${QT_GUI_PRIVATE} ${GDAL_LINK})
 add_dependencies(chartviewer symbols_bin)
 
 # Stage 7: bake the retained-GPU shaders into the app (same qsb artifacts the

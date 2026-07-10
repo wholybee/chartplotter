@@ -77,8 +77,8 @@ public:
     // the current SOG. Drawn from the bow along the boat's heading.
     double ownshipPredictionMinutes() const { return ownshipPredMin_; }
 
-    // Display units. Depth drives how chart soundings are labelled; distance is
-    // stored for upcoming range/route features and not consumed yet.
+    // Display units. Depth drives how chart soundings are labelled; distance
+    // drives the scale bar and route-leg labels.
     DepthUnit    depthUnit()    const { return depthUnit_; }
     DistanceUnit distanceUnit() const { return distanceUnit_; }
     AngleFormat  angleFormat()  const { return angleFormat_; }
@@ -137,6 +137,8 @@ public:
     double dangerTcpaMin()     const { return dangerTcpaMin_; }
     bool   dangerAnchoredSafeEnabled() const { return dangerAnchoredSafeEnabled_; }
     double dangerAnchoredSogKn()       const { return dangerAnchoredSogKn_; }
+    // Sound an audible alarm while any target is dangerous. Opt-in (default off).
+    bool   dangerAlarmSound() const { return dangerAlarmSound_; }
 
     // Data-source priority: ordered source ids, highest priority first.
     QStringList dataSourcePriority() const { return dataSourcePriority_; }
@@ -173,7 +175,8 @@ public slots:
     void setDangerousShips(bool ignoreFarEnabled, double ignoreFarNm,
                            bool cpaEnabled, double cpaNm,
                            bool tcpaEnabled, double tcpaMin,
-                           bool anchoredSafeEnabled, double anchoredSogKn);
+                           bool anchoredSafeEnabled, double anchoredSogKn,
+                           bool alarmSoundEnabled);
 
 signals:
     void selectedDirectoriesChanged(const QStringList& dirs);
@@ -256,4 +259,5 @@ private:
     double dangerTcpaMin_     = 30.0;
     bool   dangerAnchoredSafeEnabled_ = true;   // suppress flags on stationary vessels
     double dangerAnchoredSogKn_       = 0.1;     // SOG (kn) at/below which it's anchored
+    bool   dangerAlarmSound_          = false;   // audible alarm (opt-in)
 };

@@ -15,6 +15,7 @@ public:
                          bool cpaEnabled, double cpaNm,
                          bool tcpaEnabled, double tcpaMin,
                          bool anchoredSafeEnabled, double anchoredSogKn,
+                         bool alarmSoundEnabled,
                          QWidget* parent = nullptr);
 
     bool   ignoreFarEnabled() const;
@@ -25,6 +26,7 @@ public:
     double tcpaMin()     const;
     bool   anchoredSafeEnabled() const;
     double anchoredSogKn()       const;
+    bool   alarmSoundEnabled()   const;
 
 private:
     QCheckBox*    ignoreFarCheck_ = nullptr;
@@ -35,4 +37,5 @@ private:
     TouchSpinBox* tcpaBox_ = nullptr;
     QCheckBox*    anchoredCheck_ = nullptr;
     TouchSpinBox* anchoredSogBox_ = nullptr;
+    QCheckBox*    alarmCheck_ = nullptr;
 };

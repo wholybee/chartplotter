@@ -16,6 +16,7 @@ class SideMenu;
 class NavDataStore;
 class AisTargetStore;
 class CpaCalculator;
+class AisAlarm;
 class NavDataBrowserWindow;
 class AisOverlay;
 class AisTargetInfoWindow;
@@ -150,6 +151,7 @@ private:
     NavDataStore* navStore_ = nullptr;
     AisTargetStore* aisStore_ = nullptr;
     CpaCalculator* cpaCalc_ = nullptr;   // keeps target CPA/TCPA up to date
+    AisAlarm*      aisAlarm_ = nullptr;  // audible alarm on dangerous targets
     NavDataBrowserWindow* navBrowser_ = nullptr;
     std::unique_ptr<AisOverlay>    aisOverlay_;  // core-owned AIS chart overlay
     // Open AIS info windows, keyed by MMSI; QPointer auto-clears on close

@@ -180,10 +180,9 @@ void AisOverlay::paint(QPainter& p, const ChartViewport& vp) {
         // screen-up). No-op when north-up.
         if (headingDeg && vp.upDegrees != 0.0) headingDeg = *headingDeg - vp.upDegrees;
 
-        // CPA danger flagging is for vessels under way — a fixed aid or a SAR
-        // asset is never treated as a collision threat.
-        const bool danger = (t.cls == AisClass::A || t.cls == AisClass::B)
-                            && isDangerous(t);
+        // isDangerous() already gates on class (only under-way Class A/B vessels
+        // are collision threats).
+        const bool danger = isDangerous(t);
         if (danger) {
             drawDangerHighlight(p, pos, vesselScale_);
             // CPA encounter graphics need a future encounter (TCPA still
@@ -226,37 +225,45 @@ void AisOverlay::paint(QPainter& p, const ChartViewport& vp) {
     }
 }
 
-bool AisOverlay::isDangerous(const AisTarget& t) const {
+bool aisTargetDangerous(const AisTarget& t, const DangerRules& rules) {
+    // CPA danger flagging is for vessels under way — a fixed aid or a SAR asset is
+    // never treated as a collision threat.
+    if (t.cls != AisClass::A && t.cls != AisClass::B) return false;
+
     // CPA is the base trigger; with it off, nothing is flagged dangerous.
-    if (!danger_.cpaEnabled || !t.cpaMeters) return false;
+    if (!rules.cpaEnabled || !t.cpaMeters) return false;
 
     // Anchored pre-filter: a vessel sitting still is no collision threat, so
     // never flag it. Anchored = AIS nav status "At anchor", or SOG at/below the
     // configured threshold (which also catches moored/berthed vessels broadcast-
     // ing other statuses). This clears the false-positive swarm in a marina.
-    if (danger_.anchoredSafeEnabled
+    if (rules.anchoredSafeEnabled
         && (t.navStatus == AisNavStatus::AtAnchor
-            || (t.sogKnots && *t.sogKnots <= danger_.anchoredSogKn)))
+            || (t.sogKnots && *t.sogKnots <= rules.anchoredSogKn)))
         return false;
 
     // Far-away pre-filter: a target beyond the range limit is never dangerous,
     // however close its (geometric) CPA may be.
-    if (danger_.ignoreFarEnabled && t.rangeMeters
-        && *t.rangeMeters > danger_.ignoreFarNm * kMetresPerNm)
+    if (rules.ignoreFarEnabled && t.rangeMeters
+        && *t.rangeMeters > rules.ignoreFarNm * kMetresPerNm)
         return false;
 
     // CPA must be inside the limit.
-    if (*t.cpaMeters >= danger_.cpaNm * kMetresPerNm) return false;
+    if (*t.cpaMeters >= rules.cpaNm * kMetresPerNm) return false;
 
     // Optional TCPA gate: the closest approach must be ahead (TCPA >= 0; a
     // negative value means it has already passed and the target is opening) and
     // within the time window.
-    if (danger_.tcpaEnabled) {
+    if (rules.tcpaEnabled) {
         if (!t.tcpaSeconds) return false;
         const double tcpa = *t.tcpaSeconds;
-        if (tcpa < 0.0 || tcpa >= danger_.tcpaMin * kSecondsPerMin) return false;
+        if (tcpa < 0.0 || tcpa >= rules.tcpaMin * kSecondsPerMin) return false;
     }
     return true;
+}
+
+bool AisOverlay::isDangerous(const AisTarget& t) const {
+    return aisTargetDangerous(t, danger_);
 }
 
 bool AisOverlay::hitTest(const QPointF& screenPt) {

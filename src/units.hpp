@@ -36,7 +36,7 @@ inline QString depthUnitLabel(DepthUnit u) {
                                   : QStringLiteral("Feet (ft)");
 }
 
-// ---- distance (not yet consumed; stored for upcoming range/route work) -----
+// ---- distance --------------------------------------------------------------
 
 inline QString distanceUnitKey(DistanceUnit u) {
     switch (u) {
@@ -60,6 +60,30 @@ inline QString distanceUnitLabel(DistanceUnit u) {
         case DistanceUnit::NauticalMiles: break;
     }
     return QStringLiteral("Nautical miles (nm)");
+}
+
+// Conversion factors from nautical miles. The metres-per-unit these imply match
+// the scale bar in ChartView (1 nm = 1852 m, 1 statute mile = 1609.344 m,
+// 1 km = 1000 m), so on-chart distances stay consistent across the app.
+constexpr double kNmToStatuteMiles = 1852.0 / 1609.344;   // ~1.150779
+constexpr double kNmToKilometers   = 1.852;
+
+inline double distanceFromNm(double nm, DistanceUnit u) {
+    switch (u) {
+        case DistanceUnit::StatuteMiles: return nm * kNmToStatuteMiles;
+        case DistanceUnit::Kilometers:   return nm * kNmToKilometers;
+        case DistanceUnit::NauticalMiles: break;
+    }
+    return nm;
+}
+
+// Format a distance (given in nautical miles) in the user's selected unit, with a
+// short suffix ("nm"/"mi"/"km"). Precision adapts to magnitude so short legs keep
+// useful resolution without over-cluttering long ones.
+inline QString formatDistance(double nm, DistanceUnit u) {
+    const double v = distanceFromNm(nm, u);
+    const int prec = v < 10.0 ? 2 : (v < 100.0 ? 1 : 0);
+    return QString::number(v, 'f', prec) + QLatin1Char(' ') + distanceUnitKey(u);
 }
 
 // ---- coordinate (lat/lon) display format -----------------------------------
@@ -105,6 +129,20 @@ inline BearingMode bearingModeFromKey(const QString& s,
 inline QString bearingModeLabel(BearingMode b) {
     return b == BearingMode::Magnetic ? QStringLiteral("Magnetic")
                                       : QStringLiteral("True");
+}
+
+// Format a bearing/heading in degrees as a 3-digit compass value with a degree
+// sign and a reference letter — "045°T" (true) or "127°M" (magnetic). The caller
+// supplies the value already in the desired reference; `mode` only selects the
+// suffix. The input is normalised to [0, 360).
+inline QString formatBearing(double deg, BearingMode mode) {
+    double d = std::fmod(deg, 360.0);
+    if (d < 0.0) d += 360.0;
+    int di = int(d + 0.5);            // round to whole degrees
+    if (di >= 360) di -= 360;         // 359.7 rounds up to 360 -> 000
+    const QChar D(0x00B0);
+    const QChar ref = (mode == BearingMode::Magnetic) ? QLatin1Char('M') : QLatin1Char('T');
+    return QStringLiteral("%1").arg(di, 3, 10, QLatin1Char('0')) + D + ref;
 }
 
 // Process-wide current coordinate format. An inline function-local static gives a

@@ -44,10 +44,11 @@ DangerousShipsDialog::DangerousShipsDialog(bool ignoreFarEnabled, double ignoreF
                                            bool cpaEnabled, double cpaNm,
                                            bool tcpaEnabled, double tcpaMin,
                                            bool anchoredSafeEnabled, double anchoredSogKn,
+                                           bool alarmSoundEnabled,
                                            QWidget* parent)
     : QDialog(parent) {
     setWindowTitle(QStringLiteral("Dangerous Ships"));
-    resize(460, 600);
+    resize(460, 680);
 
     const theme::MenuPalette& t = theme::menu();
     auto* panelCol = dialogchrome::setup(this, QStringLiteral("Dangerous Ships"));
@@ -156,6 +157,27 @@ DangerousShipsDialog::DangerousShipsDialog(bool ignoreFarEnabled, double ignoreF
     connect(anchoredCheck_, &QCheckBox::toggled, this, [syncAnchored](bool) { syncAnchored(); });
     syncAnchored();
 
+    col->addWidget(makeDivider());
+
+    // ---- Audible alarm ------------------------------------------------------
+    // Sound a repeating beep whenever a target is dangerous, loud enough to wake
+    // a resting watchkeeper. Off by default.
+    alarmCheck_ = new QCheckBox(QStringLiteral("Sound an alarm when a ship is dangerous"));
+    alarmCheck_->setStyleSheet(QStringLiteral("font-size:14px; color:%1;").arg(t.actionFg));
+    alarmCheck_->setChecked(alarmSoundEnabled);
+    col->addWidget(alarmCheck_);
+
+    auto* alarmHint = new QLabel(
+        QStringLiteral("Repeats until no dangerous ship remains."));
+    alarmHint->setWordWrap(true);
+    alarmHint->setStyleSheet(QStringLiteral("font-size:12px; color:%1;").arg(theme::textMuted()));
+    {
+        auto* alarmIndent = new QVBoxLayout;
+        alarmIndent->setContentsMargins(24, 0, 0, 0);
+        alarmIndent->addWidget(alarmHint);
+        col->addLayout(alarmIndent);
+    }
+
     col->addStretch(1);
     panelCol->addWidget(body, 1);
     panelCol->addWidget(dialogchrome::okCancelRow(this));
@@ -169,3 +191,4 @@ bool   DangerousShipsDialog::tcpaEnabled() const { return tcpaCheck_->isChecked(
 double DangerousShipsDialog::tcpaMin()     const { return tcpaBox_->value(); }
 bool   DangerousShipsDialog::anchoredSafeEnabled() const { return anchoredCheck_->isChecked(); }
 double DangerousShipsDialog::anchoredSogKn()       const { return anchoredSogBox_->value(); }
+bool   DangerousShipsDialog::alarmSoundEnabled()   const { return alarmCheck_->isChecked(); }

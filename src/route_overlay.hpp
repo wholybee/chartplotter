@@ -6,6 +6,7 @@
 
 class RouteStore;
 class NavDataStore;
+class Settings;
 
 // Identifies a saved route or waypoint that the user tapped on the chart. Used
 // by the click callback so the host (MainWindow) can pop a quick-info window.
@@ -38,8 +39,14 @@ public:
     explicit RouteOverlay(const RouteStore* store) : store_(store) {}
 
     // Optional read-only nav source: when a route is being navigated, the active
-    // (next) waypoint from its NavigationData is highlighted with a red ring.
+    // (next) waypoint from its NavigationData is highlighted with a red ring. Also
+    // supplies the magnetic variation used to show leg headings in magnetic mode.
     void setNavSource(const NavDataStore* nav) { nav_ = nav; }
+
+    // Optional units source: the distance unit and true/magnetic bearing
+    // preference used to label each route leg with its distance and heading.
+    // Without it, labels default to nautical miles and true bearings.
+    void setUnitsSource(const Settings* settings) { settings_ = settings; }
 
     // Callbacks into the host (MainWindow). All optional.
     void setRepaintCallback(std::function<void()> cb) { repaint_ = std::move(cb); }
@@ -83,9 +90,13 @@ private:
     int  nodeAt(const QPointF& screenPt) const;   // index in work_.points, or -1
     void notifySelection();
     void repaint();
+    // Local magnetic variation (easterly positive) from the nav source, for
+    // converting leg headings to magnetic. 0 when unavailable.
+    double magneticVariation() const;
 
     const RouteStore*   store_ = nullptr;
     const NavDataStore* nav_   = nullptr;   // for the active-waypoint highlight
+    const Settings*     settings_ = nullptr;   // for leg distance/heading units
     ChartViewport     vp_;
     bool              haveVp_ = false;
 
