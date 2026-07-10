@@ -1,13 +1,17 @@
 #include "ais_quick_info_window.hpp"
 #include "ais_target_store.hpp"
+#include "ais_alarm.hpp"
 #include "theme.hpp"
 
 #include <QVBoxLayout>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QPushButton>
 
 AisQuickInfoWindow::AisQuickInfoWindow(quint32 mmsi, const AisTargetStore* store,
-                                       QWidget* parent)
-    : QFrame(parent, Qt::Tool | Qt::FramelessWindowHint), mmsi_(mmsi), store_(store) {
+                                       AisAlarm* alarm, QWidget* parent)
+    : QFrame(parent, Qt::Tool | Qt::FramelessWindowHint),
+      mmsi_(mmsi), store_(store), alarm_(alarm) {
     // Show without grabbing focus so the chart keeps receiving the clicks/pans
     // that dismiss this popup, and delete on close so the caller's QPointer clears.
     setAttribute(Qt::WA_ShowWithoutActivating, true);
@@ -21,9 +25,26 @@ AisQuickInfoWindow::AisQuickInfoWindow(quint32 mmsi, const AisTargetStore* store
     col->setContentsMargins(12, 8, 12, 8);
     col->setSpacing(2);
 
+    // Title row: name on the left, a close (X) button pinned to the top-right —
+    // the popup's only explicit dismiss (chart interaction also closes it).
+    auto* titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(8);
     titleLabel_ = new QLabel(this);
     titleLabel_->setStyleSheet(QStringLiteral("font-size:14px; font-weight:600;"));
-    col->addWidget(titleLabel_);
+    titleRow->addWidget(titleLabel_, 1);
+
+    auto* closeBtn = new QPushButton(QString(QChar(0x2715)), this);   // U+2715 MULTIPLICATION X
+    closeBtn->setFixedSize(26, 26);
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    closeBtn->setStyleSheet(QStringLiteral(
+        "QPushButton{ border:none; background:transparent; color:%1;"
+        " font-size:15px; font-weight:600; }"
+        "QPushButton:pressed{ color:%2; }")
+        .arg(theme::textMuted(), theme::menu().actionFg));
+    connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
+    titleRow->addWidget(closeBtn, 0, Qt::AlignTop);
+    col->addLayout(titleRow);
 
     cogLabel_ = new QLabel(this);
     sogLabel_ = new QLabel(this);
@@ -38,6 +59,20 @@ AisQuickInfoWindow::AisQuickInfoWindow(quint32 mmsi, const AisTargetStore* store
     col->addWidget(cpaLabel_);
     col->addWidget(tcpaLabel_);
 
+    // Mute/acknowledge: only shown for a dangerous target while the alarm is on.
+    // Amber to read as an alarm control, distinct from the info text above.
+    muteBtn_ = new QPushButton(this);
+    muteBtn_->setStyleSheet(QStringLiteral(
+        "QPushButton{ min-height:34px; margin-top:6px; font-weight:600; color:white;"
+        " background:#d9822b; border-radius:4px; padding:0 12px; }"
+        "QPushButton:disabled{ background:#7a5a33; color:#e0e0e0; }"));
+    muteBtn_->setVisible(false);
+    col->addWidget(muteBtn_);
+    connect(muteBtn_, &QPushButton::clicked, this, [this] {
+        if (alarm_) alarm_->acknowledge(mmsi_);
+        refresh();
+    });
+
     if (store_) {
         connect(store_, &AisTargetStore::targetUpdated, this, [this](quint32 m) {
             if (m == mmsi_) refresh();
@@ -47,6 +82,10 @@ AisQuickInfoWindow::AisQuickInfoWindow(quint32 mmsi, const AisTargetStore* store
             if (m == mmsi_) close();
         });
     }
+    // Danger/mute state can change without a store update (auto-unmute, another
+    // popup acknowledging); refresh the button when it does.
+    if (alarm_)
+        connect(alarm_, &AisAlarm::stateChanged, this, &AisQuickInfoWindow::refresh);
     refresh();
 }
 
@@ -84,6 +123,17 @@ void AisQuickInfoWindow::refresh() {
             QString::number(*t->cpaMeters / 1852.0, 'f', 2)));
         tcpaLabel_->setText(QStringLiteral("TCPA: %1").arg(
             aisFormatTcpa(*t->tcpaSeconds)));
+    }
+
+    // Mute button: present only while this target is a dangerous one that the
+    // audible alarm would sound on. Once muted it stays visible (disabled,
+    // reading "Muted") so the user can see the alarm is acknowledged.
+    const bool showMute = t && alarm_ && alarm_->soundEnabled() && alarm_->isDangerous(mmsi_);
+    muteBtn_->setVisible(showMute);
+    if (showMute) {
+        const bool muted = alarm_->isAcknowledged(mmsi_);
+        muteBtn_->setText(muted ? QStringLiteral("Muted") : QStringLiteral("Mute alarm"));
+        muteBtn_->setEnabled(!muted);
     }
 
     adjustSize();

@@ -27,9 +27,28 @@ RouteQuickInfoWindow::RouteQuickInfoWindow(ClickedRouteObject::Kind kind, qint64
     col->setContentsMargins(12, 8, 12, 10);
     col->setSpacing(4);
 
+    // Title row: name on the left, a close (X) button pinned to the top-right —
+    // the popup's explicit dismiss (chart interaction also closes it).
+    auto* titleRow = new QHBoxLayout;
+    titleRow->setContentsMargins(0, 0, 0, 0);
+    titleRow->setSpacing(8);
     titleLabel_ = new QLabel(this);
     titleLabel_->setStyleSheet(QStringLiteral("font-size:15px; font-weight:600;"));
-    col->addWidget(titleLabel_);
+    titleRow->addWidget(titleLabel_, 1);
+
+    auto* closeBtn = new QPushButton(QString(QChar(0x2715)), this);   // U+2715 MULTIPLICATION X
+    closeBtn->setFixedSize(26, 26);
+    closeBtn->setCursor(Qt::PointingHandCursor);
+    // Override this window's global QPushButton rule (min-height/padding) so the X
+    // stays compact in the corner.
+    closeBtn->setStyleSheet(QStringLiteral(
+        "QPushButton{ min-height:0; padding:0; border:none; background:transparent;"
+        " color:%1; font-size:15px; font-weight:600; }"
+        "QPushButton:pressed{ color:%2; }")
+        .arg(theme::textMuted(), theme::menu().actionFg));
+    connect(closeBtn, &QPushButton::clicked, this, &QWidget::close);
+    titleRow->addWidget(closeBtn, 0, Qt::AlignTop);
+    col->addLayout(titleRow);
 
     subLabel_ = new QLabel(this);
     subLabel_->setStyleSheet(QStringLiteral("font-size:13px;"));

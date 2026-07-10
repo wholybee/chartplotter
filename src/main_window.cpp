@@ -1503,7 +1503,7 @@ void MainWindow::showAisTarget(quint32 mmsi) {
     // First click (or a click on a different target): show the quick-look popup
     // near the cursor, replacing any popup already up for another target.
     if (aisQuickInfo_) aisQuickInfo_->close();
-    auto* q = new AisQuickInfoWindow(mmsi, aisStore_, this);
+    auto* q = new AisQuickInfoWindow(mmsi, aisStore_, aisAlarm_, this);
     aisQuickInfo_     = q;
     aisQuickInfoMmsi_ = mmsi;
     q->move(QCursor::pos() + QPoint(14, 14));

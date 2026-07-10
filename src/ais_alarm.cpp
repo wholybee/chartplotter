@@ -106,18 +106,49 @@ void AisAlarm::setRules(const DangerRules& rules) {
 void AisAlarm::setSoundEnabled(bool on) {
     if (on == soundEnabled_) return;
     soundEnabled_ = on;
+    // Turning the alarm off drops any mutes so a later re-enable starts clean.
+    if (!on && !acked_.isEmpty()) {
+        acked_.clear();
+        emit stateChanged();
+    }
     reevaluate();
 }
 
-void AisAlarm::reevaluate() {
-    if (soundEnabled_ && anyDangerous()) startSound();
-    else                                 stopSound();
+bool AisAlarm::isDangerous(quint32 mmsi) const {
+    const AisTarget* t = store_ ? store_->target(mmsi) : nullptr;
+    return t && aisTargetDangerous(*t, rules_);
 }
 
-bool AisAlarm::anyDangerous() const {
+void AisAlarm::acknowledge(quint32 mmsi) {
+    // Only a currently-dangerous target can be muted.
+    if (acked_.contains(mmsi) || !isDangerous(mmsi)) return;
+    acked_.insert(mmsi);
+    emit stateChanged();
+    reevaluate();          // may silence the alarm now
+}
+
+void AisAlarm::reevaluate() {
+    // Auto-unmute any target that is no longer dangerous, so a fresh dangerous
+    // crossing alarms again.
+    pruneAcknowledged();
+    if (soundEnabled_ && shouldSound()) startSound();
+    else                                stopSound();
+}
+
+void AisAlarm::pruneAcknowledged() {
+    if (acked_.isEmpty()) return;
+    bool changed = false;
+    for (auto it = acked_.begin(); it != acked_.end(); ) {
+        if (isDangerous(*it)) { ++it; }
+        else { it = acked_.erase(it); changed = true; }
+    }
+    if (changed) emit stateChanged();
+}
+
+bool AisAlarm::shouldSound() const {
     if (!store_) return false;
     for (const AisTarget& t : store_->targets())
-        if (aisTargetDangerous(t, rules_)) return true;
+        if (aisTargetDangerous(t, rules_) && !acked_.contains(t.mmsi)) return true;
     return false;
 }
 
