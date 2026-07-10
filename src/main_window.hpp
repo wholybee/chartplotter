@@ -24,6 +24,7 @@ class AisQuickInfoWindow;
 class AisTargetListDialog;
 class RouteStore;
 class RouteNavigator;
+class TrackRecorder;
 class NavDisplayWindow;
 class RouteOverlay;
 class RouteWaypointDialog;
@@ -66,6 +67,7 @@ private slots:
     void editOwnshipMmsi();
     void editHeadingSource();
     void editDangerousShips();
+    void editTracking();
     void showAisTargetList();
     void showAbout();
     // Routes & Waypoints.
@@ -77,6 +79,8 @@ private slots:
     void showRouteWaypointList();             // open the combined tabbed browser
     void openRouteProperties(qint64 id);     // from the Routes tab "Properties"
     void openWaypointProperties(qint64 id);  // from the Waypoints tab "Properties"
+    void openTrackProperties(qint64 id);     // from the Tracks tab "Properties"
+    void copyTrackToRoute(qint64 id);        // from the Tracks tab "Copy to Route"
     void publishOwnshipToView();
     void onCursorMoved(double lon, double lat);
     void onScanProgress(int done, int total);
@@ -88,9 +92,13 @@ private:
     void rescanSelected();       // (re)load all currently-selected chart sets
     void refreshChartStatus();   // compose status from ENC + raster results
     void positionMenuButton();
-    void positionLayersButton();  // stack the Layers button under the "+" button
+    void positionSettingsButton();// stack the gear button under the menu button
+    void positionLayersButton();  // stack the Layers button under the Add button
     void showLayersDialog();      // open the floating layer-toggle panel
-    void positionCourseUpButton();// stack the Course-Up button under Layers
+    void positionTrackButton();   // stack the Track-record button under Layers
+    void syncTrackButton(bool on);          // reflect recording on/off on the button
+    void refreshTrackIcon();                // repaint the trail glyph (colour)
+    void positionCourseUpButton();// stack the Course-Up button under the Track button
     void syncCourseUpButton(bool on);       // reflect course-up on/off on the button
     void setCompassHeading(double upDegrees);// rotate the needle to true north
     void refreshCompassIcon();               // repaint the needle (colour + angle)
@@ -134,10 +142,10 @@ private:
     // tapped waypoint; the "Navigating" menu checkbox mirrors and can stop/resume.
     void startNavigation(qint64 routeId, int destIndex = -1);
     void onNavigatingToggled(bool on);
-    // Long-press on the chart and the floating "+" button both open a small
+    // Long-press on the chart and the floating Add button both open a small
     // popup at `globalPt`. When `atPoint` is true (long-press) the menu reads
     // "New waypoint here" / "Start route here" and the object is placed at
-    // `screenPt` immediately. When false (the "+" button, which has no chart
+    // `screenPt` immediately. When false (the Add button, which has no chart
     // position) it reads "New waypoint" / "New route" and the next chart tap
     // places the first point.
     void onChartLongPressed(const QPointF& screenPt);
@@ -170,6 +178,7 @@ private:
     // Routes & Waypoints -----------------------------------------------------
     RouteStore* routeStore_ = nullptr;
     RouteNavigator* navigator_ = nullptr;   // route-following engine (child QObject)
+    TrackRecorder* trackRecorder_ = nullptr;  // ownship track recorder (child QObject)
     NavDisplayWindow* navDisplay_ = nullptr;  // floating readout over the chart
     std::unique_ptr<RouteOverlay> routeOverlay_;
     QPointer<RouteWaypointDialog> routeWptDlg_;
@@ -190,10 +199,12 @@ private:
     std::unique_ptr<CoreApi>       coreApi_;     // plugin-facing core services
     std::unique_ptr<PluginManager> plugins_;     // owns built-in plugins
     QPushButton*  menuButton_ = nullptr;
-    QPushButton*  addButton_  = nullptr;   // floating "+" next to menu button
-    QPushButton*  layersButton_ = nullptr; // floating layers toggle, under "+"
+    QPushButton*  settingsButton_ = nullptr; // floating gear, under the menu button
+    QPushButton*  addButton_  = nullptr;   // floating Add (new route) button
+    QPushButton*  layersButton_ = nullptr; // floating layers toggle, under Add
     QPointer<LayersDialog> layersDlg_;     // floating layer-toggle panel (one at a time)
-    QPushButton*  courseUpButton_ = nullptr; // floating course-up toggle, under Layers
+    QPushButton*  trackButton_ = nullptr;    // floating track-record toggle, under Layers
+    QPushButton*  courseUpButton_ = nullptr; // floating course-up toggle, under Track
     double        courseUpAngle_ = 0.0;      // bearing at screen-top (for the needle)
     // Quick-look popup for a tapped saved route/waypoint. One at a time; chart
     // interaction dismisses it. QPointer clears when it self-deletes.

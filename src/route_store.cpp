@@ -66,6 +66,15 @@ bool RouteStore::createSchema(QString& err) {
         " seq INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, name TEXT)",
         "CREATE INDEX IF NOT EXISTS idx_route_points_route"
         " ON route_points(route_id, seq)",
+        "CREATE TABLE IF NOT EXISTS tracks("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, description TEXT,"
+        " created TEXT, visible INTEGER NOT NULL DEFAULT 1)",
+        "CREATE TABLE IF NOT EXISTS track_points("
+        " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+        " track_id INTEGER NOT NULL REFERENCES tracks(id) ON DELETE CASCADE,"
+        " seq INTEGER NOT NULL, lat REAL NOT NULL, lon REAL NOT NULL, time TEXT)",
+        "CREATE INDEX IF NOT EXISTS idx_track_points_track"
+        " ON track_points(track_id, seq)",
     };
     for (const char* ddl : kDdl) {
         QSqlQuery q(db_);
@@ -77,6 +86,7 @@ bool RouteStore::createSchema(QString& err) {
 void RouteStore::loadAll() {
     waypoints_.clear();
     routes_.clear();
+    tracks_.clear();
 
     QSqlQuery wq(db_);
     if (wq.exec(QStringLiteral("SELECT id,name,lat,lon,symbol,description,created,visible"
@@ -124,11 +134,46 @@ void RouteStore::loadAll() {
             }
         }
     }
+
+    QSqlQuery tq(db_);
+    if (tq.exec(QStringLiteral("SELECT id,name,description,created,visible"
+                               " FROM tracks ORDER BY id"))) {
+        while (tq.next()) {
+            Track t;
+            t.id          = tq.value(0).toLongLong();
+            t.name        = tq.value(1).toString();
+            t.description = tq.value(2).toString();
+            t.createdUtc  = QDateTime::fromString(tq.value(3).toString(), Qt::ISODate);
+            t.visible     = tq.value(4).toInt() != 0;
+            tracks_.push_back(std::move(t));
+        }
+    }
+    for (Track& t : tracks_) {
+        QSqlQuery pq(db_);
+        pq.prepare(QStringLiteral("SELECT lat,lon,time FROM track_points"
+                                  " WHERE track_id=? ORDER BY seq"));
+        pq.addBindValue(t.id);
+        if (pq.exec()) {
+            while (pq.next()) {
+                TrackPoint p;
+                p.lat     = pq.value(0).toDouble();
+                p.lon     = pq.value(1).toDouble();
+                p.timeUtc = QDateTime::fromString(pq.value(2).toString(), Qt::ISODate);
+                t.points.push_back(std::move(p));
+            }
+        }
+    }
 }
 
 const Route* RouteStore::route(qint64 id) const {
     for (const Route& r : routes_)
         if (r.id == id) return &r;
+    return nullptr;
+}
+
+const Track* RouteStore::track(qint64 id) const {
+    for (const Track& t : tracks_)
+        if (t.id == id) return &t;
     return nullptr;
 }
 
@@ -161,6 +206,14 @@ QString RouteStore::nextWaypointName() const {
     names.reserve(waypoints_.size());
     for (const Waypoint& w : waypoints_) names.push_back(w.name);
     return QStringLiteral("Waypoint %1").arg(highestNumberedSuffix(names, QStringLiteral("Waypoint ")) + 1);
+}
+
+QString RouteStore::trackNameFor(const QDateTime& createdUtc) {
+    // Local time: the skipper reads this against the clock in the cockpit, not
+    // against UTC. Year-first so the list sorts chronologically by name too.
+    const QDateTime local = createdUtc.isValid() ? createdUtc.toLocalTime()
+                                                 : QDateTime::currentDateTime();
+    return local.toString(QStringLiteral("yyyy-MM-dd hh:mm"));
 }
 
 // ---- waypoints -------------------------------------------------------------
@@ -315,4 +368,101 @@ void RouteStore::removeRoute(qint64 id) {
     for (int i = 0; i < routes_.size(); ++i)
         if (routes_[i].id == id) { routes_.remove(i); break; }
     emit routesChanged();
+}
+
+// ---- tracks ----------------------------------------------------------------
+
+qint64 RouteStore::addTrack(Track t) {
+    if (!ok_) return -1;
+    if (!t.createdUtc.isValid()) t.createdUtc = QDateTime::currentDateTimeUtc();
+    db_.transaction();
+    QSqlQuery q(db_);
+    q.prepare(QStringLiteral("INSERT INTO tracks(name,description,created,visible)"
+                             " VALUES(?,?,?,?)"));
+    q.addBindValue(t.name);
+    q.addBindValue(t.description);
+    q.addBindValue(isoOrNull(t.createdUtc));
+    q.addBindValue(t.visible ? 1 : 0);
+    if (!q.exec()) { qWarning() << "addTrack:" << q.lastError().text(); db_.rollback(); return -1; }
+    t.id = q.lastInsertId().toLongLong();
+
+    for (int i = 0; i < t.points.size(); ++i) {
+        QSqlQuery pq(db_);
+        pq.prepare(QStringLiteral("INSERT INTO track_points(track_id,seq,lat,lon,time)"
+                                  " VALUES(?,?,?,?,?)"));
+        pq.addBindValue(t.id);
+        pq.addBindValue(i);
+        pq.addBindValue(t.points[i].lat);
+        pq.addBindValue(t.points[i].lon);
+        pq.addBindValue(isoOrNull(t.points[i].timeUtc));
+        if (!pq.exec()) { qWarning() << "addTrack pt:" << pq.lastError().text(); db_.rollback(); return -1; }
+    }
+    db_.commit();
+    tracks_.push_back(t);
+    emit tracksChanged();
+    return t.id;
+}
+
+bool RouteStore::appendTrackPoint(qint64 trackId, const TrackPoint& p) {
+    if (!ok_) return false;
+    Track* t = nullptr;
+    for (Track& cur : tracks_)
+        if (cur.id == trackId) { t = &cur; break; }
+    if (!t) return false;   // deleted underneath us (e.g. from the Tracks tab)
+
+    QSqlQuery q(db_);
+    q.prepare(QStringLiteral("INSERT INTO track_points(track_id,seq,lat,lon,time)"
+                             " VALUES(?,?,?,?,?)"));
+    q.addBindValue(trackId);
+    q.addBindValue(t->points.size());   // points are append-only, so size == next seq
+    q.addBindValue(p.lat);
+    q.addBindValue(p.lon);
+    q.addBindValue(isoOrNull(p.timeUtc));
+    if (!q.exec()) { qWarning() << "appendTrackPoint:" << q.lastError().text(); return false; }
+    t->points.push_back(p);
+    emit tracksChanged();
+    return true;
+}
+
+// Points are owned by the recorder, so this writes only the editable metadata.
+void RouteStore::updateTrack(const Track& t) {
+    if (!ok_ || t.id < 0) return;
+    QSqlQuery q(db_);
+    q.prepare(QStringLiteral("UPDATE tracks SET name=?,description=?,visible=? WHERE id=?"));
+    q.addBindValue(t.name);
+    q.addBindValue(t.description);
+    q.addBindValue(t.visible ? 1 : 0);
+    q.addBindValue(t.id);
+    if (!q.exec()) { qWarning() << "updateTrack:" << q.lastError().text(); return; }
+    for (Track& cur : tracks_)
+        if (cur.id == t.id) {
+            cur.name = t.name;
+            cur.description = t.description;
+            cur.visible = t.visible;
+            break;
+        }
+    emit tracksChanged();
+}
+
+void RouteStore::setTrackVisible(qint64 id, bool on) {
+    if (!ok_) return;
+    QSqlQuery q(db_);
+    q.prepare(QStringLiteral("UPDATE tracks SET visible=? WHERE id=?"));
+    q.addBindValue(on ? 1 : 0);
+    q.addBindValue(id);
+    if (!q.exec()) return;
+    for (Track& t : tracks_)
+        if (t.id == id) { t.visible = on; break; }
+    emit tracksChanged();
+}
+
+void RouteStore::removeTrack(qint64 id) {
+    if (!ok_) return;
+    QSqlQuery q(db_);
+    q.prepare(QStringLiteral("DELETE FROM tracks WHERE id=?"));   // cascade drops points
+    q.addBindValue(id);
+    if (!q.exec()) return;
+    for (int i = 0; i < tracks_.size(); ++i)
+        if (tracks_[i].id == id) { tracks_.remove(i); break; }
+    emit tracksChanged();
 }

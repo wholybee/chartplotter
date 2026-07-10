@@ -100,25 +100,66 @@ private:
     std::vector<Row> rows_;
 };
 
-// Combined saved-objects browser: the route and waypoint lists in a tabbed,
-// frameless side-menu dialog (gpx-style tabs).
+// Touch-first list of recorded tracks, as a content widget (no chrome). Mirrors
+// RouteListPanel; rows show name and point count. A track is history, so there is
+// no on-chart edit and no "New" (recording is started from the chart's track
+// button) — instead a track can be copied into an editable route.
+class TrackListPanel : public QWidget {
+    Q_OBJECT
+public:
+    explicit TrackListPanel(RouteStore* store, QWidget* parent = nullptr);
+
+signals:
+    void propertiesRequested(qint64 id);   // open the Properties editor
+    void copyToRouteRequested(qint64 id);  // duplicate the track as a route
+
+public slots:
+    void refresh();
+
+private:
+    struct Row {
+        QPushButton* btn  = nullptr;
+        QLabel*      name = nullptr;
+        QLabel*      meta = nullptr;
+        QCheckBox*   vis  = nullptr;
+        qint64       id   = -1;
+    };
+    Row  makeRow();
+    void selectRow(qint64 id);
+    void restyleRows();
+    void updateActionState();
+    void deleteSelected();
+
+    RouteStore*  store_       = nullptr;
+    qint64       selectedId_  = -1;
+    QScrollArea* scrollArea_  = nullptr;
+    QWidget*     rowContainer_= nullptr;
+    QVBoxLayout* rowLayout_   = nullptr;
+    QPushButton* deleteBtn_   = nullptr;
+    QPushButton* propsBtn_    = nullptr;
+    QPushButton* copyBtn_     = nullptr;
+    std::vector<Row> rows_;
+};
+
+// Combined saved-objects browser: the route, waypoint and track lists in a
+// tabbed, frameless side-menu dialog (gpx-style tabs).
 //
-//  - Manage mode (modeless): both tabs, with per-tab action buttons; reached from
-//    the side menu's "Routes & Waypoints…" item. The host connects the relayed
-//    *Requested signals.
+//  - Manage mode (modeless): all three tabs, with per-tab action buttons; reached
+//    from the side menu's "Routes & Waypoints…" item. The host connects the
+//    relayed *Requested signals.
 //  - Pick mode (modal): a single category for the Edit-Route / Edit-Waypoint
-//    pickers. exec(); on Accepted read pickedId().
+//    pickers (Routes or Waypoints only). exec(); on Accepted read pickedId().
 class RouteWaypointDialog : public QDialog {
     Q_OBJECT
 public:
-    enum class Tab { Routes = 0, Waypoints = 1 };
+    enum class Tab { Routes = 0, Waypoints = 1, Tracks = 2 };
 
     explicit RouteWaypointDialog(RouteStore* store, QWidget* parent = nullptr);   // manage
     RouteWaypointDialog(RouteStore* store, Tab pickCategory, QWidget* parent);    // pick
 
     qint64 pickedId() const { return pickedId_; }
     void   selectTab(Tab t);
-    void   refreshLists();   // re-render both lists (e.g. after a coord-format change)
+    void   refreshLists();   // re-render the lists (e.g. after a coord-format change)
 
 signals:
     void routePropertiesRequested(qint64 id);
@@ -127,11 +168,14 @@ signals:
     void waypointPropertiesRequested(qint64 id);
     void waypointEditRequested(qint64 id);
     void newWaypointAtOwnshipRequested();
+    void trackPropertiesRequested(qint64 id);
+    void trackCopyToRouteRequested(qint64 id);
 
 private:
     RouteStore*        store_      = nullptr;
     QTabWidget*        tabs_       = nullptr;
     RouteListPanel*    routePanel_ = nullptr;
     WaypointListPanel* wptPanel_   = nullptr;
+    TrackListPanel*    trackPanel_ = nullptr;
     qint64             pickedId_   = -1;
 };

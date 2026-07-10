@@ -37,6 +37,13 @@ const QColor kEditNodeFill (0xFF, 0xF0, 0x60);
 const QColor kSelRing       (0xE0, 0x20, 0x20);
 const QColor kLabelBg      (0, 0, 0, 150);
 const QColor kLabelFg      (255, 255, 255);
+// Tracks: teal, well clear of the violet routes and orange waypoints. The track
+// being recorded is drawn brighter and a touch thicker so the live trail reads
+// apart from the finished ones.
+const QColor kTrackLine     (0x00, 0x86, 0x8C);
+const QColor kTrackLiveLine (0x18, 0xC8, 0xC0);
+constexpr double kTrackWidth     = 2.0;
+constexpr double kTrackLiveWidth = 2.6;
 
 bool onScreen(const QPointF& p, const QRectF& r) { return r.contains(p); }
 
@@ -134,6 +141,47 @@ double RouteOverlay::magneticVariation() const {
 
 // ---- drawing ---------------------------------------------------------------
 
+// Recorded tracks: one polyline each, no per-point markers (a long recording has
+// thousands of points, and drawing a node at each would be a solid smear). Points
+// closer than a pixel to their predecessor are dropped, so a boat that lingers
+// contributes one vertex instead of hundreds and the cost of a long track scales
+// with its on-screen length rather than its duration.
+void RouteOverlay::paintTracks(QPainter& p, const ChartViewport& vp,
+                               const QRectF& cull) const {
+    if (!store_) return;
+    constexpr double kMinVertexStepSq = 1.0;   // px^2 between kept vertices
+
+    for (const Track& t : store_->tracks()) {
+        if (!t.visible || t.points.size() < 2) continue;
+
+        std::vector<QPointF> pts;
+        pts.reserve(t.points.size());
+        double minX = 1e30, minY = 1e30, maxX = -1e30, maxY = -1e30;
+        for (const TrackPoint& tp : t.points) {
+            const QPointF s = vp.geoToScreen(tp.lat, tp.lon);
+            minX = std::min(minX, s.x()); maxX = std::max(maxX, s.x());
+            minY = std::min(minY, s.y()); maxY = std::max(maxY, s.y());
+            if (!pts.empty()) {
+                const QPointF d = s - pts.back();
+                if (d.x() * d.x() + d.y() * d.y() < kMinVertexStepSq) continue;
+            }
+            pts.push_back(s);
+        }
+        if (!QRectF(QPointF(minX, minY), QPointF(maxX, maxY)).intersects(cull))
+            continue;   // whole track off-screen
+        if (pts.size() < 2) continue;   // collapsed to a single pixel
+
+        const bool live = (t.id == recordingTrackId_);
+        p.setPen(QPen(live ? kTrackLiveLine : kTrackLine,
+                      live ? kTrackLiveWidth : kTrackWidth));
+        p.setBrush(Qt::NoBrush);
+        p.drawPolyline(pts.data(), int(pts.size()));
+
+        if (!t.name.isEmpty() && onScreen(pts.front(), cull))
+            drawLabel(p, pts.front() + QPointF(6.0, 0), t.name);
+    }
+}
+
 void RouteOverlay::paint(QPainter& p, const ChartViewport& vp) {
     vp_ = vp;
     haveVp_ = true;
@@ -153,6 +201,10 @@ void RouteOverlay::paint(QPainter& p, const ChartViewport& vp) {
     const BearingMode  brgMode  = settings_ ? settings_->bearingMode()
                                             : BearingMode::True;
     const double variation = magneticVariation();
+
+    // Recorded tracks -------------------------------------------------------
+    // First, so routes and waypoints draw over the history rather than under it.
+    paintTracks(p, vp, cull);
 
     // Saved routes ----------------------------------------------------------
     if (store_) {

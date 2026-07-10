@@ -9,6 +9,8 @@
 //   Waypoint     -> <wpt lat lon> + <name>/<sym>/<desc>/<time>
 //   Route        -> <rte> + <name>/<desc>
 //   RoutePoint   -> <rtept lat lon> + <name>
+//   Track        -> <trk> + <name>/<desc> (a single <trkseg>)
+//   TrackPoint   -> <trkpt lat lon> + <time>
 //
 // id == -1 marks a record not yet persisted (no SQLite row). createdUtc stores
 // the GPX <time> instant in UTC.
@@ -37,4 +39,25 @@ struct Route {
     QDateTime createdUtc;
     bool      visible = true;
     QVector<RoutePoint> points;   // ordered (seq)
+};
+
+// One recorded fix along a track. Unlike a RoutePoint (a place the boat is meant
+// to go) a TrackPoint is a place it has been, so it carries the instant it was
+// recorded rather than a name.
+struct TrackPoint {
+    double    lat = 0.0;
+    double    lon = 0.0;
+    QDateTime timeUtc;       // GPX <trkpt><time>
+};
+
+// A recording of the ownship's movement. Points are only ever appended, in time
+// order, by TrackRecorder; createdUtc is when recording started and also seeds
+// the default name.
+struct Track {
+    qint64    id = -1;
+    QString   name;
+    QString   description;
+    QDateTime createdUtc;
+    bool      visible = true;
+    QVector<TrackPoint> points;   // ordered (seq == time order)
 };

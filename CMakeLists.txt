@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(marine_chart_viewer_qt VERSION 0.5.0 LANGUAGES CXX)
+project(marine_chart_viewer_qt VERSION 0.5.1 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -227,6 +227,7 @@ qt_add_executable(chartviewer
     src/ownship_mmsi_dialog.cpp
     src/heading_source_dialog.cpp
     src/dangerous_ships_dialog.cpp
+    src/tracking_dialog.cpp
     src/core_api.cpp
     src/plugin_manager.cpp
     src/chart_view.cpp
@@ -251,11 +252,13 @@ qt_add_executable(chartviewer
     src/ais_quick_info_window.cpp
     src/route_store.cpp
     src/route_navigator.cpp
+    src/track_recorder.cpp
     src/nav_display_window.cpp
     src/route_overlay.cpp
     src/route_waypoint_dialog.cpp
     src/route_properties_dialog.cpp
     src/waypoint_properties_dialog.cpp
+    src/track_properties_dialog.cpp
     src/route_quick_info_window.cpp
     src/chart_object_info_window.cpp
     src/name_dialog.cpp

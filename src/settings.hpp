@@ -89,6 +89,16 @@ public:
     // to count as "arrived". Default 0.1 nm.
     double arrivalRadiusNm() const { return arrivalRadiusNm_; }
 
+    // Track recording interval. A track point is laid down once BOTH have been
+    // satisfied: at least trackIntervalSeconds have passed since the last point,
+    // and the boat has moved at least trackMinDistanceNm from it. The distance
+    // gate is what keeps a boat at anchor from filling a track with one point per
+    // interval on top of itself. Defaults: 60 s and 150 ft (~0.0247 nm).
+    static constexpr double kDefaultTrackIntervalSec = 60.0;
+    static constexpr double kDefaultTrackMinDistNm   = 150.0 / units::kNmToFeet;
+    double trackIntervalSeconds() const { return trackIntervalSec_; }
+    double trackMinDistanceNm()   const { return trackMinDistNm_; }
+
     // When true, tapping outside the side menu (or an action item) closes it
     // automatically. When false, the menu stays open until the user presses
     // Close, and the chart remains interactive while it is visible.
@@ -163,6 +173,7 @@ public slots:
     void setAngleFormat(AngleFormat u);
     void setBearingMode(BearingMode b);
     void setArrivalRadiusNm(double nm);
+    void setTrackInterval(double seconds, double minDistanceNm);
     void setDataSourcePriority(const QStringList& orderedSourceIds);
     void setAutoHideMenu(bool on);
     void setChartDetailLevel(double level);
@@ -197,6 +208,7 @@ signals:
     void angleFormatChanged(AngleFormat u);
     void bearingModeChanged(BearingMode b);
     void arrivalRadiusNmChanged(double nm);
+    void trackIntervalChanged(double seconds, double minDistanceNm);
     void dataSourcePriorityChanged(const QStringList& orderedSourceIds);
     void autoHideMenuChanged(bool on);
     void chartDetailLevelChanged(double level);
@@ -236,6 +248,8 @@ private:
     AngleFormat  angleFormat_  = AngleFormat::DecimalDegrees;
     BearingMode  bearingMode_  = BearingMode::True;
     double       arrivalRadiusNm_ = 0.1;     // nautical miles
+    double       trackIntervalSec_ = kDefaultTrackIntervalSec;
+    double       trackMinDistNm_   = kDefaultTrackMinDistNm;
     QStringList   dataSourcePriority_;
     bool          autoHideMenu_ = true;   // legacy default = current behaviour
     double        chartDetailLevel_ = 0.0;   // -2.0 .. +2.0, 0 = nominal

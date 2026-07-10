@@ -86,6 +86,26 @@ inline QString formatDistance(double nm, DistanceUnit u) {
     return QString::number(v, 'f', prec) + QLatin1Char(' ') + distanceUnitKey(u);
 }
 
+// ---- short distances (feet / metres) ---------------------------------------
+
+// Thresholds like the track-point spacing are tens-of-metres scale, where a
+// nautical mile figure ("0.025 nm") is unreadable. They are stored in nautical
+// miles like every other distance, but entered and shown in feet or metres. There
+// is no separate preference for these, so the depth unit — the app's only
+// feet-vs-metres choice — selects which.
+constexpr double kNmToMeters = 1852.0;
+constexpr double kNmToFeet   = kNmToMeters * kMetersToFeet;   // ~6076.1 ft
+
+inline double shortDistanceFromNm(double nm, DepthUnit u) {
+    return nm * (u == DepthUnit::Meters ? kNmToMeters : kNmToFeet);
+}
+inline double nmFromShortDistance(double value, DepthUnit u) {
+    return value / (u == DepthUnit::Meters ? kNmToMeters : kNmToFeet);
+}
+inline QString shortDistanceUnitKey(DepthUnit u) {
+    return u == DepthUnit::Meters ? QStringLiteral("m") : QStringLiteral("ft");
+}
+
 // ---- coordinate (lat/lon) display format -----------------------------------
 
 inline QString angleFormatKey(AngleFormat u) {

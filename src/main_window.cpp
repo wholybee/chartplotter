@@ -22,9 +22,12 @@
 #include "ownship_mmsi_dialog.hpp"
 #include "heading_source_dialog.hpp"
 #include "dangerous_ships_dialog.hpp"
+#include "tracking_dialog.hpp"
 #include "ais_target_list_dialog.hpp"
 #include "route_store.hpp"
 #include "route_navigator.hpp"
+#include "track_recorder.hpp"
+#include "track_properties_dialog.hpp"
 #include "nav_display_window.hpp"
 #include "route_overlay.hpp"
 #include "route_waypoint_dialog.hpp"
@@ -74,6 +77,8 @@
 #include <QIcon>
 #include <QPixmap>
 #include <QPainter>
+#include <QPainterPath>
+#include <QPainterPathStroker>
 #include <QPolygonF>
 #include <QColor>
 #include <algorithm>
@@ -108,6 +113,111 @@ QPixmap makeLayersIcon(const QColor& c, int px) {
     p.drawPolygon(sheet(mid));         // middle sheet (outline)
     p.setBrush(c);                     // top sheet filled = the active layer
     p.drawPolygon(sheet(mid - gap));
+    return pm;
+}
+
+// Paint the "new route" glyph for the Add button: two ringed waypoints joined by
+// a leg, drawn as one filled path so the ring centres are genuinely transparent
+// (the button's background is translucent, so a hub painted in the button colour
+// would show as a disc over the chart).
+QPixmap makeRouteIcon(const QColor& c, int px) {
+    QPixmap pm(px, px);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const double u = px;
+    const QPointF a(0.26 * u, 0.74 * u);   // start waypoint, lower left
+    const QPointF b(0.74 * u, 0.26 * u);   // end waypoint, upper right
+    const double rOut = 0.175 * u;
+    const double rIn  = 0.085 * u;
+
+    // The leg runs centre-to-centre and is hidden inside the rings at each end.
+    QPainterPath leg;
+    leg.moveTo(a);
+    leg.lineTo(b);
+    QPainterPathStroker stroker;
+    stroker.setWidth(0.10 * u);
+    stroker.setCapStyle(Qt::FlatCap);
+
+    QPainterPath ringA; ringA.addEllipse(a, rOut, rOut);
+    QPainterPath ringB; ringB.addEllipse(b, rOut, rOut);
+    QPainterPath body = stroker.createStroke(leg).united(ringA).united(ringB);
+
+    QPainterPath holes;
+    holes.addEllipse(a, rIn, rIn);
+    holes.addEllipse(b, rIn, rIn);
+
+    p.fillPath(body.subtracted(holes), c);
+    return pm;
+}
+
+// Paint a gear glyph for the settings button: an eight-toothed cog with a hollow
+// hub, filled with `c`. Drawn as one path with the odd-even fill rule so the hub
+// punches a hole through the body rather than being painted over it.
+QPixmap makeGearIcon(const QColor& c, int px) {
+    QPixmap pm(px, px);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const double mid  = px / 2.0;
+    const double rOut = px * 0.46;    // tooth tip
+    const double rRt  = px * 0.345;   // tooth root (the body of the cog)
+    const double rHub = px * 0.155;   // hollow centre
+    constexpr int kTeeth = 8;
+    const double step = 360.0 / kTeeth;
+
+    auto at = [&](double deg, double r) {   // M_PI is not portable; spell it out
+        const double a = deg * 3.14159265358979323846 / 180.0;
+        return QPointF(mid + r * std::cos(a), mid + r * std::sin(a));
+    };
+
+    QPainterPath gear;
+    for (int i = 0; i < kTeeth; ++i) {
+        const double a = i * step;
+        if (i == 0) gear.moveTo(at(a - step * 0.30, rRt));
+        else        gear.lineTo(at(a - step * 0.30, rRt));
+        gear.lineTo(at(a - step * 0.15, rOut));   // flanks slope in toward the tip
+        gear.lineTo(at(a + step * 0.15, rOut));
+        gear.lineTo(at(a + step * 0.30, rRt));
+        gear.lineTo(at(a + step * 0.50, rRt));    // midpoint of the gap, so the
+    }                                             // root tracks the circle
+    gear.closeSubpath();
+    gear.addEllipse(QPointF(mid, mid), rHub, rHub);
+    gear.setFillRule(Qt::OddEvenFill);
+
+    p.fillPath(gear, c);
+    return pm;
+}
+
+// Paint the track-record glyph: a winding trail that ends in a filled dot — the
+// boat's wake behind it, the boat's present position at the head. Tinted to `c`,
+// like the other painted button glyphs, so the checked state can pass white.
+QPixmap makeTrackIcon(const QColor& c, int px) {
+    QPixmap pm(px, px);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(c);
+    pen.setWidthF(std::max(1.5, px * 0.078));
+    pen.setCapStyle(Qt::RoundCap);
+    pen.setJoinStyle(Qt::RoundJoin);
+    p.setPen(pen);
+    p.setBrush(Qt::NoBrush);
+
+    // One cubic with crossed control points: an S that sweeps from the tail at the
+    // lower left up to the head at the upper right. Fractions of `px`, so the
+    // glyph scales with the icon size.
+    const double u = px;
+    QPainterPath trail;
+    trail.moveTo(0.13 * u, 0.83 * u);
+    trail.cubicTo(0.64 * u, 0.81 * u, 0.26 * u, 0.31 * u, 0.75 * u, 0.27 * u);
+    p.drawPath(trail);
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(c);
+    p.drawEllipse(QPointF(0.75 * u, 0.27 * u), 0.10 * u, 0.10 * u);
     return pm;
 }
 
@@ -352,9 +462,17 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     view_->addOverlay(routeOverlay_.get());
     connect(routeStore_, &RouteStore::routesChanged,    this, [this] { if (view_) view_->requestRepaint(); });
     connect(routeStore_, &RouteStore::waypointsChanged, this, [this] { if (view_) view_->requestRepaint(); });
+    connect(routeStore_, &RouteStore::tracksChanged,    this, [this] { if (view_) view_->requestRepaint(); });
     // Repaint when the active waypoint changes (advance / start / stop) so the
     // route overlay's red highlight tracks it promptly.
     connect(navStore_, &NavDataStore::navigationChanged, this, [this] { if (view_) view_->requestRepaint(); });
+
+    // Track recording: samples the ownship fix into a new track while armed. The
+    // overlay draws the track being recorded brighter than the finished ones.
+    trackRecorder_ = new TrackRecorder(routeStore_, navStore_, settings_, this);
+    connect(trackRecorder_, &TrackRecorder::activeTrackChanged, this, [this](qint64 id) {
+        if (routeOverlay_) routeOverlay_->setRecordingTrackId(id);
+    });
 
     // Collision component: computes each target's CPA/TCPA against the ownship
     // and writes them back into the store (which the overlay and info windows
@@ -394,6 +512,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(sideMenu_, &SideMenu::editOwnshipMmsiRequested,         this, &MainWindow::editOwnshipMmsi);
     connect(sideMenu_, &SideMenu::editHeadingSourceRequested,       this, &MainWindow::editHeadingSource);
     connect(sideMenu_, &SideMenu::editDangerousShipsRequested,      this, &MainWindow::editDangerousShips);
+    connect(sideMenu_, &SideMenu::editTrackingRequested,            this, &MainWindow::editTracking);
     connect(sideMenu_, &SideMenu::aisTargetListRequested,           this, &MainWindow::showAisTargetList);
     connect(sideMenu_, &SideMenu::aboutRequested,                   this, &MainWindow::showAbout);
     connect(sideMenu_, &SideMenu::createRouteRequested,    this, &MainWindow::startCreateRoute);
@@ -452,21 +571,37 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(menuButton_, &QPushButton::clicked, sideMenu_, &SideMenu::openMenu);
     menuButton_->show();
 
-    // Floating "+" button: a visible affordance for creating routes/waypoints
+    // Floating "Settings" button: opens the drawer already on its Settings page,
+    // saving the Menu -> Settings round trip. Sits directly under the hamburger,
+    // whose page it shortcuts to. Painted cog glyph, same round look.
+    settingsButton_ = new QPushButton(view_);
+    settingsButton_->setFixedSize(48, 48);
+    settingsButton_->setCursor(Qt::PointingHandCursor);
+    settingsButton_->setIcon(QIcon(makeGearIcon(QColor(ob.fg), 24)));
+    settingsButton_->setIconSize(QSize(24, 24));
+    settingsButton_->setStyleSheet(QStringLiteral(
+        "QPushButton{ border:1px solid %1; border-radius:24px; background:%2; }"
+        "QPushButton:pressed{ background:%3; }")
+        .arg(ob.border, ob.bg, ob.pressed));
+    settingsButton_->setToolTip(QStringLiteral("Settings"));
+    connect(settingsButton_, &QPushButton::clicked, sideMenu_, &SideMenu::openSettingsMenu);
+    settingsButton_->show();
+
+    // Floating "Add" button: a visible affordance for creating routes/waypoints
     // without diving into the menu. Same look as the menu button, sits just
-    // below it. Long-press on the chart opens the same popup at the tap site.
-    addButton_ = new QPushButton(QStringLiteral("+"), view_);
+    // below the gear. Long-press on the chart opens the same popup at the tap site.
+    addButton_ = new QPushButton(view_);
     addButton_->setFixedSize(48, 48);
     addButton_->setCursor(Qt::PointingHandCursor);
+    addButton_->setIcon(QIcon(makeRouteIcon(QColor(ob.fg), 24)));
+    addButton_->setIconSize(QSize(24, 24));
     addButton_->setStyleSheet(QStringLiteral(
-        "QPushButton{ font-size:26px; font-weight:600; color:%1;"
-        " border:1px solid %2; border-radius:24px; background:%3;"
-        " padding-bottom:4px; }"
-        "QPushButton:pressed{ background:%4; }")
-        .arg(ob.fg, ob.border, ob.bg, ob.pressed));
+        "QPushButton{ border:1px solid %1; border-radius:24px; background:%2; }"
+        "QPushButton:pressed{ background:%3; }")
+        .arg(ob.border, ob.bg, ob.pressed));
     addButton_->setToolTip(QStringLiteral("Add a route or waypoint"));
     connect(addButton_, &QPushButton::clicked, this, [this] {
-        // The "+" button has no chart-position context, so the next chart tap
+        // The Add button has no chart-position context, so the next chart tap
         // places the first point (screenPt is unused in this path).
         showAddPopup(QPointF(), addButton_->mapToGlobal(QPoint(addButton_->width(), 0)), /*atPoint=*/false);
     });
@@ -474,7 +609,7 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     // Floating "Layers" button: opens a small panel to toggle chart display
     // layers (Soundings, Symbols, Text, Depth Contours). Same round look, sits
-    // just below the "+" button. The glyph is a painted stacked-sheets icon.
+    // just below the Add button. The glyph is a painted stacked-sheets icon.
     layersButton_ = new QPushButton(view_);
     layersButton_->setFixedSize(48, 48);
     layersButton_->setCursor(Qt::PointingHandCursor);
@@ -488,7 +623,31 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     connect(layersButton_, &QPushButton::clicked, this, &MainWindow::showLayersDialog);
     layersButton_->show();
 
-    // Floating "Course Up" toggle: a compass button under the Layers button that
+    // Floating "Record Track" toggle: starts/stops recording the ownship's
+    // movement into a new track. Checkable, same round look as the Course-Up
+    // button below it. The recorder is the source of truth (it can refuse to start
+    // if the store is unavailable, and stops itself if the track is deleted), so
+    // the button mirrors recordingChanged rather than its own checked state.
+    trackButton_ = new QPushButton(view_);
+    trackButton_->setFixedSize(48, 48);
+    trackButton_->setCheckable(true);
+    trackButton_->setCursor(Qt::PointingHandCursor);
+    trackButton_->setFocusPolicy(Qt::NoFocus);
+    trackButton_->setIconSize(QSize(26, 26));
+    trackButton_->setStyleSheet(QStringLiteral(
+        "QPushButton{ border:1px solid %1; border-radius:24px; background:%2; }"
+        "QPushButton:checked{ background:#2f6bad; border-color:#2f6bad; }"
+        "QPushButton:pressed{ background:%3; }")
+        .arg(ob.border, ob.bg, ob.pressed));
+    trackButton_->setToolTip(QStringLiteral("Record track"));
+    connect(trackButton_, &QPushButton::clicked, this,
+            [this](bool on) { trackRecorder_->setRecording(on); });
+    connect(trackRecorder_, &TrackRecorder::recordingChanged,
+            this, &MainWindow::syncTrackButton);
+    syncTrackButton(false);   // initial icon (unchecked)
+    trackButton_->show();
+
+    // Floating "Course Up" toggle: a compass button under the Track button that
     // turns course-up chart rotation on/off. Checkable, always visible; its state
     // mirrors the view (a pan that drops auto-follow also drops course-up, which
     // the view reports back via courseUpChanged -> syncCourseUpButton).
@@ -516,8 +675,10 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
 
     view_->installEventFilter(this);   // reposition the buttons when the view resizes
     positionMenuButton();
+    positionSettingsButton();
     positionAddButton();
     positionLayersButton();
+    positionTrackButton();
     positionCourseUpButton();
 
     statusLeft_  = new QLabel(QStringLiteral("No chart folder selected"));
@@ -549,8 +710,10 @@ MainWindow::~MainWindow() {
 bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
     if (obj == view_ && e->type() == QEvent::Resize) {
         positionMenuButton();
+        positionSettingsButton();
         positionAddButton();
         positionLayersButton();
+        positionTrackButton();
         positionCourseUpButton();
         positionEditBar();
         positionNavBanner();
@@ -560,6 +723,10 @@ bool MainWindow::eventFilter(QObject* obj, QEvent* e) {
 
 void MainWindow::closeEvent(QCloseEvent* e) {
     hmvtrace::mark("MainWindow::closeEvent begin");
+    // Close the recording the same way the toggle would: points already taken are
+    // saved, and a track that never got a second point is discarded rather than
+    // left behind as an empty row in the Tracks list.
+    if (trackRecorder_) trackRecorder_->setRecording(false);
     view_->persistViewNow();   // flush the latest location even if mid-debounce
     // Persist size / position / maximised state for the next launch.
     QSettings().setValue(QStringLiteral("window/geometry"), saveGeometry());
@@ -580,24 +747,52 @@ void MainWindow::positionMenuButton() {
         menuButton_->raise();   // stay above the chart, but never above an open menu
 }
 
-void MainWindow::positionAddButton() {
-    if (!addButton_ || !menuButton_) return;
+void MainWindow::positionSettingsButton() {
+    if (!settingsButton_ || !menuButton_) return;
     // Stack directly below the menu button, same left edge, small gap.
-    addButton_->move(12, 12 + menuButton_->height() + 8);
+    settingsButton_->move(12, menuButton_->y() + menuButton_->height() + 8);
+    if (!sideMenu_ || !sideMenu_->isOpen()) settingsButton_->raise();
+}
+
+void MainWindow::positionAddButton() {
+    if (!addButton_ || !settingsButton_) return;
+    // Stack directly below the gear button, same left edge, matching gap.
+    addButton_->move(12, settingsButton_->y() + settingsButton_->height() + 8);
     if (!sideMenu_ || !sideMenu_->isOpen()) addButton_->raise();
 }
 
 void MainWindow::positionLayersButton() {
     if (!layersButton_ || !addButton_) return;
-    // Stack directly below the "+" button, same left edge, matching gap.
+    // Stack directly below the Add button, same left edge, matching gap.
     layersButton_->move(12, addButton_->y() + addButton_->height() + 8);
     if (!sideMenu_ || !sideMenu_->isOpen()) layersButton_->raise();
 }
 
-void MainWindow::positionCourseUpButton() {
-    if (!courseUpButton_ || !layersButton_) return;
+void MainWindow::positionTrackButton() {
+    if (!trackButton_ || !layersButton_) return;
     // Stack directly below the Layers button, same left edge, matching gap.
-    courseUpButton_->move(12, layersButton_->y() + layersButton_->height() + 8);
+    trackButton_->move(12, layersButton_->y() + layersButton_->height() + 8);
+    if (!sideMenu_ || !sideMenu_->isOpen()) trackButton_->raise();
+}
+
+void MainWindow::syncTrackButton(bool on) {
+    if (!trackButton_) return;
+    if (trackButton_->isChecked() != on) trackButton_->setChecked(on);
+    refreshTrackIcon();
+}
+
+void MainWindow::refreshTrackIcon() {
+    if (!trackButton_) return;
+    // White trail on the blue "recording" fill; themed foreground otherwise.
+    const QColor col = trackButton_->isChecked() ? QColor(255, 255, 255)
+                                                 : QColor(theme::overlayBtn().fg);
+    trackButton_->setIcon(QIcon(makeTrackIcon(col, 26)));
+}
+
+void MainWindow::positionCourseUpButton() {
+    if (!courseUpButton_ || !trackButton_) return;
+    // Stack directly below the Track button, same left edge, matching gap.
+    courseUpButton_->move(12, trackButton_->y() + trackButton_->height() + 8);
     if (!sideMenu_ || !sideMenu_->isOpen()) courseUpButton_->raise();
 }
 
@@ -809,6 +1004,13 @@ void MainWindow::editDangerousShips() {
                                      dlg.tcpaEnabled(), dlg.tcpaMin(),
                                      dlg.anchoredSafeEnabled(), dlg.anchoredSogKn(),
                                      dlg.alarmSoundEnabled());
+}
+
+void MainWindow::editTracking() {
+    TrackingDialog dlg(settings_->trackIntervalSeconds(), settings_->trackMinDistanceNm(),
+                       settings_->depthUnit(), this);
+    if (dlg.exec() == QDialog::Accepted)
+        settings_->setTrackInterval(dlg.intervalSeconds(), dlg.minDistanceNm());
 }
 
 // ---- Routes & Waypoints ----------------------------------------------------
@@ -1213,7 +1415,7 @@ void MainWindow::onChartLongPressed(const QPointF& screenPt) {
 
 void MainWindow::showAddPopup(const QPointF& screenPt, const QPoint& globalPt, bool atPoint) {
     QMenu menu(this);
-    // The long-press knows where the user pressed, so it places "here"; the "+"
+    // The long-press knows where the user pressed, so it places "here"; the Add
     // button has no position, so it arms creation and the next chart tap places.
     QAction* aWpt   = menu.addAction(atPoint ? QStringLiteral("New waypoint here")
                                              : QStringLiteral("New waypoint"));
@@ -1238,7 +1440,7 @@ void MainWindow::showAddPopup(const QPointF& screenPt, const QPoint& globalPt, b
     }
     if (picked == aRoute) {
         // Start a fresh route session. For a long-press the first point is
-        // placed at the press location; for the "+" button the route starts
+        // placed at the press location; for the Add button the route starts
         // empty and the first chart tap appends the first point.
         routeOverlay_->beginCreateRoute();
         view_->setChartEditor(routeOverlay_.get());
@@ -1381,6 +1583,10 @@ void MainWindow::showRouteWaypointList() {
                 this, &MainWindow::beginEditWaypoint);
         connect(routeWptDlg_, &RouteWaypointDialog::newWaypointAtOwnshipRequested,
                 this, &MainWindow::dropWaypoint);
+        connect(routeWptDlg_, &RouteWaypointDialog::trackPropertiesRequested,
+                this, &MainWindow::openTrackProperties);
+        connect(routeWptDlg_, &RouteWaypointDialog::trackCopyToRouteRequested,
+                this, &MainWindow::copyTrackToRoute);
     }
     routeWptDlg_->show();
     routeWptDlg_->raise();
@@ -1418,6 +1624,47 @@ void MainWindow::openWaypointProperties(qint64 id) {
     WaypointPropertiesDialog dlg(*found, this);
     if (dlg.exec() == QDialog::Accepted)
         routeStore_->updateWaypoint(dlg.currentWaypoint());
+}
+
+void MainWindow::openTrackProperties(qint64 id) {
+    if (!routeStore_) return;
+    const Track* t = routeStore_->track(id);
+    if (!t) return;
+    // Modal, and name/description only: a track's points record where the boat
+    // actually went, so they are never edited — copy it to a route to reshape it.
+    TrackPropertiesDialog dlg(*t, settings_->distanceUnit(), this);
+    if (dlg.exec() == QDialog::Accepted)
+        routeStore_->updateTrack(dlg.currentTrack());
+}
+
+void MainWindow::copyTrackToRoute(qint64 id) {
+    if (!routeStore_) return;
+    const Track* t = routeStore_->track(id);
+    if (!t || t->points.isEmpty()) return;
+
+    Route r;
+    r.name    = t->name;   // the timestamp reads the same in either list
+    r.description = t->description;
+    r.visible = true;
+    r.points.reserve(t->points.size());
+    for (const TrackPoint& tp : t->points) {
+        RoutePoint rp;
+        rp.lat = tp.lat;
+        rp.lon = tp.lon;
+        r.points.push_back(rp);
+    }
+    if (routeStore_->addRoute(r) < 0) {   // `t` is not read past this point
+        QMessageBox::warning(this, QStringLiteral("Copy to Route"),
+                             QStringLiteral("Could not save the new route."));
+        return;
+    }
+    // A track copies point-for-point, which for a long recording is far more
+    // waypoints than anyone wants to navigate — say so rather than let the user
+    // discover it in the Routes tab.
+    QMessageBox::information(this, QStringLiteral("Copy to Route"),
+        QStringLiteral("Copied \"%1\" to a new route with %2 waypoints.\n\n"
+                       "Use the route's Properties to remove the points you don't need.")
+            .arg(r.name).arg(r.points.size()));
 }
 
 void MainWindow::onPropsEditPoint(int index) {

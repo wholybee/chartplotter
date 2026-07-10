@@ -338,6 +338,11 @@ QWidget* SideMenu::buildSettingsPage() {
             [this] { emit editDangerousShipsRequested(); });
     col->addWidget(dangerBtn);
 
+    auto* trackingBtn = makeSettingsAction(QStringLiteral("Tracking…"));
+    connect(trackingBtn, &QPushButton::clicked, this,
+            [this] { emit editTrackingRequested(); });
+    col->addWidget(trackingBtn);
+
     col->addWidget(makeHeader(QStringLiteral("Charts")));
     auto* chartSetsBtn = makeSettingsAction(QStringLiteral("Chart Sets"));
     connect(chartSetsBtn, &QPushButton::clicked, this,
@@ -697,6 +702,13 @@ void SideMenu::openMenu() {
     anim_->setStartValue(panel_->geometry());
     anim_->setEndValue(QRect(0, 0, panelWidth_, height()));
     anim_->start();
+}
+
+// openMenu() no-ops when the drawer is already showing, so switching the page
+// afterwards covers both the closed and already-open cases.
+void SideMenu::openSettingsMenu() {
+    openMenu();
+    showSettingsPage();
 }
 
 void SideMenu::closeMenu() {

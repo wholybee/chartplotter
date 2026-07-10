@@ -21,10 +21,14 @@ struct ClickedRouteObject {
     int     pointIndex = -1;
 };
 
-// Draws saved routes and waypoints on the chart, and hosts the in-place editor
-// used to create/edit them. It is both an IChartOverlay (paint + tap pick) and an
-// IChartEditor (press/move/release for node dragging), so one object owns all the
-// route drawing and interaction.
+// Draws saved routes, waypoints and recorded tracks on the chart, and hosts the
+// in-place editor used to create/edit routes and waypoints. It is both an
+// IChartOverlay (paint + tap pick) and an IChartEditor (press/move/release for
+// node dragging), so one object owns all the route drawing and interaction.
+//
+// Tracks are painted but not pickable: they are dense polylines of recorded
+// history, and letting them claim taps would shadow the routes and waypoints
+// drawn over them.
 //
 // Interaction split (see ChartView's mouse handling):
 //   - Press on a working-route node  -> onPress() claims the gesture; a drag
@@ -47,6 +51,10 @@ public:
     // preference used to label each route leg with its distance and heading.
     // Without it, labels default to nautical miles and true bearings.
     void setUnitsSource(const Settings* settings) { settings_ = settings; }
+
+    // The track currently being recorded (-1 when none). It is drawn brighter and
+    // thicker than saved tracks so the growing trail reads as live.
+    void setRecordingTrackId(qint64 id) { recordingTrackId_ = id; repaint(); }
 
     // Callbacks into the host (MainWindow). All optional.
     void setRepaintCallback(std::function<void()> cb) { repaint_ = std::move(cb); }
@@ -94,9 +102,13 @@ private:
     // converting leg headings to magnetic. 0 when unavailable.
     double magneticVariation() const;
 
+    // Paint saved tracks, under everything else (they are history, not plan).
+    void paintTracks(QPainter& p, const ChartViewport& vp, const QRectF& cull) const;
+
     const RouteStore*   store_ = nullptr;
     const NavDataStore* nav_   = nullptr;   // for the active-waypoint highlight
     const Settings*     settings_ = nullptr;   // for leg distance/heading units
+    qint64            recordingTrackId_ = -1;
     ChartViewport     vp_;
     bool              haveVp_ = false;
 

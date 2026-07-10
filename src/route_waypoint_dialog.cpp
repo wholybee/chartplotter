@@ -399,6 +399,152 @@ void WaypointListPanel::deleteSelected() {
     store_->removeWaypoint(id);
 }
 
+// ==== TrackListPanel =======================================================
+
+TrackListPanel::TrackListPanel(RouteStore* store, QWidget* parent)
+    : QWidget(parent), store_(store) {
+    auto* col = new QVBoxLayout(this);
+    col->setContentsMargins(0, 0, 0, 0);
+    col->setSpacing(0);
+
+    col->addWidget(makeHeaderStrip(QStringLiteral("TrackListHdr"),
+                                   QStringLiteral("Points"), 70));
+    scrollArea_ = makeRowScroll(rowContainer_, rowLayout_);
+    col->addWidget(scrollArea_, 1);
+
+    auto* btnBar = new QWidget;
+    auto* btnRow = new QHBoxLayout(btnBar);
+    btnRow->setContentsMargins(12, 8, 12, 12);
+    btnRow->setSpacing(8);
+    deleteBtn_ = new QPushButton(QStringLiteral("Delete"), btnBar);
+    deleteBtn_->setEnabled(false);
+    dialogchrome::styleOutlinedButton(deleteBtn_);
+    connect(deleteBtn_, &QPushButton::clicked, this, &TrackListPanel::deleteSelected);
+    btnRow->addWidget(deleteBtn_);
+    propsBtn_ = new QPushButton(QStringLiteral("Properties"), btnBar);
+    propsBtn_->setEnabled(false);
+    dialogchrome::styleOutlinedButton(propsBtn_);
+    connect(propsBtn_, &QPushButton::clicked, this, [this] {
+        if (selectedId_ >= 0) emit propertiesRequested(selectedId_);
+    });
+    btnRow->addWidget(propsBtn_);
+    // Where the Routes tab edits on the chart, a track is copied into a route
+    // first — the recording itself is never reshaped.
+    copyBtn_ = new QPushButton(QStringLiteral("Copy to Route"), btnBar);
+    copyBtn_->setEnabled(false);
+    dialogchrome::styleOutlinedButton(copyBtn_);
+    connect(copyBtn_, &QPushButton::clicked, this, [this] {
+        if (selectedId_ >= 0) emit copyToRouteRequested(selectedId_);
+    });
+    btnRow->addWidget(copyBtn_);
+    btnRow->addStretch(1);
+    col->addWidget(btnBar);
+
+    if (store_) connect(store_, &RouteStore::tracksChanged, this, &TrackListPanel::refresh);
+    refresh();
+}
+
+TrackListPanel::Row TrackListPanel::makeRow() {
+    Row r;
+    r.btn = makeRowButton(rowContainer_);
+    auto* hl = new QHBoxLayout(r.btn);
+    hl->setContentsMargins(8, 0, 8, 0);
+    hl->setSpacing(0);
+    r.name = makeCell(0,  Qt::AlignLeft  | Qt::AlignVCenter);
+    r.name->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+    r.meta = makeCell(70, Qt::AlignRight | Qt::AlignVCenter);
+    hl->addWidget(r.name, 1);
+    hl->addWidget(r.meta);
+
+    r.vis = new QCheckBox(r.btn);
+    r.vis->setFixedWidth(64);
+    r.vis->setStyleSheet(QStringLiteral("margin-left:24px;"));
+    hl->addWidget(r.vis);
+
+    connect(r.btn, &QPushButton::clicked, this, [this, btn = r.btn] {
+        selectRow(btn->property("tid").toLongLong());
+    });
+    connect(r.vis, &QCheckBox::toggled, this, [this, box = r.vis](bool on) {
+        const qint64 id = box->property("tid").toLongLong();
+        if (store_) store_->setTrackVisible(id, on);
+    });
+    return r;
+}
+
+void TrackListPanel::refresh() {
+    if (!store_) return;
+    const QVector<Track>& tracks = store_->tracks();
+
+    const int want = tracks.size();
+    while (int(rows_.size()) < want) {
+        Row r = makeRow();
+        rowLayout_->insertWidget(rowLayout_->count() - 1, r.btn);
+        rows_.push_back(r);
+    }
+    while (int(rows_.size()) > want) {
+        rows_.back().btn->deleteLater();
+        rows_.pop_back();
+    }
+
+    bool selectionStillExists = false;
+    for (int i = 0; i < want; ++i) {
+        const Track& tr = tracks[i];
+        Row& row = rows_[i];
+        row.id = tr.id;
+        row.btn->setProperty("tid", QVariant::fromValue(tr.id));
+        row.vis->setProperty("tid", QVariant::fromValue(tr.id));
+        const QString nm = tr.name.isEmpty() ? QStringLiteral("(unnamed)") : tr.name;
+        if (row.name->text() != nm) row.name->setText(nm);
+        row.meta->setText(QString::number(tr.points.size()));
+        row.vis->blockSignals(true);
+        row.vis->setChecked(tr.visible);
+        row.vis->blockSignals(false);
+        if (tr.id == selectedId_) selectionStillExists = true;
+    }
+    if (!selectionStillExists) selectedId_ = -1;
+    restyleRows();
+    updateActionState();
+}
+
+void TrackListPanel::selectRow(qint64 id) {
+    selectedId_ = (selectedId_ == id) ? -1 : id;   // tap again to deselect
+    restyleRows();
+    updateActionState();
+}
+
+void TrackListPanel::restyleRows() {
+    const theme::MenuPalette& t = theme::menu();
+    for (Row& r : rows_) {
+        const bool sel = (r.id == selectedId_ && selectedId_ >= 0);
+        r.btn->setChecked(sel);
+        const QString cell = QStringLiteral(
+            "font-size:14px; padding:0 4px; border:none; color:%1;")
+            .arg(sel ? t.titleFg : t.actionFg);
+        r.name->setStyleSheet(cell);
+        r.meta->setStyleSheet(cell);
+    }
+}
+
+void TrackListPanel::updateActionState() {
+    const bool hasSel = selectedId_ >= 0;
+    deleteBtn_->setEnabled(hasSel);
+    propsBtn_->setEnabled(hasSel);
+    copyBtn_->setEnabled(hasSel);
+}
+
+void TrackListPanel::deleteSelected() {
+    if (!store_ || selectedId_ < 0) return;
+    const Track* t = store_->track(selectedId_);
+    const QString nm = (t && !t->name.isEmpty()) ? t->name : QStringLiteral("this track");
+    if (QMessageBox::question(this, QStringLiteral("Delete Track"),
+            QStringLiteral("Delete %1?").arg(nm)) != QMessageBox::Yes)
+        return;
+    const qint64 id = selectedId_;
+    selectedId_ = -1;
+    store_->removeTrack(id);   // emits tracksChanged -> refresh(); stops a live
+                               // recording on its next tick (append fails)
+}
+
 // ==== RouteWaypointDialog ==================================================
 
 namespace {
@@ -423,12 +569,14 @@ RouteWaypointDialog::RouteWaypointDialog(RouteStore* store, QWidget* parent)
 
     routePanel_ = new RouteListPanel(store_, /*pickMode=*/false);
     wptPanel_   = new WaypointListPanel(store_, /*pickMode=*/false);
+    trackPanel_ = new TrackListPanel(store_);
 
     tabs_ = new QTabWidget;
     tabs_->setDocumentMode(true);
     tabs_->setStyleSheet(tabStyle());
     tabs_->addTab(routePanel_, QStringLiteral("Routes"));
     tabs_->addTab(wptPanel_,   QStringLiteral("Waypoints"));
+    tabs_->addTab(trackPanel_, QStringLiteral("Tracks"));
     panelCol->addWidget(tabs_, 1);
 
     auto* btnBar = new QWidget;
@@ -460,19 +608,30 @@ RouteWaypointDialog::RouteWaypointDialog(RouteStore* store, QWidget* parent)
     connect(wptPanel_, &WaypointListPanel::newWaypointAtOwnshipRequested, this, [this] {
         emit newWaypointAtOwnshipRequested(); close();
     });
+    // Both track actions leave the dialog open: neither hands off to the chart,
+    // and the new route appears in the Routes tab count straight away.
+    connect(trackPanel_, &TrackListPanel::propertiesRequested,
+            this, &RouteWaypointDialog::trackPropertiesRequested);
+    connect(trackPanel_, &TrackListPanel::copyToRouteRequested,
+            this, &RouteWaypointDialog::trackCopyToRouteRequested);
 
     // Tab titles carry the live counts (gpx-style).
     auto refreshTitles = [this] {
         tabs_->setTabText(0, QStringLiteral("Routes (%1)").arg(store_->routes().size()));
         tabs_->setTabText(1, QStringLiteral("Waypoints (%1)").arg(store_->waypoints().size()));
+        tabs_->setTabText(2, QStringLiteral("Tracks (%1)").arg(store_->tracks().size()));
     };
     if (store_) {
         connect(store_, &RouteStore::routesChanged,    this, [refreshTitles] { refreshTitles(); });
         connect(store_, &RouteStore::waypointsChanged, this, [refreshTitles] { refreshTitles(); });
+        connect(store_, &RouteStore::tracksChanged,    this, [refreshTitles] { refreshTitles(); });
         refreshTitles();
     }
 }
 
+// Pick mode covers only the two categories the chart editors can act on; a track
+// has nothing to pick for, so Tracks falls through to the waypoint picker rather
+// than leaving the dialog empty.
 RouteWaypointDialog::RouteWaypointDialog(RouteStore* store, Tab pickCategory, QWidget* parent)
     : QDialog(parent), store_(store) {
     const bool routes = (pickCategory == Tab::Routes);
@@ -505,4 +664,5 @@ void RouteWaypointDialog::selectTab(Tab t) {
 void RouteWaypointDialog::refreshLists() {
     if (routePanel_) routePanel_->refresh();
     if (wptPanel_)   wptPanel_->refresh();
+    if (trackPanel_) trackPanel_->refresh();
 }

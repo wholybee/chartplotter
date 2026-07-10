@@ -28,6 +28,9 @@ public:
     SideMenu(Settings* settings, QWidget* parent);
 
     void openMenu();
+    // Open (or, if already open, switch) straight to the Settings sub-page. The
+    // header's back chevron then returns to the main page as usual.
+    void openSettingsMenu();
     void closeMenu();
     bool isOpen() const { return open_; }
 
@@ -83,6 +86,7 @@ signals:
     void editOwnshipMmsiRequested();                   // open Own Ship MMSI dialog
     void editHeadingSourceRequested();                 // open Heading Source dialog
     void editDangerousShipsRequested();                // open Dangerous Ships dialog
+    void editTrackingRequested();                      // open Tracking dialog
     void aisTargetListRequested();                     // open AIS Targets list dialog
     void aboutRequested();                             // open the About dialog
     void navigationOptionsRequested();                 // open Navigation Options dialog

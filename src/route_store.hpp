@@ -6,11 +6,12 @@
 #include "route_types.hpp"
 #include "host_export.hpp"
 
-// Persistent store for routes and standalone waypoints, backed by a read-write
-// SQLite database (routes.db in the app data dir). The whole collection is held
-// in memory (loaded once at open) so the chart overlay and list dialogs read
-// without touching SQLite per frame; writes update both the cache and the DB and
-// then emit routesChanged()/waypointsChanged() so consumers refresh.
+// Persistent store for routes, standalone waypoints, and recorded tracks, backed
+// by a read-write SQLite database (routes.db in the app data dir). The whole
+// collection is held in memory (loaded once at open) so the chart overlay and
+// list dialogs read without touching SQLite per frame; writes update both the
+// cache and the DB and then emit routesChanged()/waypointsChanged()/
+// tracksChanged() so consumers refresh.
 //
 // Thousands of routes/waypoints in QVectors is trivial in memory; the overlay
 // culls to the viewport at paint time.
@@ -28,13 +29,18 @@ public:
     // Snapshots (cached). Returned by const-ref; copy if you need to mutate.
     const QVector<Waypoint>& waypoints() const { return waypoints_; }
     const QVector<Route>&    routes()    const { return routes_; }
+    const QVector<Track>&    tracks()    const { return tracks_; }
     const Route* route(qint64 id) const;             // nullptr if absent
+    const Track* track(qint64 id) const;             // nullptr if absent
 
     // Suggested default name for a new route/waypoint ("Route 3", "Waypoint 7").
     // Numbers the next slot above any existing "{prefix} N" — so deleting and
     // re-creating doesn't collide; names with custom text are ignored.
     QString nextRouteName()    const;
     QString nextWaypointName() const;
+    // Tracks are named for the local date and time they were started, since one
+    // recording per outing reads better as "2026-07-09 14:32" than "Track 3".
+    static QString trackNameFor(const QDateTime& createdUtc);
 
     // Waypoints ---------------------------------------------------------------
     qint64 addWaypoint(Waypoint w);                  // returns new id (-1 on fail)
@@ -48,9 +54,21 @@ public:
     void   setRouteVisible(qint64 id, bool on);
     void   removeRoute(qint64 id);
 
+    // Tracks ------------------------------------------------------------------
+    qint64 addTrack(Track t);                        // inserts track + points
+    // Append one recorded fix to an existing track. One INSERT per call rather
+    // than rewriting the whole point list, so a long recording stays cheap and a
+    // crash loses at most the last interval. False if the track is gone (the
+    // recorder treats that as "stop recording") or the write failed.
+    bool   appendTrackPoint(qint64 trackId, const TrackPoint& p);
+    void   updateTrack(const Track& t);              // name/description/visible only
+    void   setTrackVisible(qint64 id, bool on);
+    void   removeTrack(qint64 id);
+
 signals:
     void waypointsChanged();
     void routesChanged();
+    void tracksChanged();
 
 private:
     bool createSchema(QString& err);
@@ -61,4 +79,5 @@ private:
     bool         ok_ = false;
     QVector<Waypoint> waypoints_;
     QVector<Route>    routes_;
+    QVector<Track>    tracks_;
 };

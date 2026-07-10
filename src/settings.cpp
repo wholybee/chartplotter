@@ -28,6 +28,8 @@ constexpr auto kDistUnit  = "units/distance";
 constexpr auto kAngleFmt  = "units/angle";
 constexpr auto kBearing   = "units/bearing";
 constexpr auto kArrivalNm = "nav/arrivalRadiusNm";
+constexpr auto kTrackIntervalS  = "tracks/intervalSeconds";
+constexpr auto kTrackMinDistNm  = "tracks/minDistanceNm";
 constexpr auto kSrcPrio   = "data/sourcePriority";
 constexpr auto kAutoHide  = "menu/autoHide";
 constexpr auto kDetailLvl = "display/chartDetailLevel";
@@ -78,6 +80,12 @@ Settings::Settings(QObject* parent) : QObject(parent) {
                                               BearingMode::True);
     arrivalRadiusNm_ = s.value(QLatin1String(kArrivalNm), 0.1).toDouble();
     if (arrivalRadiusNm_ < 0.001) arrivalRadiusNm_ = 0.001;
+    trackIntervalSec_ = s.value(QLatin1String(kTrackIntervalS),
+                                kDefaultTrackIntervalSec).toDouble();
+    if (trackIntervalSec_ < 1.0) trackIntervalSec_ = 1.0;
+    trackMinDistNm_ = s.value(QLatin1String(kTrackMinDistNm),
+                              kDefaultTrackMinDistNm).toDouble();
+    if (trackMinDistNm_ < 0.0) trackMinDistNm_ = 0.0;
     // Raw saved order; reconciled against the runtime DataSourceRegistry (which
     // includes plugin sources) where it is consumed.
     dataSourcePriority_ = s.value(QLatin1String(kSrcPrio)).toStringList();
@@ -215,6 +223,18 @@ void Settings::setArrivalRadiusNm(double nm) {
     arrivalRadiusNm_ = nm;
     QSettings().setValue(QLatin1String(kArrivalNm), nm);
     emit arrivalRadiusNmChanged(nm);
+}
+
+void Settings::setTrackInterval(double seconds, double minDistanceNm) {
+    if (seconds < 1.0) seconds = 1.0;
+    if (minDistanceNm < 0.0) minDistanceNm = 0.0;   // 0 = record on every interval
+    if (seconds == trackIntervalSec_ && minDistanceNm == trackMinDistNm_) return;
+    trackIntervalSec_ = seconds;
+    trackMinDistNm_   = minDistanceNm;
+    QSettings s;
+    s.setValue(QLatin1String(kTrackIntervalS), seconds);
+    s.setValue(QLatin1String(kTrackMinDistNm), minDistanceNm);
+    emit trackIntervalChanged(seconds, minDistanceNm);
 }
 
 void Settings::setDataSourcePriority(const QStringList& orderedSourceIds) {
