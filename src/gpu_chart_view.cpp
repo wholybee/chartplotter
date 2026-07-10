@@ -1,6 +1,5 @@
 // src/gpu_chart_view.cpp
 #include "gpu_chart_view.hpp"
-#include "gpu_log.hpp"
 
 #include <rhi/qrhi.h>
 #include <QColor>
@@ -29,12 +28,16 @@ constexpr std::size_t kMaxTileTextures = 384;    // matches the pixmap cache bud
 
 } // namespace
 
+// Info-level so it is enabled by default (never filtered) and always reaches the
+// app_log message handler; see gpu_chart_view.hpp.
+Q_LOGGING_CATEGORY(lcGpu, "hmv.gpu", QtInfoMsg)
+
 GpuChartView::GpuChartView(QWidget* parent) : QRhiWidget(parent) {
 #if defined(Q_OS_WIN)
     setApi(QRhiWidget::Api::Direct3D11);
-    gpulog::write(QStringLiteral("GpuChartView constructed (api=Direct3D11)"));
+    qCInfo(lcGpu).noquote() << "GpuChartView constructed (api=Direct3D11)";
 #else
-    gpulog::write(QStringLiteral("GpuChartView constructed (api=default)"));
+    qCInfo(lcGpu).noquote() << "GpuChartView constructed (api=default)";
 #endif
 }
 
@@ -157,8 +160,8 @@ void GpuChartView::takeTelemetry(int& frames, int& sceneUploads, int& textureUpl
 }
 
 void GpuChartView::releaseResources() {
-    if (rhi_) gpulog::write(QStringLiteral("releaseResources: RHI torn down "
-                                           "(device loss or shutdown)"));
+    if (rhi_) qCInfo(lcGpu).noquote()
+                  << "releaseResources: RHI torn down (device loss or shutdown)";
     psTri_.reset();
     psLine_.reset();
     srb_.reset();
@@ -239,16 +242,17 @@ void GpuChartView::initialize(QRhiCommandBuffer*) {
             const QRhiDriverInfo di = rhi_->driverInfo();
             const QRhiRenderTarget* rt = renderTarget();
             const QSize rts = rt ? rt->pixelSize() : QSize();
-            gpulog::write(QStringLiteral("initialize: backend=%1 device=\"%2\" "
-                                         "vendorId=0x%3 deviceType=%4 rt=%5x%6 lost=%7")
-                              .arg(QString::fromLatin1(rhi_->backendName()))
-                              .arg(QString::fromUtf8(di.deviceName))
-                              .arg(QString::number(di.vendorId, 16))
-                              .arg(int(di.deviceType))
-                              .arg(rts.width()).arg(rts.height())
-                              .arg(lost ? 1 : 0));
+            qCInfo(lcGpu).noquote()
+                << QStringLiteral("initialize: backend=%1 device=\"%2\" "
+                                  "vendorId=0x%3 deviceType=%4 rt=%5x%6 lost=%7")
+                       .arg(QString::fromLatin1(rhi_->backendName()))
+                       .arg(QString::fromUtf8(di.deviceName))
+                       .arg(QString::number(di.vendorId, 16))
+                       .arg(int(di.deviceType))
+                       .arg(rts.width()).arg(rts.height())
+                       .arg(lost ? 1 : 0);
         } else {
-            gpulog::write(QStringLiteral("initialize: rhi() is NULL - no device"));
+            qCWarning(lcGpu).noquote() << "initialize: rhi() is NULL - no device";
         }
         if (lost && !firstInit_) {
             // The RHI was recreated: retained cells are gone. Tell the owner to
@@ -336,8 +340,8 @@ void GpuChartView::render(QRhiCommandBuffer* cb) {
     if (++renderedFrames_ == 1) {
         const QRhiRenderTarget* rt = renderTarget();
         const QSize rts = rt ? rt->pixelSize() : QSize();
-        gpulog::write(QStringLiteral("render: first frame, rt=%1x%2")
-                          .arg(rts.width()).arg(rts.height()));
+        qCInfo(lcGpu).noquote() << QStringLiteral("render: first frame, rt=%1x%2")
+                                       .arg(rts.width()).arg(rts.height());
     }
     QRhiResourceUpdateBatch* up = rhi_->nextResourceUpdateBatch();
 
@@ -568,8 +572,8 @@ void GpuChartView::showEvent(QShowEvent* e) {
     // only when the window finally becomes visible, which is exactly the moment
     // the first frame must be produced. showEvent fires on visibility
     // transitions, not per frame, so the cost is one render on show.
-    gpulog::write(QStringLiteral("showEvent: size=%1x%2 - forcing first frame")
-                      .arg(width()).arg(height()));
+    qCInfo(lcGpu).noquote() << QStringLiteral("showEvent: size=%1x%2 - forcing first frame")
+                                   .arg(width()).arg(height());
     update();
 }
 

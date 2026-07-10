@@ -1,8 +1,10 @@
 #include <QApplication>
 #include <QDir>
+#include <QSettings>
 #include "chart_loader.hpp"
 #include "main_window.hpp"
 #include "app_info.hpp"
+#include "app_log.hpp"
 #include "bundle_paths.hpp"
 #include "debug_trace.hpp"
 
@@ -16,6 +18,14 @@ int main(int argc, char** argv) {
     QApplication::setApplicationName(QStringLiteral("HMV Chart"));
     QApplication::setApplicationDisplayName(appinfo::name());
     QApplication::setApplicationVersion(appinfo::version());
+
+    // Install the file-logging message handler as early as possible so startup
+    // messages are captured, then apply the persisted opt-in state. The handler
+    // always chains to the default (console) handler; it only writes a file while
+    // enabled. The live Settings object drives later on/off changes from the menu.
+    // (Key must match settings.cpp's kLogToFile.)
+    applog::install();
+    applog::setEnabled(QSettings().value(QStringLiteral("system/logToFile"), false).toBool());
 
     // Resolve the bundled GDAL data directory (contains s57objectclasses.csv
     // etc.). CMake copies this from the GDAL installation next to the executable

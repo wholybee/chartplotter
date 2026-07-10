@@ -32,6 +32,7 @@ constexpr auto kTrackIntervalS  = "tracks/intervalSeconds";
 constexpr auto kTrackMinDistNm  = "tracks/minDistanceNm";
 constexpr auto kSrcPrio   = "data/sourcePriority";
 constexpr auto kAutoHide  = "menu/autoHide";
+constexpr auto kLogToFile = "system/logToFile";
 constexpr auto kDetailLvl = "display/chartDetailLevel";
 constexpr auto kScaminLvl = "display/chartScaminLevel";
 constexpr auto kSymScale    = "display/symbolScale";
@@ -90,6 +91,7 @@ Settings::Settings(QObject* parent) : QObject(parent) {
     // includes plugin sources) where it is consumed.
     dataSourcePriority_ = s.value(QLatin1String(kSrcPrio)).toStringList();
     autoHideMenu_ = s.value(QLatin1String(kAutoHide), true).toBool();
+    logToFile_    = s.value(QLatin1String(kLogToFile), false).toBool();
     chartDetailLevel_ = s.value(QLatin1String(kDetailLvl), 0.0).toDouble();
     if (chartDetailLevel_ < -2.0) chartDetailLevel_ = -2.0;
     if (chartDetailLevel_ >  2.0) chartDetailLevel_ =  2.0;
@@ -249,6 +251,13 @@ void Settings::setAutoHideMenu(bool on) {
     autoHideMenu_ = on;
     QSettings().setValue(QLatin1String(kAutoHide), on);
     emit autoHideMenuChanged(on);
+}
+
+void Settings::setLogToFile(bool on) {
+    if (on == logToFile_) return;
+    logToFile_ = on;
+    QSettings().setValue(QLatin1String(kLogToFile), on);
+    emit logToFileChanged(on);
 }
 
 void Settings::setVesselScale(double scale) {

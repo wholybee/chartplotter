@@ -1,5 +1,6 @@
 #include "main_window.hpp"
 #include "app_info.hpp"
+#include "app_log.hpp"
 #include "debug_trace.hpp"
 #include "about_dialog.hpp"
 #include "window_dragger.hpp"
@@ -258,6 +259,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     if (!geom.isEmpty()) restoreGeometry(geom);
 
     settings_ = new Settings(this);
+    // File logging is installed and given its initial state in main(); keep it in
+    // sync with the "Log to File" toggle for the rest of the session.
+    connect(settings_, &Settings::logToFileChanged, this, [](bool on) {
+        applog::setEnabled(on);
+    });
     // Seed the process-wide coordinate display format so every widget formats
     // lat/lon consistently from the first paint.
     units::setCoordFormat(settings_->angleFormat());

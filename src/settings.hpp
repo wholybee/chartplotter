@@ -104,6 +104,12 @@ public:
     // Close, and the chart remains interactive while it is visible.
     bool autoHideMenu() const { return autoHideMenu_; }
 
+    // When true, the application mirrors its log stream (qDebug/qWarning and the
+    // categorized GPU lifecycle — the same output shown on the console on Linux)
+    // to a file under %ProgramData%/<App> (or the app-data dir elsewhere). Opt-in;
+    // default off. Applied via applog::setEnabled().
+    bool logToFile() const { return logToFile_; }
+
     // Chart detail bias, in fractional bands. 0 = nominal; positive values
     // pull in higher-detail (larger-scale) cells; negative values back off to
     // lower-detail. Range -2.0 .. +2.0, in steps of 1.0 from the dialog.
@@ -176,6 +182,7 @@ public slots:
     void setTrackInterval(double seconds, double minDistanceNm);
     void setDataSourcePriority(const QStringList& orderedSourceIds);
     void setAutoHideMenu(bool on);
+    void setLogToFile(bool on);
     void setChartDetailLevel(double level);
     void setChartScaminLevel(double level);
     void setSymbolScale(double scale);
@@ -211,6 +218,7 @@ signals:
     void trackIntervalChanged(double seconds, double minDistanceNm);
     void dataSourcePriorityChanged(const QStringList& orderedSourceIds);
     void autoHideMenuChanged(bool on);
+    void logToFileChanged(bool on);
     void chartDetailLevelChanged(double level);
     void chartScaminLevelChanged(double level);
     void symbolScaleChanged(double scale);
@@ -252,6 +260,7 @@ private:
     double       trackMinDistNm_   = kDefaultTrackMinDistNm;
     QStringList   dataSourcePriority_;
     bool          autoHideMenu_ = true;   // legacy default = current behaviour
+    bool          logToFile_    = false;  // opt-in file logging (default off)
     double        chartDetailLevel_ = 0.0;   // -2.0 .. +2.0, 0 = nominal
     double        chartScaminLevel_ = 0.0;   // -1.0 .. +1.0, 0 = nominal SCAMIN
     double        symbolScale_      = 1.0;   // 0.5 .. 3.0, 1.0 = nominal

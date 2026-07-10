@@ -438,7 +438,7 @@ private:
     // black-screen fault), auto-falls back to the CPU painter and emits
     // gpuFellBackToCpu(). Only the "no frame at all" failure is caught here; a
     // device that renders but shows black would still have rendered frames (the
-    // gpu_log.hpp trace is what distinguishes those two cases in the field).
+    // "hmv.gpu" log trace is what distinguishes those two cases in the field).
     void armGpuWatchdog();
     void checkGpuWatchdog();
     // Touch-friendly zoom: same step as the wheel, anchored at the screen

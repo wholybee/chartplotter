@@ -14,7 +14,7 @@
 #include "chart_quilt.hpp"
 #include "gpu_chart_view.hpp"
 #include "gpu_batches.hpp"
-#include "gpu_log.hpp"
+#include "app_log.hpp"
 #include "bundle_paths.hpp"
 #include "debug_trace.hpp"
 
@@ -2119,13 +2119,19 @@ void ChartView::checkGpuWatchdog() {
     // the shell so it can show a brief note. The persisted "use GPU" preference is
     // left untouched: the next launch tries the GPU again, in case the driver has
     // since recovered.
-    gpulog::write(QStringLiteral("watchdog: no GPU frame in %1 ms - falling back "
-                                 "to CPU painter").arg(kGpuWatchdogMs));
+    qCWarning(lcGpu).noquote()
+        << QStringLiteral("watchdog: no GPU frame in %1 ms - falling back to CPU painter")
+               .arg(kGpuWatchdogMs);
     backendPref_ = RenderBackend::Cpu;
     applyBackend();                        // hides the GPU layers, rebuilds for the painter
-    emit gpuFellBackToCpu(
-        QStringLiteral("GPU acceleration unavailable — using CPU rendering. "
-                       "Details logged to %1").arg(gpulog::path()));
+    // Point the user at the log if they have it on; otherwise tell them how to
+    // capture the details next time (the RHI lifecycle is on the "hmv.gpu" log).
+    const QString note = applog::isEnabled()
+        ? QStringLiteral("GPU acceleration unavailable — using CPU rendering. "
+                         "Details in %1").arg(applog::logFilePath())
+        : QStringLiteral("GPU acceleration unavailable — using CPU rendering. "
+                         "Enable “Log to File” (menu ▸ Settings ▸ System) to capture details.");
+    emit gpuFellBackToCpu(note);
 }
 
 void ChartView::showEvent(QShowEvent* e) {

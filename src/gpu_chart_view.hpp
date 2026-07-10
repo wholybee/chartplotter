@@ -23,6 +23,7 @@
 
 #include <QRhiWidget>
 #include <QImage>
+#include <QLoggingCategory>
 #include <QPointF>
 #include <QString>
 #include <QStringList>
@@ -41,6 +42,11 @@ class QRhiSampler;
 class QRhiGraphicsPipeline;
 class QRhiShaderResourceBindings;
 QT_END_NAMESPACE
+
+// GPU/RHI lifecycle logging. Routed through the app-wide log stream (app_log),
+// so these land in the log file when "Log to File" is enabled and on the console
+// otherwise. Info-level so they are never filtered out.
+Q_DECLARE_LOGGING_CATEGORY(lcGpu)
 
 class GpuChartView : public QRhiWidget {
     Q_OBJECT

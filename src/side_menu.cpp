@@ -422,7 +422,7 @@ QWidget* SideMenu::buildSettingsPage() {
             [this] { emit navDataBrowserRequested(); });
     col->addWidget(navBrowserBtn);
 
-    col->addWidget(makeHeader(QStringLiteral("Menu")));
+    col->addWidget(makeHeader(QStringLiteral("System")));
     auto* autoHideBtn = makeCheckAction(QStringLiteral("Auto Hide Menu"),
                                         settings_->autoHideMenu());
     connect(autoHideBtn, &QPushButton::toggled, settings_, &Settings::setAutoHideMenu);
@@ -431,6 +431,17 @@ QWidget* SideMenu::buildSettingsPage() {
         if (autoHideBtn->isChecked() != on) autoHideBtn->setChecked(on);
     });
     col->addWidget(autoHideBtn);
+
+    // File logging: mirror the app's log stream (incl. the GPU lifecycle) to a
+    // file under ProgramData (Windows) / the app-data dir. Opt-in; the applog
+    // handler is driven from MainWindow's connection to logToFileChanged.
+    auto* logBtn = makeCheckAction(QStringLiteral("Log to File"),
+                                   settings_->logToFile());
+    connect(logBtn, &QPushButton::toggled, settings_, &Settings::setLogToFile);
+    connect(settings_, &Settings::logToFileChanged, logBtn, [logBtn](bool on) {
+        if (logBtn->isChecked() != on) logBtn->setChecked(on);
+    });
+    col->addWidget(logBtn);
 
     col->addStretch(1);
     // Back now lives on the header bar (the "‹" button), always reachable.
