@@ -53,6 +53,27 @@ int main(int argc, char** argv) {
     // bundle. Must be called before any worker threads are spawned.
     chart::init(gdalDataDir);
 
+#if defined(Q_OS_LINUX)
+    // The GPU chart layer is a QRhiWidget composited into the top-level window's
+    // backing store, which must be RHI-based. On Linux/Mesa — notably the
+    // Raspberry Pi (V3D) under Wayland with Qt 6.8 — Qt only makes the backing
+    // store RHI-capable *lazily*, when it notices a render-to-texture widget, and
+    // that hand-off intermittently fails ("QRhiWidget: No QRhi"): the GPU layer
+    // then never initializes and the watchdog falls back to CPU. Forcing the
+    // backing store to RHI (OpenGL) up-front, before any window is created, makes
+    // it reliable (confirmed on a Pi 4 / V3D / Wayland). Gate on the GPU
+    // preference so CPU-mode users on GL-less systems are never forced onto RHI,
+    // and honour an explicit override from the environment. Backend is pinned to
+    // OpenGL to match GpuChartView's api. (Key matches settings.cpp kRenderBackend.)
+    if (QSettings().value(QStringLiteral("display/renderBackend")).toString()
+            == QLatin1String("gpu")) {
+        if (!qEnvironmentVariableIsSet("QT_WIDGETS_RHI"))
+            qputenv("QT_WIDGETS_RHI", "1");
+        if (!qEnvironmentVariableIsSet("QT_WIDGETS_RHI_BACKEND"))
+            qputenv("QT_WIDGETS_RHI_BACKEND", "opengl");
+    }
+#endif
+
     MainWindow w;
     w.show();
     const int rc = app.exec();
