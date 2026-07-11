@@ -252,11 +252,16 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     setWindowTitle(appinfo::name());
     resize(1100, 750);   // first-run default; overridden by restoreGeometry below
 
-    // Restore the previous size / position / maximised state (no-op on first run
-    // or when the saved screen no longer exists — Qt rejects an off-screen rect).
-    const QByteArray geom =
-        QSettings().value(QStringLiteral("window/geometry")).toByteArray();
-    if (!geom.isEmpty()) restoreGeometry(geom);
+    // NB: restoreGeometry() must NOT be called here. When the saved state is
+    // maximized/fullscreen it calls setWindowState(), which creates the native
+    // window immediately — and Qt decides once, at window creation, whether the
+    // window composites through the RHI by scanning the widget tree for
+    // render-to-texture widgets (q_evaluateRhiConfig). At this point the GPU
+    // chart layer (a QRhiWidget) does not exist yet, so the window would be
+    // locked to raster compositing for its lifetime and the GPU backend could
+    // never initialize ("QRhiWidget: No QRhi" — the long-standing black-chart-
+    // when-closed-maximized bug). It is called at the end of this constructor,
+    // after setRenderBackend() has created the GPU layer.
 
     settings_ = new Settings(this);
     // File logging is installed and given its initial state in main(); keep it in
@@ -711,6 +716,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
                                   settings_->viewScale());
         rescanSelected();
     }
+
+    // Restore the previous size / position / maximised state (no-op on first run
+    // or when the saved screen no longer exists — Qt rejects an off-screen rect).
+    // Deliberately last: a saved maximized/fullscreen state makes this create the
+    // native window on the spot, and by now the GPU chart layer exists so the
+    // window is created RHI-capable (see the note at the top of this constructor).
+    const QByteArray geom =
+        QSettings().value(QStringLiteral("window/geometry")).toByteArray();
+    if (!geom.isEmpty()) restoreGeometry(geom);
 }
 
 // Defined here (not =default in the header) so CoreApi/PluginManager are complete

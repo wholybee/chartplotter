@@ -555,6 +555,11 @@ private:
     // GPU fallback watchdog (see armGpuWatchdog/checkGpuWatchdog). Single-shot;
     // on expiry it condemns the GPU only if the layer never rendered a frame.
     QTimer*       gpuWatchdog_ = nullptr;
+    // True when the GPU layer was created after the top-level's native window
+    // already existed (runtime CPU->GPU toggle): Qt fixed the window's compositing
+    // path at creation, so RHI can only engage after an app restart. Drives the
+    // wording of the watchdog's fallback note.
+    bool          gpuLayerLateCreate_ = false;
     bool          gpuDrawListDirty_ = true;
     int           basemapGpuCount_ = 0;
     bool          gpuRasterDirty_ = false;   // raster underlay needs recompositing

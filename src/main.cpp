@@ -54,17 +54,20 @@ int main(int argc, char** argv) {
     chart::init(gdalDataDir);
 
 #if defined(Q_OS_LINUX)
-    // The GPU chart layer is a QRhiWidget composited into the top-level window's
-    // backing store, which must be RHI-based. On Linux/Mesa — notably the
-    // Raspberry Pi (V3D) under Wayland with Qt 6.8 — Qt only makes the backing
-    // store RHI-capable *lazily*, when it notices a render-to-texture widget, and
-    // that hand-off intermittently fails ("QRhiWidget: No QRhi"): the GPU layer
-    // then never initializes and the watchdog falls back to CPU. Forcing the
-    // backing store to RHI (OpenGL) up-front, before any window is created, makes
-    // it reliable (confirmed on a Pi 4 / V3D / Wayland). Gate on the GPU
-    // preference so CPU-mode users on GL-less systems are never forced onto RHI,
-    // and honour an explicit override from the environment. Backend is pinned to
-    // OpenGL to match GpuChartView's api. (Key matches settings.cpp kRenderBackend.)
+    // Belt-and-braces for the GPU chart layer (a QRhiWidget composited into the
+    // top-level window's backing store). Qt decides ONCE, when a window's native
+    // handle is created, whether that window composites through the RHI — by
+    // scanning the widget tree for render-to-texture widgets. Any code path that
+    // creates the window before the GPU layer exists locks the window to raster
+    // and the GPU backend can never initialize ("QRhiWidget: No QRhi"). The known
+    // such path (restoreGeometry with a saved maximized state) is fixed by
+    // ordering in MainWindow's constructor; this forcing removes the whole class
+    // of problem on Linux by making every window RHI-composited up front, which
+    // also matches what was field-verified on Raspberry Pi 4 (V3D/Wayland).
+    // Gate on the GPU preference so CPU-mode users on GL-less systems are never
+    // forced onto RHI, and honour an explicit override from the environment.
+    // Backend pinned to OpenGL to match GpuChartView's api. (Key matches
+    // settings.cpp kRenderBackend.)
     if (QSettings().value(QStringLiteral("display/renderBackend")).toString()
             == QLatin1String("gpu")) {
         if (!qEnvironmentVariableIsSet("QT_WIDGETS_RHI"))

@@ -1870,6 +1870,19 @@ void ChartView::applyBackend() {
 
     if (useGpu_) {
         if (!gpuLayer_) {
+            // Qt fixes a top-level window's compositing path (RHI vs raster) once,
+            // when its native window is created, by scanning the tree for
+            // render-to-texture widgets. If the native window already exists now
+            // (e.g. the GPU toggle was flipped on at runtime), this new QRhiWidget
+            // cannot be composited until the window is recreated — record that so
+            // the watchdog's fallback note can say "restart to enable GPU" instead
+            // of wrongly blaming the device.
+            gpuLayerLateCreate_ =
+                window() && window()->testAttribute(Qt::WA_WState_Created);
+            if (gpuLayerLateCreate_)
+                qCWarning(lcGpu).noquote()
+                    << "GPU layer created after the top-level native window; RHI "
+                       "compositing needs an app restart to engage";
             gpuLayer_ = new GpuChartView(this);
             gpuLayer_->setAttribute(Qt::WA_TransparentForMouseEvents, true);  // input -> this
             gpuLayer_->setGeometry(rect());
@@ -2124,13 +2137,21 @@ void ChartView::checkGpuWatchdog() {
                .arg(kGpuWatchdogMs);
     backendPref_ = RenderBackend::Cpu;
     applyBackend();                        // hides the GPU layers, rebuilds for the painter
-    // Point the user at the log if they have it on; otherwise tell them how to
-    // capture the details next time (the RHI lifecycle is on the "hmv.gpu" log).
-    const QString note = applog::isEnabled()
-        ? QStringLiteral("GPU acceleration unavailable — using CPU rendering. "
-                         "Details in %1").arg(applog::logFilePath())
-        : QStringLiteral("GPU acceleration unavailable — using CPU rendering. "
-                         "Enable “Log to File” (menu ▸ Settings ▸ System) to capture details.");
+    // Pick an honest note. A GPU layer created after the top-level's native
+    // window can never composite in this process (Qt fixed the window's
+    // compositing path at creation) — a restart genuinely enables it, so say
+    // that instead of blaming the device. Otherwise point at the log (or at the
+    // toggle that would capture one).
+    QString note;
+    if (gpuLayerLateCreate_)
+        note = QStringLiteral("GPU acceleration takes effect after restarting the "
+                              "application — using CPU rendering for now.");
+    else if (applog::isEnabled())
+        note = QStringLiteral("GPU acceleration unavailable — using CPU rendering. "
+                              "Details in %1").arg(applog::logFilePath());
+    else
+        note = QStringLiteral("GPU acceleration unavailable — using CPU rendering. "
+                              "Enable “Log to File” (menu ▸ Settings ▸ System) to capture details.");
     emit gpuFellBackToCpu(note);
 }
 
