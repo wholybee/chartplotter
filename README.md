@@ -222,11 +222,10 @@ The steps below assume a **clean Mac** with no developer tools installed yet.
 
    Follow its final instructions to add `brew` to your `PATH`.
 
-3. **Dependencies** — Qt 6, GDAL, the build tools, and `dylibbundler` (used to
-   make the `.app` self-contained; see below):
+3. **Dependencies** — Qt 6, GDAL, and the build tools:
 
    ```bash
-   brew install cmake ninja qt gdal dylibbundler
+   brew install cmake ninja qt gdal
    ```
 
 4. **Configure and build:**
@@ -263,12 +262,11 @@ the `chartviewer` target, so building only that scheme skips them.
 
 On macOS the build runs a deploy step (`cmake/macdeploy.cmake`) that copies the Qt
 frameworks/plugins (via `macdeployqt`) and GDAL's full dependency closure — GEOS,
-PROJ, SQLite, … (via `dylibbundler`) — into the `.app` and rewrites their load
-paths, so it launches with neither Qt nor Homebrew present. It runs automatically
-as part of a normal build. If `dylibbundler` is not installed the build still
-succeeds, but the `.app` will depend on Homebrew's libraries at runtime. Turn the
-step off with `-DCHARTPLOTTER_MACOS_DEPLOY=OFF` for a faster inner-loop build that
-runs against the libraries in place.
+PROJ, SQLite, … (via `cmake/macos_bundle_libs.sh`) — into the `.app` and rewrites
+their load paths, so it launches with neither Qt nor Homebrew present. It runs
+automatically as part of a normal build. Turn the step off with
+`-DCHARTPLOTTER_MACOS_DEPLOY=OFF` for a faster inner-loop build that runs against
+the libraries in place.
 
 ## Test data
 

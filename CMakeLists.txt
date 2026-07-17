@@ -529,13 +529,13 @@ add_subdirectory(plugins/instruments_plugin)
 # macOS analogue of the Windows windeployqt step. cmake/macdeploy.cmake bundles
 # BOTH the Qt frameworks/plugins (via macdeployqt) and the non-Qt library closure
 # — GDAL and its deep dependencies GEOS, PROJ, SQLite, TIFF, ... (via
-# dylibbundler) — into the built .app and rewrites their references, so it
-# launches on a Mac without Homebrew/Qt installed. It also fixes the app's own
-# plugins (Contents/PlugIns) and ad-hoc re-signs the bundle.
+# cmake/macos_bundle_libs.sh) — into the built .app and rewrites their references,
+# so it launches on a Mac without Homebrew/Qt installed. It also fixes the app's
+# own plugins (Contents/PlugIns) and ad-hoc re-signs the bundle.
 #
 # macdeployqt on its own leaves GDAL half-bundled (it copies libgdal but not its
-# deeper @rpath deps like libgeos.3.14.1), so the app aborts at launch with
-# "Library not loaded: @rpath/libgeos..."; dylibbundler closes that gap.
+# deeper deps like libgeos), so the app aborts at launch with "Library not
+# loaded: ... libgeos..."; the bundler script closes that gap.
 #
 # Unlike windeployqt (a chartviewer POST_BUILD), this is a standalone target in
 # ALL that depends on the exe AND every plugin: the plugins are copied into the
@@ -561,31 +561,41 @@ if(APPLE)
         set(_macdeployqt "${MACDEPLOYQT}")
     endif()
 
-    # dylibbundler bundles the non-Qt closure. Not fatal if absent (macdeploy.cmake
-    # warns and the app then needs Homebrew's GDAL present at runtime).
-    find_program(DYLIBBUNDLER dylibbundler)
-
-    # The Qt lib dir, so dylibbundler can be told to leave the Qt frameworks to
-    # macdeployqt. Derive it from Qt6::Core's framework path (strip the trailing
-    # /QtCore.framework/...), and also resolve any Homebrew opt->Cellar symlink so
-    # dylibbundler's ignore matches however it canonicalises the path.
-    get_target_property(_qtcore_loc Qt6::Core IMPORTED_LOCATION_RELEASE)
-    if(NOT _qtcore_loc)
-        get_target_property(_qtcore_loc Qt6::Core IMPORTED_LOCATION)
+    # Search dirs the bundler script uses to locate GDAL's deep deps referenced
+    # via @rpath. Homebrew symlinks every keg library into <prefix>/lib, which
+    # covers the whole closure; the GDAL lib dir is passed too as a fallback.
+    set(_homebrew_lib "")
+    find_program(BREW brew)
+    if(BREW)
+        execute_process(COMMAND ${BREW} --prefix
+            OUTPUT_VARIABLE _brew_prefix OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _brew_rc ERROR_QUIET)
+        if(_brew_rc EQUAL 0 AND _brew_prefix)
+            set(_homebrew_lib "${_brew_prefix}/lib")
+        endif()
     endif()
-    string(REGEX REPLACE "/QtCore\\.framework/.*$" "" _qt_lib_dir "${_qtcore_loc}")
-    get_filename_component(_qt_lib_dir_real "${_qt_lib_dir}" REALPATH)
+
+    set(_gdal_lib_dir "")
+    if(TARGET GDAL::GDAL)
+        get_target_property(_gdal_loc GDAL::GDAL IMPORTED_LOCATION_RELEASE)
+        if(NOT _gdal_loc)
+            get_target_property(_gdal_loc GDAL::GDAL IMPORTED_LOCATION)
+        endif()
+        if(_gdal_loc)
+            get_filename_component(_gdal_lib_dir "${_gdal_loc}" DIRECTORY)
+        endif()
+    endif()
 
     if(CHARTPLOTTER_MACOS_DEPLOY AND _macdeployqt)
         add_custom_target(macdeploy ALL
             COMMAND ${CMAKE_COMMAND}
                     -DAPP=$<TARGET_BUNDLE_DIR:chartviewer>
                     -DMACDEPLOYQT=${_macdeployqt}
-                    -DDYLIBBUNDLER=${DYLIBBUNDLER}
-                    -DQT_LIB_DIR=${_qt_lib_dir}
-                    -DQT_LIB_DIR_REAL=${_qt_lib_dir_real}
+                    -DBUNDLE_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/macos_bundle_libs.sh
+                    -DHOMEBREW_LIB=${_homebrew_lib}
+                    -DGDAL_LIB_DIR=${_gdal_lib_dir}
                     -P ${CMAKE_SOURCE_DIR}/cmake/macdeploy.cmake
-            COMMENT "Bundling Qt + GDAL closure into the .app (macdeployqt + dylibbundler)"
+            COMMENT "Bundling Qt + GDAL closure into the .app"
             VERBATIM
         )
         # Order after the exe + all plugins so their deployed output is in the
