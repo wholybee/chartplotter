@@ -8,46 +8,125 @@ threads, as you pan and zoom.
 **CM93** (C-Map CM93 v2) vector charts are also supported, via a separate
 dynamically-loaded plugin. Because its decoding derives from OpenCPN, that plugin
 is **GPL-2.0** and is maintained in its **own repository** (`chartplotter-cm93`),
-built against the plugin-SDK headers in `src/` (`chart_source.hpp` et al.); this
+built against the plugin-SDK headers in `src/` (`chart\_source.hpp` et al.); this
 app stays LGPL-2.1 and links none of it. Build that plugin and drop its
-`chartplotter_cm93_plugin.dll` into `plugins/` (with `Qt6Concurrent.dll` next to
+`chartplotter\_cm93\_plugin.dll` into `plugins/` (with `Qt6Concurrent.dll` next to
 the exe), then point the app at a CM93 dataset root (the folder with
 `CM93OBJ.DIC`). See [docs/cm93.md](docs/cm93.md).
 
+## 
+
+## Installing
+
+The latest release build is here:
+https://github.com/wholybee/chartplotter/releases
+
+### 
+
+### You will need to download charts. NOAA ENC charts can be downloaded from
+
+https://charts.noaa.gov/ENCs/ENCs.shtml
+I recommend just downloading the whole set "ALL" but if space is a concern you can browse and download only what you need.
+
+MBTiles charts are available from multiple sources, but Bruce Balan's Chart Locker is has a great selection:
+https://chartlocker.brucebalan.com/
+
+### 
+
+### You will need to download the GSHHG Basemap
+
+https://www.soest.hawaii.edu/pwessel/gshhg/
+Scroll down near the bottom, the zip file you need is the ESRI shapefiles
+
+
+
+### Windows
+
+Run HMV.Chartplotter-x.x.x-win64.exe installer from the latest release build.
+
+### 
+
+### rpi/Linux
+
+HMV Chartplotter requires qt6 version 6.8 or newer. 6.8 is the version that ships with Debian Trixie. This means that you will have troubles getting it to work with Bookworm.
+
+#### 
+
+#### First, install the dependencies:
+
+sudo apt update
+sudo apt upgrade
+sudo apt install qt6-base-dev
+sudo apt install libgdal36
+sudo apt install qt6-websockets-dev
+sudo apt install qt6-base-dev-tools
+
+#### Extract the archive and run the application:
+
+tar -xf wholybee-chartplotter-v0.5.4-debian-trixie-arm64.tar.gz
+cd wholybee-chartplotter-v0.5.4-debian-trixie-arm64
+./hmvchartplotter
+
+### 
+
+### MacOS
+
+I have compiled on MacOS, and it does work. However, there is minimal testing and no automatic build. It will be supported in the future.
+
+## 
+
+## First Run
+
+When opened for the first time, you will need to point it at your unzipped charts.
+
+#### 
+
+#### Basemap Folder
+
+Click the Gear, scroll to Basemap folder, and select the folder where the GSHHG file was unzipped.
+
+#### 
+
+#### Charts
+
+Click the Gear, scroll to chart sets. Add a set of charts for each set you wish to create. At a minimum, you probably want all your NOAA ENC charts in one set, and MBTiles in probably several sets based on area/satellite/Chart.
+
+## 
+
 ## How it works
 
-### 1. Catalog the tree (cheap, cached)
+### 1\. Catalog the tree (cheap, cached)
 
 When you open a folder, a background scan walks the tree for ENC base cells
-(`*.000`) and records, for each cell:
+(`\*.000`) and records, for each cell:
 
-- its **footprint** (bounding box), read cheaply from the small `M_COVR`
-  coverage layer rather than the full geometry, and
-- its **usage band** (navigational purpose: 1 = overview … 6 = berthing), which
-  comes for free from the cell name — the band digit is the 3rd character of an
-  ENC filename (e.g. `US`**`5`**`FL14M.000` is a harbour cell).
+* its **footprint** (bounding box), read cheaply from the small `M\_COVR`
+coverage layer rather than the full geometry, and
+* its **usage band** (navigational purpose: 1 = overview … 6 = berthing), which
+comes for free from the cell name — the band digit is the 3rd character of an
+ENC filename (e.g. `US`**`5`**`FL14M.000` is a harbour cell).
 
 Footprints are cached to disk (keyed by file path + size + modified-time, one
 cache file per root), so subsequent launches skip re-reading the cells.
 
-### 2. Select by viewport + zoom (with gap-fill quilting)
+### 2\. Select by viewport + zoom (with gap-fill quilting)
 
 On every pan/zoom (debounced), the view:
 
-- computes the visible world rectangle and the zoom-appropriate *target* band,
-- selects every available band from overview up to that target (`1..maxBand`)
-  whose footprint intersects the viewport, and
-- draws them **band-major**: coarser bands underneath, finer bands on top. A
-  finer cell's opaque area fills occlude the coarser cell within its footprint,
-  while anywhere the finer band has no coverage, the next coarser available band
-  shows through. That is the gap fill — missing bands are simply skipped, so a
-  gap is filled by whatever the next *available* coarser band is.
+* computes the visible world rectangle and the zoom-appropriate *target* band,
+* selects every available band from overview up to that target (`1..maxBand`)
+whose footprint intersects the viewport, and
+* draws them **band-major**: coarser bands underneath, finer bands on top. A
+finer cell's opaque area fills occlude the coarser cell within its footprint,
+while anywhere the finer band has no coverage, the next coarser available band
+shows through. That is the gap fill — missing bands are simply skipped, so a
+gap is filled by whatever the next *available* coarser band is.
 
 If an area has no coverage at or below the target band (only finer data exists),
 it falls back to the coarsest band finer than the target so the screen isn't
 blank.
 
-### 3. Load asynchronously
+### 3\. Load asynchronously
 
 Newly-visible cells are loaded on a `QThreadPool` — each worker opens its own
 GDAL handle (the thread-safe usage pattern) and returns parsed geometry, which
@@ -60,7 +139,7 @@ Rendering itself is unchanged from the single-folder version: `QGraphicsView`
 with one item per feature, cosmetic pens for constant line width, depth-shaded
 fills, and sounding labels that appear when zoomed in.
 
-### 4. Cache parsed cells (LRU) and clip per region
+### 4\. Cache parsed cells (LRU) and clip per region
 
 Two layers keep panning and zooming fast:
 
@@ -74,7 +153,7 @@ least-recently-used cells are evicted. Cells currently on screen are *pinned* an
 never evicted, so a tight budget can never drop visible geometry — it just holds
 the live set and trims everything else.
 
-**Per-region clipping** (`geom_clip`). The cached value is the cell's *full*
+**Per-region clipping** (`geom\_clip`). The cached value is the cell's *full*
 parse, independent of any viewport. Scene items are built by clipping that parse
 to a region a little larger than the view (Sutherland–Hodgman for area rings,
 Cohen–Sutherland for contour/coastline polylines, a rect test for soundings and
@@ -97,24 +176,24 @@ ever appear**.
 
 ## Controls
 
-- **Drag** — pan. **Scroll wheel** — zoom (centred on cursor).
-- **Fit** — frame the whole catalog (all cells, not just loaded ones).
-- Status bar: root folder + scan summary (left), band / cells shown (middle),
-  cursor lat/long (right).
+* **Drag** — pan. **Scroll wheel** — zoom (centred on cursor).
+* **Fit** — frame the whole catalog (all cells, not just loaded ones).
+* Status bar: root folder + scan summary (left), band / cells shown (middle),
+cursor lat/long (right).
 
 ## Building
 
 Requires Qt 6 (Widgets **and Concurrent**, both part of Qt Base), GDAL with the
-S-57 driver, CMake ≥ 3.16, C++17. See `BUILDING_WINDOWS.md` for the
+S-57 driver, CMake ≥ 3.16, C++17. See `BUILDING\_WINDOWS.md` for the
 Visual Studio (MSVC) path; quick Linux build:
 
 ```bash
 sudo apt install cmake g++ qt6-base-dev libgdal-dev
-cmake -S . -B build && cmake --build build
+cmake -S . -B build \&\& cmake --build build
 ./build/hmvchartplotter
 ```
 
-On Windows, remember `GDAL_DATA` must point at GDAL's data folder so the S-57
+On Windows, remember `GDAL\_DATA` must point at GDAL's data folder so the S-57
 driver finds `s57objectclasses.csv` / `s57attributes.csv`.
 
 ## Test data
@@ -126,24 +205,25 @@ the exchange set(s) anywhere under one root and point the app at that root.
 
 ```
 src/projection.hpp     Mercator <-> lon/lat helpers
-src/chart_loader.*     chart:: free functions — per-cell load + cheap extent (GDAL)
-src/geom_clip.hpp      pure polygon/polyline/point clipping math (no Qt/GDAL)
-src/feature_cache.hpp  FeatureCache — LRU of parsed cells, keyed by path
-src/chart_catalog.*    ChartCatalog — async tree scan, footprints, band, disk cache
-src/chart_view.*       QGraphicsView — viewport/zoom selection, async load/unload
-src/main_window.*      QMainWindow — toolbar, status bar, folder dialog, QSettings
+src/chart\_loader.\*     chart:: free functions — per-cell load + cheap extent (GDAL)
+src/geom\_clip.hpp      pure polygon/polyline/point clipping math (no Qt/GDAL)
+src/feature\_cache.hpp  FeatureCache — LRU of parsed cells, keyed by path
+src/chart\_catalog.\*    ChartCatalog — async tree scan, footprints, band, disk cache
+src/chart\_view.\*       QGraphicsView — viewport/zoom selection, async load/unload
+src/main\_window.\*      QMainWindow — toolbar, status bar, folder dialog, QSettings
 src/main.cpp           QApplication entry point
 ```
 
-`geom_clip.hpp` and `feature_cache.hpp` are deliberately free of Qt and GDAL so
-they can be unit-tested in isolation — see `test_clip.cpp`.
+`geom\_clip.hpp` and `feature\_cache.hpp` are deliberately free of Qt and GDAL so
+they can be unit-tested in isolation — see `test\_clip.cpp`.
 
 ## Limitations / next steps
 
-- **No load cancellation.** In-flight loads for cells that scrolled away aren't
-  cancelled; their results are simply discarded on arrival (but still cached, so
-  the work isn't wasted if the cell is revisited).
-- First scan of a very large tree opens every cell once to read its footprint
-  (then caches it). Subsequent launches are instant.
-- Symbology is approximate, not S-52, and not for navigation. ENC update files
-  (`.001`, …) are not applied.
+* **No load cancellation.** In-flight loads for cells that scrolled away aren't
+cancelled; their results are simply discarded on arrival (but still cached, so
+the work isn't wasted if the cell is revisited).
+* First scan of a very large tree opens every cell once to read its footprint
+(then caches it). Subsequent launches are instant.
+* Symbology is approximate, not S-52, and not for navigation. ENC update files
+(`.001`, …) are not applied.
+
