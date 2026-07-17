@@ -524,23 +524,28 @@ add_subdirectory(plugins/instruments_plugin)
 # chartplotter_cm93_plugin.dll into plugins/ next to the exe (with Qt6Concurrent.dll
 # next to the exe) to enable CM93 charts. See docs/cm93.md.
 
-# ---- Qt framework deployment: self-contained .app (macOS only) --------------
+# ---- Self-contained .app deployment (macOS only) ----------------------------
 #
-# macOS analogue of the Windows windeployqt step. macdeployqt copies the Qt
-# frameworks and the Qt platform/style plugins into the built .app and rewrites
-# the host exe's framework references to @rpath, so it launches on a Mac without
-# Qt (or Homebrew) installed. cmake/macdeploy.cmake also fixes the app's own
-# plugins (Contents/MacOS/plugins) and ad-hoc re-signs the bundle.
+# macOS analogue of the Windows windeployqt step. cmake/macdeploy.cmake bundles
+# BOTH the Qt frameworks/plugins (via macdeployqt) and the non-Qt library closure
+# — GDAL and its deep dependencies GEOS, PROJ, SQLite, TIFF, ... (via
+# dylibbundler) — into the built .app and rewrites their references, so it
+# launches on a Mac without Homebrew/Qt installed. It also fixes the app's own
+# plugins (Contents/PlugIns) and ad-hoc re-signs the bundle.
+#
+# macdeployqt on its own leaves GDAL half-bundled (it copies libgdal but not its
+# deeper @rpath deps like libgeos.3.14.1), so the app aborts at launch with
+# "Library not loaded: @rpath/libgeos..."; dylibbundler closes that gap.
 #
 # Unlike windeployqt (a chartviewer POST_BUILD), this is a standalone target in
 # ALL that depends on the exe AND every plugin: the plugins are copied into the
 # bundle by their own post-build steps, which run *after* chartviewer, so a
 # chartviewer POST_BUILD would deploy before the plugins exist. Turn off with
 # -DCHARTPLOTTER_MACOS_DEPLOY=OFF (e.g. for a fast inner-loop build that just runs
-# against the Qt libraries at their build-time paths).
+# against the Qt / Homebrew libraries at their build-time paths).
 if(APPLE)
     option(CHARTPLOTTER_MACOS_DEPLOY
-        "Run macdeployqt after build to make the .app self-contained" ON)
+        "Bundle Qt + the non-Qt (GDAL) closure into the .app after build" ON)
 
     # Locate macdeployqt: prefer the imported tool target Qt ships; otherwise
     # find it next to qmake (same bin/ dir), then fall back to PATH.
@@ -556,17 +561,35 @@ if(APPLE)
         set(_macdeployqt "${MACDEPLOYQT}")
     endif()
 
+    # dylibbundler bundles the non-Qt closure. Not fatal if absent (macdeploy.cmake
+    # warns and the app then needs Homebrew's GDAL present at runtime).
+    find_program(DYLIBBUNDLER dylibbundler)
+
+    # The Qt lib dir, so dylibbundler can be told to leave the Qt frameworks to
+    # macdeployqt. Derive it from Qt6::Core's framework path (strip the trailing
+    # /QtCore.framework/...), and also resolve any Homebrew opt->Cellar symlink so
+    # dylibbundler's ignore matches however it canonicalises the path.
+    get_target_property(_qtcore_loc Qt6::Core IMPORTED_LOCATION_RELEASE)
+    if(NOT _qtcore_loc)
+        get_target_property(_qtcore_loc Qt6::Core IMPORTED_LOCATION)
+    endif()
+    string(REGEX REPLACE "/QtCore\\.framework/.*$" "" _qt_lib_dir "${_qtcore_loc}")
+    get_filename_component(_qt_lib_dir_real "${_qt_lib_dir}" REALPATH)
+
     if(CHARTPLOTTER_MACOS_DEPLOY AND _macdeployqt)
         add_custom_target(macdeploy ALL
             COMMAND ${CMAKE_COMMAND}
                     -DAPP=$<TARGET_BUNDLE_DIR:chartviewer>
                     -DMACDEPLOYQT=${_macdeployqt}
+                    -DDYLIBBUNDLER=${DYLIBBUNDLER}
+                    -DQT_LIB_DIR=${_qt_lib_dir}
+                    -DQT_LIB_DIR_REAL=${_qt_lib_dir_real}
                     -P ${CMAKE_SOURCE_DIR}/cmake/macdeploy.cmake
-            COMMENT "Bundling Qt frameworks into the .app (macdeployqt)"
+            COMMENT "Bundling Qt + GDAL closure into the .app (macdeployqt + dylibbundler)"
             VERBATIM
         )
         # Order after the exe + all plugins so their deployed output is in the
-        # bundle before macdeployqt fixes it (same rationale as the Windows
+        # bundle before macdeploy fixes it (same rationale as the Windows
         # installer target below).
         add_dependencies(macdeploy chartviewer
             signalk_plugin gpx_plugin wmm_plugin instruments_plugin)

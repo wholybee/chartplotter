@@ -184,8 +184,9 @@ cursor lat/long (right).
 ## Building
 
 Requires Qt 6 (Widgets **and Concurrent**, both part of Qt Base), GDAL with the
-S-57 driver, CMake ≥ 3.16, C++17. See `BUILDING\_WINDOWS.md` for the
-Visual Studio (MSVC) path; quick Linux build:
+S-57 driver, CMake ≥ 3.16, C++17.
+
+### Linux
 
 ```bash
 sudo apt install cmake g++ qt6-base-dev libgdal-dev
@@ -193,8 +194,81 @@ cmake -S . -B build \&\& cmake --build build
 ./build/hmvchartplotter
 ```
 
-On Windows, remember `GDAL\_DATA` must point at GDAL's data folder so the S-57
-driver finds `s57objectclasses.csv` / `s57attributes.csv`.
+### Windows
+
+See `BUILDING_WINDOWS.md` for the Visual Studio (MSVC) path. Remember `GDAL_DATA`
+must point at GDAL's data folder so the S-57 driver finds `s57objectclasses.csv`
+/ `s57attributes.csv`.
+
+### macOS
+
+The steps below assume a **clean Mac** with no developer tools installed yet.
+
+1. **Command Line Tools** (clang, git, make):
+
+   ```bash
+   xcode-select --install
+   ```
+
+   This is enough to build from the command line. To open the project in the
+   Xcode IDE (optional, see below), also install the full **Xcode** from the App
+   Store.
+
+2. **Homebrew** — the package manager ([brew.sh](https://brew.sh)):
+
+   ```bash
+   /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+   ```
+
+   Follow its final instructions to add `brew` to your `PATH`.
+
+3. **Dependencies** — Qt 6, GDAL, the build tools, and `dylibbundler` (used to
+   make the `.app` self-contained; see below):
+
+   ```bash
+   brew install cmake ninja qt gdal dylibbundler
+   ```
+
+4. **Configure and build:**
+
+   ```bash
+   cmake -S . -B build/macos -G Ninja \
+     -DCMAKE_PREFIX_PATH="$(brew --prefix qt)" \
+     -DCMAKE_BUILD_TYPE=Release
+   cmake --build build/macos
+   open build/macos/hmvchartplotter.app
+   ```
+
+GDAL's data files and the Qt/GDAL libraries are bundled into the `.app`
+automatically, so the result runs on a Mac that has neither Qt nor Homebrew
+installed.
+
+#### Building in Xcode
+
+CMake can generate an Xcode project (this needs the full **Xcode**, not just the
+Command Line Tools):
+
+```bash
+cmake -S . -B build/xcode -G Xcode -DCMAKE_PREFIX_PATH="$(brew --prefix qt)"
+open build/xcode/marine_chart_viewer_qt.xcodeproj
+```
+
+It is a CMake-generated project — edit `CMakeLists.txt` (not the project) and
+re-run CMake. Like the Visual Studio generator it is multi-config: pick
+Debug/Release in the scheme. Build the **macdeploy** target (or `ALL_BUILD`) to
+produce the fully bundled app — the plotter's own plugins are not dependencies of
+the `chartviewer` target, so building only that scheme skips them.
+
+#### Self-contained bundle
+
+On macOS the build runs a deploy step (`cmake/macdeploy.cmake`) that copies the Qt
+frameworks/plugins (via `macdeployqt`) and GDAL's full dependency closure — GEOS,
+PROJ, SQLite, … (via `dylibbundler`) — into the `.app` and rewrites their load
+paths, so it launches with neither Qt nor Homebrew present. It runs automatically
+as part of a normal build. If `dylibbundler` is not installed the build still
+succeeds, but the `.app` will depend on Homebrew's libraries at runtime. Turn the
+step off with `-DCHARTPLOTTER_MACOS_DEPLOY=OFF` for a faster inner-loop build that
+runs against the libraries in place.
 
 ## Test data
 
