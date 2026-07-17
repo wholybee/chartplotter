@@ -44,10 +44,11 @@ private:
 CoreApi::CoreApi(NavDataStore* store, AisTargetStore* ais, RouteStore* routes,
                  SideMenu* menu, ChartView* view,
                  DataSourceRegistry* registry, ChartSourceRegistry* chartSources,
+                 RasterChartSourceRegistry* rasterSources,
                  QWidget* dialogParent)
     : store_(store), ais_(ais), routes_(routes), menu_(menu), view_(view),
       registry_(registry), chartSources_(chartSources),
-      dialogParent_(dialogParent) {}
+      rasterSources_(rasterSources), dialogParent_(dialogParent) {}
 
 CoreApi::~CoreApi() = default;
 
@@ -144,4 +145,14 @@ void CoreApi::unregisterChartSource(IChartSource* source) {
     // loads before the plugin frees it (view_ and catalog_ outlive plugin
     // shutdown — see MainWindow's destructor note).
     if (view_) view_->onChartSourceUnregistered(source);
+}
+
+void CoreApi::registerRasterChartSource(IRasterChartSource* source) {
+    if (rasterSources_) rasterSources_->add(source);
+}
+void CoreApi::unregisterRasterChartSource(IRasterChartSource* source) {
+    if (rasterSources_) rasterSources_->remove(source);
+    // Drain in-flight tile() calls on the raster worker before the plugin frees
+    // the source, and refresh the layer without it.
+    if (view_) view_->onRasterChartSourceUnregistered(source);
 }

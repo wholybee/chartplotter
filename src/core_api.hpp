@@ -17,7 +17,9 @@ class ChartView;
 class QWidget;
 class DataSourceRegistry;
 class ChartSourceRegistry;
+class RasterChartSourceRegistry;
 class IChartSource;
+class IRasterChartSource;
 
 // Concrete ICoreApi: routes plugin calls to the real core objects. Owned by the
 // PluginManager; references (does not own) the core objects it bridges to.
@@ -26,6 +28,7 @@ public:
     CoreApi(NavDataStore* store, AisTargetStore* ais, RouteStore* routes,
             SideMenu* menu, ChartView* view,
             DataSourceRegistry* registry, ChartSourceRegistry* chartSources,
+            RasterChartSourceRegistry* rasterSources,
             QWidget* dialogParent);
     ~CoreApi() override;
 
@@ -56,6 +59,9 @@ public:
     void registerChartSource(IChartSource* source) override;
     void unregisterChartSource(IChartSource* source) override;
 
+    void registerRasterChartSource(IRasterChartSource* source) override;
+    void unregisterRasterChartSource(IRasterChartSource* source) override;
+
     QWidget* dialogParent() override { return dialogParent_; }
 
 private:
@@ -66,6 +72,7 @@ private:
     ChartView*          view_ = nullptr;
     DataSourceRegistry* registry_ = nullptr;
     ChartSourceRegistry* chartSources_ = nullptr;
+    RasterChartSourceRegistry* rasterSources_ = nullptr;
     QWidget*            dialogParent_ = nullptr;
     std::vector<std::unique_ptr<IDataSource>>     dataSources_;     // owns handles
     std::map<QString, std::unique_ptr<IPluginSettings>> pluginSettings_;  // by plugin id

@@ -27,6 +27,7 @@
 #include "plugin_api.hpp"       // IChartOverlay, ChartViewport
 #include "sym_atlas.hpp"        // SymAtlas
 #include "mbtiles_reader.hpp"   // MbtilesMeta
+#include "raster_chart_source.hpp"  // RasterSourceChart, IRasterChartSource
 #include "chart_renderer.hpp"   // IChartRenderer seam
 #include "render_backend.hpp"   // RenderBackend
 
@@ -35,6 +36,8 @@ class QTimer;
 class QPushButton;
 class QThread;
 class MbtilesService;
+class RasterSourceService;
+class RasterChartSourceRegistry;
 class IChartSource;
 class GpuChartView;             // retained GPU chart layer (Stage 7)
 
@@ -50,6 +53,26 @@ public:
     virtual bool onPress(const QPointF& screenPt)   = 0;   // true => claim gesture
     virtual void onMove(const QPointF& screenPt)    = 0;
     virtual void onRelease(const QPointF& screenPt) = 0;
+};
+
+// One chart in the combined raster layer. The layer draws the built-in MBTiles
+// charts and every plugin-supplied (IRasterChartSource) chart together, so tile
+// selection works from this backend-neutral summary rather than from MbtilesMeta.
+//
+// Index invariant: rasterCharts_ holds the built-in MBTiles charts in discovery
+// order, followed by the plugin charts in discovery order. A combined chartId
+// therefore converts to its backend-native id by subtracting the MBTiles count
+// (rasterBackendId()). Either list arriving rebuilds the whole vector and clears
+// the tile caches, so a cached key can never outlive the numbering it was made
+// under.
+struct RasterChartEntry {
+    enum class Backend { Mbtiles, Plugin };
+
+    QString name;
+    int     minZoom = 0;
+    int     maxZoom = 19;
+    BBox    sceneBounds;              // projected coverage; !valid() if unknown
+    Backend backend = Backend::Mbtiles;
 };
 
 // Identity of one raster tile in the cache: which chart (index into the
@@ -152,11 +175,23 @@ public:
     // Intended for an imagery MBTiles base (e.g. satellite). Repaint only.
     void setVectorOverlay(bool on);
 
-    // Point the raster-chart layer at one or more folders: each is scanned
-    // (recursively, on a worker thread) for *.mbtiles files, which are drawn
+    // Point the raster-chart layer at one or more folders. Each is scanned (on a
+    // worker thread) for *.mbtiles files, and offered to every registered
+    // IRasterChartSource plugin backend (e.g. BSB/KAP); everything found is drawn
     // beneath the ENC vector cells. Pass the active chart-set folders. Empty
     // clears the layer.
     void setRasterChartFolders(const QStringList& dirs);
+
+    // The plugin raster backends to offer folders to. Set once at startup by
+    // MainWindow, which owns the registry. ChartView snapshots it on the GUI
+    // thread at each scan and hands the snapshot to the worker, so the registry
+    // itself is never touched off-thread.
+    void setRasterSourceRegistry(RasterChartSourceRegistry* registry);
+
+    // Drain in-flight tile() calls on `src` and refresh the layer without it, so
+    // the owning plugin can safely destroy it. Called from
+    // CoreApi::unregisterRasterChartSource.
+    void onRasterChartSourceUnregistered(IRasterChartSource* src);
     // Detail-level bias, in fractional bands. 0 = nominal mapping from visible
     // width to band; positive pulls in higher-detail cells (more detail on
     // screen); negative backs off. Range -2.0..+2.0.
@@ -242,8 +277,9 @@ signals:
     // this to dismiss themselves. Not emitted when a click hits a chart overlay
     // (e.g. an AIS target), so target clicks keep their own handling.
     void chartInteracted();
-    // How many raster (MBTiles) charts were found in the active folder. Lets the
-    // main window report folders that hold raster charts but no ENC cells.
+    // How many raster charts were found in the active folder — MBTiles plus every
+    // plugin-supplied one. Lets the main window report folders that hold raster
+    // charts but no ENC cells.
     void rasterChartsChanged(int count);
     // An empty-space click (one not consumed by a route/AIS overlay) landed on
     // one or more chart objects. The main window shows a chooser (if several) or
@@ -253,6 +289,13 @@ signals:
     // To the MBTiles worker thread (queued). Not for external use.
     void rasterSetFolders(const QStringList& dirs, quint64 gen);
     void rasterRequestTile(int chartId, int z, int x, int y, quint64 gen);
+
+    // To the plugin raster-source worker (queued; same thread as the MBTiles
+    // service). chartId is backend-native — see rasterBackendId(). Not for
+    // external use.
+    void rasterSourceSetFolders(const QVector<IRasterChartSource*>& srcs,
+                                const QStringList& dirs, quint64 gen);
+    void rasterSourceRequestTile(int chartId, int z, int x, int y, quint64 gen);
 
 protected:
     void paintEvent(QPaintEvent* e) override;
@@ -276,6 +319,11 @@ private slots:
     void onRasterDiscovered(const QVector<MbtilesMeta>& charts, quint64 gen);
     void onRasterTileReady(int chartId, int z, int x, int y,
                            const QImage& img, quint64 gen);
+    // Plugin raster-source worker replies (queued). chartId is backend-native;
+    // these add the MBTiles-count offset to reach the combined id.
+    void onRasterSourceDiscovered(const QVector<RasterSourceChart>& charts, quint64 gen);
+    void onRasterSourceTileReady(int chartId, int z, int x, int y,
+                                 const QImage& img, quint64 gen);
 
 private:
     void dispatchLoad(const QString& path);
@@ -328,6 +376,16 @@ private:
     std::vector<RasterTileDraw> selectRasterTiles(const QRectF& vis);
     void drawRasterCharts(QPainter& p, const QTransform& cam, const QRectF& vis);
     void requestRasterTile(const RasterTileKey& k);
+    // Rebuild the combined chart list (MBTiles then plugin) after either backend
+    // reports, and reset everything keyed on the old numbering.
+    void rebuildRasterCharts();
+    // Combined chartId -> backend-native id. Charts below mbCharts_.size() are
+    // MBTiles and keep their id; the rest are plugin charts shifted down by that
+    // count. See RasterChartEntry's index invariant.
+    int  rasterBackendId(int combinedId) const {
+        return combinedId < mbCharts_.size() ? combinedId
+                                             : combinedId - mbCharts_.size();
+    }
     void fitToSceneBox(const BBox& sceneBox);   // box already in scene frame
     // True once a view exists from either ENC cells or raster charts.
     bool haveContent() const { return haveCatalog_ || !rasterCharts_.isEmpty(); }
@@ -489,13 +547,25 @@ private:
     QSet<QString> wanted_;       // last computed wanted set
     quint64       generation_ = 0;
 
-    // Raster (MBTiles) chart layer. The service runs on its own thread; the view
-    // caches decoded tiles keyed by (chart, z, x, y) and draws them beneath the
-    // ENC vector cells. rasterGen_ rises on each folder change so stale worker
-    // replies are dropped. tileNeeded_ is per-frame scratch for LRU eviction.
-    QThread*        mbThread_  = nullptr;
-    MbtilesService* mbService_ = nullptr;
-    QVector<MbtilesMeta>          rasterCharts_;
+    // Raster chart layer. Two backends feed it: the built-in MBTiles service and
+    // any plugin IRasterChartSource backends, both driven from one worker thread.
+    // The view caches decoded tiles keyed by (chart, z, x, y) and draws them
+    // beneath the ENC vector cells. rasterGen_ rises on each folder change so
+    // stale worker replies are dropped. tileNeeded_ is per-frame scratch for LRU
+    // eviction.
+    //
+    // mbCharts_ / plCharts_ are the raw per-backend discoveries; rasterCharts_ is
+    // the combined list the layer actually works from (rebuildRasterCharts).
+    // Keeping the raw lists is what makes the combined numbering reproducible
+    // when only one backend reports.
+    QThread*             mbThread_  = nullptr;
+    MbtilesService*      mbService_ = nullptr;
+    RasterSourceService* rsService_ = nullptr;   // same thread as mbService_
+    RasterChartSourceRegistry*    rasterSources_ = nullptr;   // not owned
+    QStringList                   rasterFolders_;   // last scanned; for re-scans
+    QVector<MbtilesMeta>          mbCharts_;
+    QVector<RasterSourceChart>    plCharts_;
+    QVector<RasterChartEntry>     rasterCharts_;      // combined; see the invariant
     BBox                          rasterSceneBounds_;   // union, scene frame
     QHash<RasterTileKey, QPixmap> tileCache_;
     QSet<RasterTileKey>           tileInFlight_;

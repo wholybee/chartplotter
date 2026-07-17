@@ -239,6 +239,7 @@ qt_add_executable(chartviewer
     src/product_decoder.cpp
     src/mbtiles_reader.cpp
     src/mbtiles_service.cpp
+    src/raster_source_service.cpp
     src/nav_data_store.cpp
     src/ais_target_store.cpp
     src/cpa_calculator.cpp

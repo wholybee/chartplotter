@@ -559,8 +559,11 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     // the built-in plugins and drives their lifecycle. Same interfaces a dynamic
     // plugin would use later. NMEA 0183/2000 are built-in plugins; dynamic
     // plugins are discovered alongside the exe. Plugins register their sources here.
+    // The view needs the raster registry before any scan, so it can offer chart
+    // folders to plugin raster backends alongside its own MBTiles scan.
+    view_->setRasterSourceRegistry(&rasterSources_);
     coreApi_ = std::make_unique<CoreApi>(navStore_, aisStore_, routeStore_, sideMenu_, view_,
-                                         &registry_, &chartSources_, this);
+                                         &registry_, &chartSources_, &rasterSources_, this);
     plugins_ = std::make_unique<PluginManager>(coreApi_.get());
     plugins_->add(std::make_unique<Nmea0183Plugin>());   // first => default-highest priority
     plugins_->add(std::make_unique<Nmea2000Plugin>());

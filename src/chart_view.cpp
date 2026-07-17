@@ -7,6 +7,7 @@
 #include "sym_atlas.hpp"
 #include "theme.hpp"
 #include "mbtiles_service.hpp"
+#include "raster_source_service.hpp"
 #include "prepared_render.hpp"
 #include "render_scene_compiler.hpp"
 #include "prepared_render_cache.hpp"
@@ -330,8 +331,10 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
     if (symAtlas_.isLoaded())
         chart::setSymbologyAttrs(symAtlas_.relevantAttrs());
 
-    // MBTiles raster layer: a service object on its own thread does all SQLite
-    // access and image decoding; we talk to it through queued signals/slots.
+    // Raster layer: service objects on a worker thread do all SQLite access,
+    // plugin calls, and image decoding; we talk to them through queued
+    // signals/slots. Both raster backends share the thread — they are I/O plus
+    // decode, and in practice only one of them has charts for a given folder.
     mbThread_  = new QThread(this);
     mbService_ = new MbtilesService;          // no parent: moved to the worker
     mbService_->moveToThread(mbThread_);
@@ -341,6 +344,20 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
     connect(mbService_, &MbtilesService::tileReady,  this, &ChartView::onRasterTileReady);
     connect(mbService_, &MbtilesService::message,    this,
             [this](const QString& t) { emit statusChanged(t); });
+
+    rsService_ = new RasterSourceService;      // no parent: moved to the worker
+    rsService_->moveToThread(mbThread_);
+    connect(this, &ChartView::rasterSourceSetFolders,
+            rsService_, &RasterSourceService::setSources);
+    connect(this, &ChartView::rasterSourceRequestTile,
+            rsService_, &RasterSourceService::requestTile);
+    connect(rsService_, &RasterSourceService::discovered,
+            this, &ChartView::onRasterSourceDiscovered);
+    connect(rsService_, &RasterSourceService::tileReady,
+            this, &ChartView::onRasterSourceTileReady);
+    connect(rsService_, &RasterSourceService::message, this,
+            [this](const QString& t) { emit statusChanged(t); });
+
     mbThread_->start();
 }
 
@@ -373,6 +390,8 @@ ChartView::~ChartView() {
     hmvtrace::mark("~ChartView mbThread joined");
     delete mbService_;
     mbService_ = nullptr;
+    delete rsService_;
+    rsService_ = nullptr;
 }
 
 void ChartView::setCatalog(ChartCatalog* catalog) {
@@ -1385,11 +1404,19 @@ void ChartView::setVectorOverlay(bool on) {
     vectorOverlay_ = on; gpuDrawListDirty_ = true; invalidateChart();
 }
 
-// ---- raster (MBTiles) layer ------------------------------------------------
+// ---- raster layer (MBTiles + plugin raster sources) -------------------------
+
+void ChartView::setRasterSourceRegistry(RasterChartSourceRegistry* registry) {
+    rasterSources_ = registry;
+}
 
 void ChartView::setRasterChartFolders(const QStringList& dirs) {
+    // Remembered so a source unregistering mid-session can re-scan without it.
+    rasterFolders_ = dirs;
     // New generation invalidates any in-flight discovery / tile replies.
     ++rasterGen_;
+    mbCharts_.clear();
+    plCharts_.clear();
     rasterCharts_.clear();
     rasterSceneBounds_ = BBox{};
     tileCache_.clear();
@@ -1402,22 +1429,60 @@ void ChartView::setRasterChartFolders(const QStringList& dirs) {
     // it would clobber a saved view that the parallel raster path had restored.
     userInteracted_ = false;
     emit rasterSetFolders(dirs, rasterGen_);
+    // Snapshot the registered plugin backends here, on the GUI thread, and hand
+    // the snapshot to the worker: the registry is GUI-thread-only state.
+    QVector<IRasterChartSource*> srcs;
+    if (rasterSources_)
+        for (IRasterChartSource* s : rasterSources_->sources()) srcs << s;
+    emit rasterSourceSetFolders(srcs, dirs, rasterGen_);
     gpuRasterDirty_ = true;
     invalidateChart();
 }
 
 void ChartView::onRasterDiscovered(const QVector<MbtilesMeta>& charts, quint64 gen) {
     if (gen != rasterGen_) return;            // a newer folder superseded this
-    rasterCharts_ = charts;
+    mbCharts_ = charts;
+    rebuildRasterCharts();
+}
+
+void ChartView::onRasterSourceDiscovered(const QVector<RasterSourceChart>& charts,
+                                         quint64 gen) {
+    if (gen != rasterGen_) return;            // a newer folder superseded this
+    plCharts_ = charts;
+    rebuildRasterCharts();
+}
+
+// Fold both backends' discoveries into the one list the raster layer works from.
+// Called once per backend per generation (each reports independently), so it must
+// be idempotent and must not assume the other backend has reported yet.
+void ChartView::rebuildRasterCharts() {
+    // The combined numbering shifts whenever either list changes, so everything
+    // keyed on a chartId — cached pixmaps, in-flight marks, the absent set — is
+    // dropped. This costs at most one re-fetch of the visible tiles per folder
+    // change, and is what lets RasterChartEntry's index invariant hold
+    // unconditionally.
+    tileCache_.clear();
+    tileInFlight_.clear();
+    tileAbsent_.clear();
+
+    rasterCharts_.clear();
+    rasterCharts_.reserve(mbCharts_.size() + plCharts_.size());
+    for (const MbtilesMeta& m : mbCharts_)
+        rasterCharts_ << RasterChartEntry{m.name, m.minZoom, m.maxZoom, m.sceneBounds,
+                                          RasterChartEntry::Backend::Mbtiles};
+    for (const RasterSourceChart& c : plCharts_)
+        rasterCharts_ << RasterChartEntry{c.name, c.minZoom, c.maxZoom, c.sceneBounds,
+                                          RasterChartEntry::Backend::Plugin};
+
     rasterSceneBounds_ = BBox{};
-    for (const MbtilesMeta& m : charts)
-        if (m.sceneBounds.valid()) rasterSceneBounds_.expand(m.sceneBounds);
+    for (const RasterChartEntry& e : rasterCharts_)
+        if (e.sceneBounds.valid()) rasterSceneBounds_.expand(e.sceneBounds);
 
     // A pure-raster folder (no ENC cells) has no ENC-driven view — frame the
     // raster coverage so the charts are actually visible. A pending saved view
     // wins; once the user pans/zooms we leave their view alone. (When ENC cells
     // are present they drive the view instead.)
-    if (!charts.isEmpty() && !haveCatalog_ && !userInteracted_) {
+    if (!rasterCharts_.isEmpty() && !haveCatalog_ && !userInteracted_) {
         if (havePendingView_) {
             restoreView(pendingLon_, pendingLat_, pendingScale_);
             havePendingView_ = false;
@@ -1426,9 +1491,30 @@ void ChartView::onRasterDiscovered(const QVector<MbtilesMeta>& charts, quint64 g
             fitToSceneBox(rasterSceneBounds_);
         }
     }
-    emit rasterChartsChanged(charts.size());
+    emit rasterChartsChanged(rasterCharts_.size());
     gpuRasterDirty_ = true;
     invalidateChart();
+}
+
+void ChartView::onRasterChartSourceUnregistered(IRasterChartSource* src) {
+    if (!rsService_ || !mbThread_ || !mbThread_->isRunning()) return;
+    // Block until the worker has dropped `src`: on return it is provably not
+    // inside src->tile() and holds no pointer to it, so the plugin may free it.
+    // (Functor form rather than a named-slot invoke: it needs no metatype
+    // registration for IRasterChartSource* and is checked at compile time.)
+    RasterSourceService* svc = rsService_;
+    QMetaObject::invokeMethod(svc, [svc, src] { svc->dropSource(src); },
+                              Qt::BlockingQueuedConnection);
+    // Re-scan without the dead source. This bumps the generation (discarding any
+    // reply still in flight) and resyncs the worker's now-empty chart list.
+    setRasterChartFolders(rasterFolders_);
+}
+
+void ChartView::onRasterSourceTileReady(int chartId, int z, int x, int y,
+                                        const QImage& img, quint64 gen) {
+    // Plugin charts sit after the MBTiles ones in the combined list; shift the
+    // backend-native id up to the combined id the cache is keyed on.
+    onRasterTileReady(chartId + mbCharts_.size(), z, x, y, img, gen);
 }
 
 void ChartView::onRasterTileReady(int chartId, int z, int x, int y,
@@ -1451,8 +1537,14 @@ void ChartView::onRasterTileReady(int chartId, int z, int x, int y,
 
 void ChartView::requestRasterTile(const RasterTileKey& k) {
     if (tileInFlight_.contains(k)) return;
+    if (k.chart < 0 || k.chart >= rasterCharts_.size()) return;
     tileInFlight_.insert(k);
-    emit rasterRequestTile(k.chart, k.z, k.x, k.y, rasterGen_);
+    // Route to the backend that owns this chart, converting the combined id back
+    // to the backend-native one it knows.
+    if (rasterCharts_[k.chart].backend == RasterChartEntry::Backend::Mbtiles)
+        emit rasterRequestTile(rasterBackendId(k.chart), k.z, k.x, k.y, rasterGen_);
+    else
+        emit rasterSourceRequestTile(rasterBackendId(k.chart), k.z, k.x, k.y, rasterGen_);
 }
 
 // Frame a box given in the scene frame (x = lonToX, y = -latToY). Mirrors
@@ -1509,7 +1601,7 @@ std::vector<ChartView::RasterTileDraw> ChartView::selectRasterTiles(const QRectF
     tileNeeded_.clear();
 
     for (int chartId = 0; chartId < rasterCharts_.size(); ++chartId) {
-        const MbtilesMeta& m = rasterCharts_[chartId];
+        const RasterChartEntry& m = rasterCharts_[chartId];
 
         // Native zoom: one tile (kTilePx) ≈ one tile-span of scene metres at the
         // current scale, i.e. 2^z ≈ worldWidth * ppm / kTilePx. Clamp to range.

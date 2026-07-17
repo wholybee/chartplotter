@@ -2,6 +2,6 @@
     "id": "gpx-plugin",
     "name": "GPX Import / Export",
     "version": "1.0",
-    "apiVersion": 4,
+    "apiVersion": 5,
     "description": "Import and export routes and waypoints as GPX 1.1 files. Adds a touch-friendly GPX Import / Export item to the Plugins menu, reading and writing the routes database."
 }

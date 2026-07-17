@@ -2,6 +2,6 @@
     "id": "instruments-plugin",
     "name": "Instruments",
     "version": "1.0",
-    "apiVersion": 4,
+    "apiVersion": 5,
     "description": "Configurable instrument bar of digital and analogue tiles over the chart, showing any value from the nav data store. Tiles, orientation, scale and selection are configured from Settings > Plugin Settings > Instruments; the available instruments come from a user-editable instruments.xml."
 }

@@ -2,6 +2,6 @@
     "id": "wmm-plugin",
     "name": "WMM Magnetic Variation",
     "version": "1.0",
-    "apiVersion": 4,
+    "apiVersion": 5,
     "description": "Computes magnetic variation (declination) from the ownship position using the World Magnetic Model (WMM2025) and publishes it to the nav data store every 4 seconds (source id WMMplugin)."
 }

@@ -2,6 +2,6 @@
     "id": "signalk-plugin",
     "name": "Signal K",
     "version": "1.0",
-    "apiVersion": 4,
+    "apiVersion": 5,
     "description": "Signal K data source. Streams navigation values and AIS targets from a Signal K server over a WebSocket (ws://host:port/signalk/v1/stream)."
 }

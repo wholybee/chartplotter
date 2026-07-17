@@ -16,6 +16,7 @@ class IAisPublisher;
 class AisTargetStore;
 class RouteStore;
 class IChartSource;
+class IRasterChartSource;
 
 // Plugin API surface (Milestone 3 in ProjectSpec.md).
 //
@@ -173,6 +174,17 @@ public:
     // object is destroyed.
     virtual void registerChartSource(IChartSource* source) = 0;
     virtual void unregisterChartSource(IChartSource* source) = 0;
+
+    // Raster chart sources ---------------------------------------------------
+    // Register a pluggable raster-chart backend (e.g. BSB/KAP). See
+    // IRasterChartSource in raster_chart_source.hpp. Unlike vector sources these
+    // are additive: every registered source is offered every selected chart
+    // folder, and the charts of all of them draw together in the raster layer
+    // alongside the built-in MBTiles charts. The plugin owns the
+    // IRasterChartSource object and MUST unregister it in shutdown() before the
+    // object is destroyed.
+    virtual void registerRasterChartSource(IRasterChartSource* source) = 0;
+    virtual void unregisterRasterChartSource(IRasterChartSource* source) = 0;
 
     // A parent for plugin-created dialogs/windows.
     virtual QWidget* dialogParent() = 0;
