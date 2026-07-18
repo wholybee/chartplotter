@@ -295,7 +295,8 @@ signals:
     // external use.
     void rasterSourceSetFolders(const QVector<IRasterChartSource*>& srcs,
                                 const QStringList& dirs, quint64 gen);
-    void rasterSourceRequestTile(int chartId, int z, int x, int y, quint64 gen);
+    void rasterSourceRequestTile(int chartId, int z, int x, int y, quint64 gen,
+                                 quint64 epoch);
 
 protected:
     void paintEvent(QPaintEvent* e) override;
@@ -324,6 +325,9 @@ private slots:
     void onRasterSourceDiscovered(const QVector<RasterSourceChart>& charts, quint64 gen);
     void onRasterSourceTileReady(int chartId, int z, int x, int y,
                                  const QImage& img, quint64 gen);
+    // A plugin tile request the worker skipped as stale (superseded view). Frees
+    // the in-flight slot; re-requested next selection if still on screen.
+    void onRasterSourceTileDropped(int chartId, int z, int x, int y, quint64 gen);
 
 private:
     void dispatchLoad(const QString& path);
@@ -572,6 +576,14 @@ private:
     QSet<RasterTileKey>           tileAbsent_;
     QSet<RasterTileKey>           tileNeeded_;
     quint64                       rasterGen_ = 0;
+    // Request epoch for plugin tiles: bumped whenever the view transform changes,
+    // so requests issued for a view the user has left can be cancelled mid-queue
+    // (see RasterSourceService::setRequestFloor). rasterReq{Ppm,Scx,Scy}_ is the
+    // transform the current epoch was stamped for; a difference means "moved".
+    quint64                       rasterReqEpoch_ = 0;
+    double                        rasterReqPpm_ = -1.0;
+    double                        rasterReqScx_ = 0.0;
+    double                        rasterReqScy_ = 0.0;
     bool                          showRasterCharts_ = true;
 
     // Basemap state. basemap_ holds the clipped/simplified copies (one per wrap

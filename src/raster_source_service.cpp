@@ -46,8 +46,16 @@ void RasterSourceService::setSources(const QVector<IRasterChartSource*>& srcs,
     emit discovered(out, gen);
 }
 
-void RasterSourceService::requestTile(int chartId, int z, int x, int y, quint64 gen) {
+void RasterSourceService::requestTile(int chartId, int z, int x, int y,
+                                      quint64 gen, quint64 epoch) {
     if (gen != gen_) return;                       // a newer folder superseded this
+    if (epoch < reqFloor_.load(std::memory_order_acquire)) {
+        // A newer view superseded this request while it sat in the queue. Skip the
+        // (expensive) decode and tell the caller so it can free the in-flight slot;
+        // it re-requests under the current epoch if the tile is still on screen.
+        emit tileDropped(chartId, z, x, y, gen);
+        return;
+    }
     if (chartId < 0 || chartId >= charts_.size()) return;
 
     const Entry& e = charts_[chartId];

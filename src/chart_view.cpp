@@ -355,6 +355,8 @@ ChartView::ChartView(QWidget* parent) : QWidget(parent) {
             this, &ChartView::onRasterSourceDiscovered);
     connect(rsService_, &RasterSourceService::tileReady,
             this, &ChartView::onRasterSourceTileReady);
+    connect(rsService_, &RasterSourceService::tileDropped,
+            this, &ChartView::onRasterSourceTileDropped);
     connect(rsService_, &RasterSourceService::message, this,
             [this](const QString& t) { emit statusChanged(t); });
 
@@ -1517,6 +1519,22 @@ void ChartView::onRasterSourceTileReady(int chartId, int z, int x, int y,
     onRasterTileReady(chartId + mbCharts_.size(), z, x, y, img, gen);
 }
 
+void ChartView::onRasterSourceTileDropped(int chartId, int z, int x, int y,
+                                          quint64 gen) {
+    if (gen != rasterGen_) return;
+    // Same id shift as tileReady; the cache/in-flight sets are keyed on the
+    // combined id.
+    const RasterTileKey k{chartId + int(mbCharts_.size()), z, x, y};
+    tileInFlight_.remove(k);
+    // A dropped tile is neither cached nor marked absent — the request was skipped,
+    // not answered. If the current view still wants it (the old and new views
+    // overlap), re-select soon so it is re-requested under the current epoch and
+    // actually renders; otherwise it is stale and clearing the slot is all that is
+    // owed. tileNeeded_ holds the last selection's working set.
+    if (tileNeeded_.contains(k) && !rasterTileTimer_->isActive())
+        rasterTileTimer_->start();
+}
+
 void ChartView::onRasterTileReady(int chartId, int z, int x, int y,
                                   const QImage& img, quint64 gen) {
     if (gen != rasterGen_) return;
@@ -1544,7 +1562,8 @@ void ChartView::requestRasterTile(const RasterTileKey& k) {
     if (rasterCharts_[k.chart].backend == RasterChartEntry::Backend::Mbtiles)
         emit rasterRequestTile(rasterBackendId(k.chart), k.z, k.x, k.y, rasterGen_);
     else
-        emit rasterSourceRequestTile(rasterBackendId(k.chart), k.z, k.x, k.y, rasterGen_);
+        emit rasterSourceRequestTile(rasterBackendId(k.chart), k.z, k.x, k.y,
+                                     rasterGen_, rasterReqEpoch_);
 }
 
 // Frame a box given in the scene frame (x = lonToX, y = -latToY). Mirrors
@@ -1592,6 +1611,19 @@ void ChartView::fitToGeoBox(double latMin, double lonMin, double latMax, double 
 std::vector<ChartView::RasterTileDraw> ChartView::selectRasterTiles(const QRectF& vis) {
     std::vector<RasterTileDraw> draws;
     if (!showRasterCharts_ || rasterCharts_.isEmpty() || ppm_ <= 0.0) return draws;
+
+    // A change in the view transform supersedes any plugin tiles still queued for
+    // the previous view: bump the epoch and raise the worker's floor so those
+    // requests are skipped instead of decoded (they can be tens of ms each). The
+    // floor is set directly, not through the worker's queue — it has to overtake
+    // the very backlog it cancels. Repaints that don't move the view (a burst of
+    // tile replies re-running selection) keep the same transform and don't bump,
+    // so an in-flight tile isn't dropped and re-requested underneath itself.
+    if (ppm_ != rasterReqPpm_ || scx_ != rasterReqScx_ || scy_ != rasterReqScy_) {
+        rasterReqPpm_ = ppm_; rasterReqScx_ = scx_; rasterReqScy_ = scy_;
+        ++rasterReqEpoch_;
+        if (rsService_) rsService_->setRequestFloor(rasterReqEpoch_);
+    }
 
     constexpr int    kTilePx       = 256;   // logical tile edge, pixels
     constexpr int    kMaxCacheTiles = 384;  // ~working set; older tiles evicted
