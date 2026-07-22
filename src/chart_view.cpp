@@ -68,6 +68,104 @@ using geom::pointInRect;
 // reading as black. A dead device that never renders is caught this soon.
 constexpr int kGpuWatchdogMs = 3000;
 
+// Device-space rectangle occupancy for text de-confliction. Every obstacle
+// (symbol keep-out box, drawn sounding, already-placed label) is stored with a
+// class tag; only text labels are moved, and they search for the position that
+// overlaps the least-important things. Rectangles are bucketed into a uniform
+// grid so a query gathers just the buckets the test rect touches — the whole
+// placement pass stays roughly O(n) even with thousands of obstacles.
+//
+// Priority when a label cannot be placed completely clear (user request):
+// avoiding other TEXT matters most, then avoiding a SYMBOL, then avoiding a
+// SOUNDING. Encoded as a weighted penalty (Text >> Symbol >> Sounding) that the
+// search minimises; ties break toward the smallest move.
+class LabelOccupancy {
+public:
+    enum Class : int { Text = 1, Symbol = 2, Sounding = 4 };
+
+    // Reserve `r`, tagged with obstacle class `cls`.
+    void add(const QRectF& r, int cls) {
+        const int idx = static_cast<int>(rects_.size());
+        rects_.push_back(r);
+        cls_.push_back(cls);
+        int x0, y0, x1, y1; span(r, x0, y0, x1, y1);
+        for (int gx = x0; gx <= x1; ++gx)
+            for (int gy = y0; gy <= y1; ++gy)
+                cells_[key(gx, gy)].push_back(idx);
+    }
+
+    // OR of the classes of every stored rectangle that `r` overlaps (0 = clear).
+    int hitMask(const QRectF& r) const {
+        int mask = 0;
+        int x0, y0, x1, y1; span(r, x0, y0, x1, y1);
+        for (int gx = x0; gx <= x1; ++gx)
+            for (int gy = y0; gy <= y1; ++gy) {
+                const auto it = cells_.find(key(gx, gy));
+                if (it == cells_.end()) continue;
+                for (const int idx : it->second)
+                    if (rects_[idx].intersects(r)) mask |= cls_[idx];
+            }
+        return mask;
+    }
+
+    // Place a label box: search offsets up to `maxNudge` (device px) for the one
+    // that minimises the overlap penalty, reserve it as Text, and return the
+    // applied offset. The natural spot (no move) is tried first and wins ties, so
+    // a label only moves when a move overlaps strictly less. maxNudge <= 0
+    // disables the search (the caller gates on the enable flag too).
+    QPointF place(const QRectF& natural, double maxNudge) {
+        int bestPen = penalty(hitMask(natural));
+        QPointF bestOff(0.0, 0.0);
+        if (bestPen > 0 && maxNudge > 0.0) {
+            // Axis directions first (least visually disruptive), then diagonals.
+            static const QPointF dir[8] = {
+                { 0.0, -1.0}, { 0.0, 1.0}, {-1.0, 0.0}, { 1.0, 0.0},
+                {-0.7071, -0.7071}, { 0.7071, -0.7071},
+                {-0.7071,  0.7071}, { 0.7071,  0.7071},
+            };
+            const double step = std::max(2.0, maxNudge / 5.0);
+            for (double dist = step; dist <= maxNudge + 1e-6 && bestPen > 0;
+                 dist += step)
+                for (const QPointF& u : dir) {
+                    const QPointF off(u.x() * dist, u.y() * dist);
+                    const int pen = penalty(hitMask(natural.translated(off)));
+                    // Strictly-lower only: scanning outward, this keeps the
+                    // smallest move that reaches each better penalty level.
+                    if (pen < bestPen) {
+                        bestPen = pen; bestOff = off;
+                        if (pen == 0) break;
+                    }
+                }
+        }
+        add(natural.translated(bestOff), Text);
+        return bestOff;
+    }
+
+private:
+    static constexpr double kCellPx = 40.0;
+
+    // Text overlap dominates, then symbol, then sounding (see class comment).
+    static int penalty(int mask) {
+        return ((mask & Text)     ? 100 : 0)
+             + ((mask & Symbol)   ?  10 : 0)
+             + ((mask & Sounding) ?   1 : 0);
+    }
+
+    void span(const QRectF& r, int& x0, int& y0, int& x1, int& y1) const {
+        x0 = static_cast<int>(std::floor(r.left()   / kCellPx));
+        y0 = static_cast<int>(std::floor(r.top()    / kCellPx));
+        x1 = static_cast<int>(std::floor(r.right()  / kCellPx));
+        y1 = static_cast<int>(std::floor(r.bottom() / kCellPx));
+    }
+    static qint64 key(int gx, int gy) {
+        return (static_cast<qint64>(gx) << 32) ^ static_cast<quint32>(gy);
+    }
+
+    std::vector<QRectF> rects_;
+    std::vector<int>    cls_;
+    std::unordered_map<qint64, std::vector<int>> cells_;
+};
+
 // Rough in-memory footprint of a parsed cell, for the LRU byte budget.
 std::size_t approxBytes(const std::vector<Feature>& feats) {
     std::size_t b = sizeof(Feature) * feats.capacity();
@@ -900,6 +998,9 @@ void ChartView::setDisplaySettings(const ChartDisplaySettings& s) {
     setChartDetailLevel(s.chartDetailLevel);
     setChartScaminLevel(s.scaminLevel);
     setSymbolScale(s.symbolScale);
+    setTextScale(s.textScale);
+    setSoundingScale(s.soundingScale);
+    setLabelNudge(s.labelNudge, s.labelNudgeMaxPx);
 }
 
 void ChartView::requestRepaint(RepaintReason reason) {
@@ -1801,6 +1902,31 @@ void ChartView::setSymbolScale(double scale) {
     invalidateChart();
 }
 
+void ChartView::setTextScale(double scale) {
+    if (scale < 0.5) scale = 0.5;
+    if (scale > 3.0) scale = 3.0;
+    if (scale == textScale_) return;
+    textScale_ = scale;
+    invalidateChart();   // labels are baked into the static cache; re-raster it
+}
+
+void ChartView::setSoundingScale(double scale) {
+    if (scale < 0.5) scale = 0.5;
+    if (scale > 3.0) scale = 3.0;
+    if (scale == soundingScale_) return;
+    soundingScale_ = scale;
+    invalidateChart();   // soundings are baked into the static cache; re-raster it
+}
+
+void ChartView::setLabelNudge(bool enabled, double maxPx) {
+    if (maxPx < 0.0)  maxPx = 0.0;
+    if (maxPx > 40.0) maxPx = 40.0;
+    if (enabled == labelNudge_ && maxPx == labelNudgeMaxPx_) return;
+    labelNudge_      = enabled;
+    labelNudgeMaxPx_ = maxPx;
+    invalidateChart();   // label placement is baked into the static cache
+}
+
 void ChartView::setVesselScale(double scale) {
     if (scale < 0.5) scale = 0.5;
     if (scale > 3.0) scale = 3.0;
@@ -2625,15 +2751,49 @@ void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
             return mix(h, content);
         };
 
+        // Text de-clutter map (only built when nudging is enabled). Labels are
+        // the only things that move; symbols and soundings are fixed obstacles.
+        // Seed it here with the footprint of every point symbol that will draw
+        // (guards mirror the symbol pass below: SCAMIN, screen cull, quilt clip).
+        // Cross-cell duplicates land on the same box, so the dedup set the draw
+        // pass needs is unnecessary here. The sounding pass then adds each drawn
+        // sounding as an obstacle, and the label pass nudges each label clear.
+        const bool nudge = labelNudge_ && labelNudgeMaxPx_ > 0.0;
+        LabelOccupancy occ;
+        if (nudge && showSymbols_) {
+            const bool atlasOk = symAtlas_.isLoaded();
+            for (const BuiltCell* c : order) {
+                const auto dcIt = deviceClip.constFind(c->path);
+                const bool clipped = (dcIt != deviceClip.constEnd());
+                const double off = c->drawOffsetX;
+                for (const BuiltSymbol& sym : c->symbols) {
+                    if (!scaminPasses(sym.scaleMin, scaminDenom)) continue;
+                    const QPointF d = cam.map(QPointF(sym.pos.x() + off, sym.pos.y()));
+                    if (!screen.contains(d)) continue;
+                    if (clipped && !dcIt->contains(d)) continue;
+                    QRectF box;
+                    if (atlasOk && sym.symIdx != SymAtlas::kNoSymbol)
+                        box = symAtlas_.symbolBox(sym.symIdx, d,
+                                                  static_cast<float>(symbolScale_));
+                    if (box.isEmpty()) {
+                        const double r = 3.0 * symbolScale_;   // fallback dot
+                        box = QRectF(d.x() - r, d.y() - r, 2.0 * r, 2.0 * r);
+                    }
+                    occ.add(box, LabelOccupancy::Symbol);
+                }
+            }
+        }
+
         // SCAMIN declutter threshold (computed above, shared with the LC/AP
         // pass): point objects whose SCAMIN is smaller than this are dropped.
         if (showSoundings_) {
-            QFont f = p.font(); f.setPointSizeF(8.0); p.setFont(f);
+            QFont f = p.font(); f.setPointSizeF(8.0 * soundingScale_); p.setFont(f);
             // White soundings in vector-overlay mode read better over dark
             // satellite imagery than the usual deep-blue ink.
             p.setPen(vectorOverlay_ ? QColor(255, 255, 255) : QColor(26, 51, 115));
             const QFontMetricsF fm(f);
             const double asc = fm.ascent();
+            const double th  = fm.height();
 
             // Detail-driven decluttering: keep a greedy minimum gap between drawn
             // soundings so the denser ones pulled in at higher detail don't pile
@@ -2693,6 +2853,14 @@ void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
                     if (!farEnough(d)) continue;
                     const QString text = s.hasDepth ? formatSounding(s.depthM)
                                                     : QStringLiteral(".");
+                    // Soundings are fixed: they draw at their natural spot and
+                    // become obstacles that labels steer around. The box mirrors
+                    // the draw position: top-left (d.x+1, d.y), baseline d.y+asc.
+                    if (nudge) {
+                        const double tw = fm.horizontalAdvance(text);
+                        occ.add(QRectF(d.x() + 1.0, d.y(), tw, th),
+                                LabelOccupancy::Sounding);
+                    }
                     // Course-up: the whole cache is blitted rotated, so counter-
                     // rotate the label about its point to keep the number upright.
                     if (viewUpDeg_ != 0.0) {
@@ -2820,7 +2988,7 @@ void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
 
                     if (int(t.pointSize) != curSize) {
                         curSize = t.pointSize;
-                        f.setPointSizeF(curSize); p.setFont(f);
+                        f.setPointSizeF(curSize * textScale_); p.setFont(f);
                         fm = QFontMetricsF(f);
                         cw = fm.averageCharWidth();
                         th = fm.height();
@@ -2838,13 +3006,21 @@ void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
                     const double base = (t.vjust == 3) ? py + asc
                                       : (t.vjust == 1) ? py - desc
                                                        : py + asc - th / 2.0;
+                    // Nudge the label to reduce overlap: it prefers to clear other
+                    // labels first, then symbols, then soundings (see
+                    // LabelOccupancy). The box is the S-52-placed rect (top-left
+                    // tx, base-asc); off is applied in device space (before any
+                    // course-up rotation) so it matches the reserved box.
+                    const QPointF off2 = nudge
+                        ? occ.place(QRectF(tx, base - asc, tw, th), labelNudgeMaxPx_)
+                        : QPointF(0.0, 0.0);
                     const QPointF at(tx, base);
                     // Cheap halo: white at the four neighbours, then ink on top.
                     // Course-up (cache blitted rotated): counter-rotate the label
                     // about its anchor so text stays horizontal and readable.
                     const bool rot = (viewUpDeg_ != 0.0);
-                    if (rot) { p.save(); p.translate(d); p.rotate(viewUpDeg_); }
-                    const QPointF a = rot ? at - d : at;
+                    if (rot) { p.save(); p.translate(d + off2); p.rotate(viewUpDeg_); }
+                    const QPointF a = rot ? at - d : at + off2;
                     p.setPen(halo);
                     p.drawText(a + QPointF(-1, 0), t.text);
                     p.drawText(a + QPointF( 1, 0), t.text);

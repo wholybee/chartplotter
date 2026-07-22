@@ -65,6 +65,18 @@ public:
     void draw(QPainter& p, uint16_t symIdx, QPointF d,
               float rotationDeg = 0.0f, float scale = 1.0f) const;
 
+    // Device-space bounding box of symbol symIdx drawn at point d with `scale`,
+    // ignoring rotation. Used as a keep-out box for label de-confliction; an
+    // empty rect is returned for an unknown index. The geometry mirrors draw():
+    // the pivot rides on d, so the box is offset by the scaled pivot.
+    QRectF symbolBox(uint16_t symIdx, QPointF d, float scale = 1.0f) const {
+        if (symIdx >= static_cast<uint16_t>(rects_.size())) return {};
+        const QRect&  src = rects_[symIdx];
+        const QPoint& piv = pivots_[symIdx];
+        return QRectF(d.x() - piv.x() * scale, d.y() - piv.y() * scale,
+                      src.width() * scale, src.height() * scale);
+    }
+
     // Stamp LC line-complex `lcIndex` repeatedly along a device-space polyline,
     // each motif rotated to the local tangent. scale matches symbol scaling.
     void drawLineComplex(QPainter& p, int lcIndex,

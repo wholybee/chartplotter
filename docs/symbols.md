@@ -360,6 +360,29 @@ This surfaces light characters (`Fl(2)R 10s15M`), vertical clearances
 (`clr 12.5`), berth numbers, object names, and more. The bare-`OBJNAM` fallback
 still labels any named object whose instruction carried no `TX`/`TE`.
 
+**User size controls.** The Symbol Size dialog carries three independent
+sliders (50 %..300 %, 25 % steps): symbol scale, **text size**, and **sounding
+size**, plus a **Text Declutter** section (see below). Text size multiplies each
+label's S-52 body point size at paint time;
+sounding size multiplies the fixed 8 pt sounding font. Both are paint-time
+multipliers baked into the static cache (a change re-rasters the cache, no
+geometry rebuild) — see `ChartView::setTextScale` / `setSoundingScale` and
+`Settings::textScale` / `soundingScale`.
+
+**Nudge de-confliction.** When enabled (Symbol Size → Text Declutter, on by
+default, adjustable max distance), `drawPointSymbology` builds a device-space
+occupancy grid (`LabelOccupancy`) of fixed obstacles — every symbol keep-out box
+(`SymAtlas::symbolBox`) and every drawn sounding — then moves **only text
+labels** to reduce overlap. Symbols and soundings never move. Each label searches
+offsets outward (eight directions, up to the configured max, default 20 px) and
+picks the position with the lowest overlap penalty, where the priority is
+**text ≫ symbol ≫ sounding**: it avoids other labels first, then additionally a
+symbol, then additionally a sounding. Ties favour the smallest move, and a label
+that can't be placed clear draws at its natural spot. Placed labels become Text
+obstacles for later labels. Soundings still get the detail-level greedy thinning
+(`soundingMinSpacing`) independently. Disabling the option skips the grid
+entirely and everything draws at its S-52 position.
+
 ### Conditional symbology procedures (`CS()`)
 
 `CS(proc)` runs a procedure in C++ (`SymAtlas::runCS`) that inspects the

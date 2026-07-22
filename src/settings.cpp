@@ -36,6 +36,10 @@ constexpr auto kLogToFile = "system/logToFile";
 constexpr auto kDetailLvl = "display/chartDetailLevel";
 constexpr auto kScaminLvl = "display/chartScaminLevel";
 constexpr auto kSymScale    = "display/symbolScale";
+constexpr auto kTextScale   = "display/textScale";
+constexpr auto kSoundScale  = "display/soundingScale";
+constexpr auto kNudgeOn     = "display/labelNudgeEnabled";
+constexpr auto kNudgeMaxPx  = "display/labelNudgeMaxPx";
 constexpr auto kVesselScale = "display/vesselScale";
 constexpr auto kOwnMmsi     = "nav/ownshipMmsi";
 constexpr auto kHeadingSrc  = "ships/headingSource";
@@ -101,6 +105,16 @@ Settings::Settings(QObject* parent) : QObject(parent) {
     symbolScale_ = s.value(QLatin1String(kSymScale), 1.0).toDouble();
     if (symbolScale_ < 0.5) symbolScale_ = 0.5;
     if (symbolScale_ > 3.0) symbolScale_ = 3.0;
+    textScale_ = s.value(QLatin1String(kTextScale), 1.0).toDouble();
+    if (textScale_ < 0.5) textScale_ = 0.5;
+    if (textScale_ > 3.0) textScale_ = 3.0;
+    soundingScale_ = s.value(QLatin1String(kSoundScale), 1.0).toDouble();
+    if (soundingScale_ < 0.5) soundingScale_ = 0.5;
+    if (soundingScale_ > 3.0) soundingScale_ = 3.0;
+    labelNudgeEnabled_ = s.value(QLatin1String(kNudgeOn), true).toBool();
+    labelNudgeMaxPx_   = s.value(QLatin1String(kNudgeMaxPx), 20.0).toDouble();
+    if (labelNudgeMaxPx_ < 0.0)  labelNudgeMaxPx_ = 0.0;
+    if (labelNudgeMaxPx_ > 40.0) labelNudgeMaxPx_ = 40.0;
     vesselScale_ = s.value(QLatin1String(kVesselScale), 1.0).toDouble();
     if (vesselScale_ < 0.5) vesselScale_ = 0.5;
     if (vesselScale_ > 3.0) vesselScale_ = 3.0;
@@ -349,6 +363,36 @@ void Settings::setSymbolScale(double scale) {
     symbolScale_ = scale;
     QSettings().setValue(QLatin1String(kSymScale), scale);
     emit symbolScaleChanged(scale);
+}
+
+void Settings::setTextScale(double scale) {
+    if (scale < 0.5) scale = 0.5;
+    if (scale > 3.0) scale = 3.0;
+    if (scale == textScale_) return;
+    textScale_ = scale;
+    QSettings().setValue(QLatin1String(kTextScale), scale);
+    emit textScaleChanged(scale);
+}
+
+void Settings::setSoundingScale(double scale) {
+    if (scale < 0.5) scale = 0.5;
+    if (scale > 3.0) scale = 3.0;
+    if (scale == soundingScale_) return;
+    soundingScale_ = scale;
+    QSettings().setValue(QLatin1String(kSoundScale), scale);
+    emit soundingScaleChanged(scale);
+}
+
+void Settings::setLabelNudge(bool enabled, double maxPx) {
+    if (maxPx < 0.0)  maxPx = 0.0;
+    if (maxPx > 40.0) maxPx = 40.0;
+    if (enabled == labelNudgeEnabled_ && maxPx == labelNudgeMaxPx_) return;
+    labelNudgeEnabled_ = enabled;
+    labelNudgeMaxPx_   = maxPx;
+    QSettings s;
+    s.setValue(QLatin1String(kNudgeOn), enabled);
+    s.setValue(QLatin1String(kNudgeMaxPx), maxPx);
+    emit labelNudgeChanged(enabled, maxPx);
 }
 
 void Settings::setStaleThresholds(double staleS, double invalidS) {

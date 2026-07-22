@@ -45,6 +45,10 @@ struct ChartDisplaySettings {
     double chartDetailLevel  = 0.0;   // -2..+2 band bias
     double scaminLevel       = 0.0;   // -1..+1 SCAMIN declutter bias
     double symbolScale       = 1.0;   // 0.5..3.0
+    double textScale         = 1.0;   // 0.5..3.0, label size multiplier
+    double soundingScale     = 1.0;   // 0.5..3.0, sounding size multiplier
+    bool   labelNudge        = true;  // nudge labels to reduce overlap
+    double labelNudgeMaxPx   = 20.0;  // max label nudge distance (device px)
 };
 
 // Why a repaint was requested. Coalesced batches data-driven updates (GPS/AIS/

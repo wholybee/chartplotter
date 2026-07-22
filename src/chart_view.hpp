@@ -203,6 +203,16 @@ public:
     void setChartScaminLevel(double level);
     // Symbol scale factor. 1.0 = nominal (baked) size; range 0.5 .. 3.0.
     void setSymbolScale(double scale);
+    // Text-label scale factor. 1.0 = nominal; range 0.5 .. 3.0. Repaints the
+    // static cache (labels are baked into it), no geometry rebuild.
+    void setTextScale(double scale);
+    // Depth-sounding scale factor. 1.0 = nominal; range 0.5 .. 3.0. Repaints the
+    // static cache (soundings are baked into it), no geometry rebuild.
+    void setSoundingScale(double scale);
+    // Text de-clutter: when enabled, labels are nudged up to maxPx (device px)
+    // to avoid overlapping other labels, symbols, and soundings. Repaints the
+    // static cache; no geometry rebuild.
+    void setLabelNudge(bool enabled, double maxPx);
     // Vessel glyph scale factor (ownship + AIS). 1.0 = nominal; range 0.5..3.0.
     void setVesselScale(double scale);
     void setDepthUnit(DepthUnit u);   // relabels soundings (repaint, no rebuild)
@@ -693,6 +703,10 @@ private:
     double chartDetailLevel_ = 0.0;   // -2.0..+2.0, biases target band
     double scaminLevel_      = 0.0;   // -1.0..+1.0, biases SCAMIN declutter
     double symbolScale_      = 1.0;   // 0.5..3.0, uniform symbol scale
+    double textScale_        = 1.0;   // 0.5..3.0, text-label size multiplier
+    double soundingScale_    = 1.0;   // 0.5..3.0, sounding size multiplier
+    bool   labelNudge_       = true;  // nudge labels to reduce overlap
+    double labelNudgeMaxPx_  = 20.0;  // max label nudge distance (device px)
     double vesselScale_      = 1.0;   // 0.5..3.0, ownship + AIS glyph scale
     DepthUnit depthUnit_ = DepthUnit::Feet;   // how soundings are labelled
     DistanceUnit distanceUnit_ = DistanceUnit::NauticalMiles;   // scale-bar units

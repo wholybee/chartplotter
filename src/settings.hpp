@@ -125,6 +125,21 @@ public:
     // steps of 0.25 from the dialog (50 % .. 300 %).
     double symbolScale() const { return symbolScale_; }
 
+    // Text-label scale factor (object names, light characters, etc.). 1.0 =
+    // nominal; range 0.5 .. 3.0 in 0.25 steps from the Symbol Size dialog.
+    double textScale() const { return textScale_; }
+
+    // Depth-sounding scale factor. 1.0 = nominal; range 0.5 .. 3.0 in 0.25
+    // steps from the Symbol Size dialog. Independent of textScale so the two
+    // families of numbers can be sized separately.
+    double soundingScale() const { return soundingScale_; }
+
+    // Text de-clutter: when on, text labels are nudged up to labelNudgeMaxPx to
+    // avoid overlapping other labels, symbols, and soundings (soundings and
+    // symbols are fixed and never move). Default on, 20 px.
+    bool   labelNudgeEnabled() const { return labelNudgeEnabled_; }
+    double labelNudgeMaxPx()   const { return labelNudgeMaxPx_; }
+
     // Vessel glyph scale factor (ownship + AIS). 1.0 = nominal; range 0.5..3.0
     // in steps of 0.25 from the dialog.
     double vesselScale() const { return vesselScale_; }
@@ -186,6 +201,9 @@ public slots:
     void setChartDetailLevel(double level);
     void setChartScaminLevel(double level);
     void setSymbolScale(double scale);
+    void setTextScale(double scale);
+    void setSoundingScale(double scale);
+    void setLabelNudge(bool enabled, double maxPx);
     void setVesselScale(double scale);
     void setOwnshipMmsi(const QString& mmsi);
     void setHeadingSource(HeadingSource s);
@@ -222,6 +240,9 @@ signals:
     void chartDetailLevelChanged(double level);
     void chartScaminLevelChanged(double level);
     void symbolScaleChanged(double scale);
+    void textScaleChanged(double scale);
+    void soundingScaleChanged(double scale);
+    void labelNudgeChanged(bool enabled, double maxPx);
     void vesselScaleChanged(double scale);
     void ownshipMmsiChanged(const QString& mmsi);
     void headingSourceChanged(HeadingSource s);
@@ -264,6 +285,10 @@ private:
     double        chartDetailLevel_ = 0.0;   // -2.0 .. +2.0, 0 = nominal
     double        chartScaminLevel_ = 0.0;   // -1.0 .. +1.0, 0 = nominal SCAMIN
     double        symbolScale_      = 1.0;   // 0.5 .. 3.0, 1.0 = nominal
+    double        textScale_        = 1.0;   // 0.5 .. 3.0, label size multiplier
+    double        soundingScale_    = 1.0;   // 0.5 .. 3.0, sounding size multiplier
+    bool          labelNudgeEnabled_ = true; // nudge labels to reduce overlap
+    double        labelNudgeMaxPx_   = 20.0; // max label nudge distance (device px)
     double        vesselScale_      = 1.0;   // 0.5 .. 3.0, 1.0 = nominal
     QString       ownshipMmsi_;              // 9-digit string or empty
     HeadingSource headingSource_ = HeadingSource::Heading;

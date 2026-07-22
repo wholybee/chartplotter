@@ -313,6 +313,15 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     view_->setSymbolScale(settings_->symbolScale());
     connect(settings_, &Settings::symbolScaleChanged,
             view_, &ChartView::setSymbolScale);
+    view_->setTextScale(settings_->textScale());
+    connect(settings_, &Settings::textScaleChanged,
+            view_, &ChartView::setTextScale);
+    view_->setSoundingScale(settings_->soundingScale());
+    connect(settings_, &Settings::soundingScaleChanged,
+            view_, &ChartView::setSoundingScale);
+    view_->setLabelNudge(settings_->labelNudgeEnabled(), settings_->labelNudgeMaxPx());
+    connect(settings_, &Settings::labelNudgeChanged,
+            view_, &ChartView::setLabelNudge);
     view_->setVesselScale(settings_->vesselScale());
     connect(settings_, &Settings::vesselScaleChanged,
             view_, &ChartView::setVesselScale);
@@ -998,9 +1007,16 @@ void MainWindow::editChartDetailLevel() {
 }
 
 void MainWindow::editSymbolSize() {
-    ChartSymbolSizeDialog dlg(settings_->symbolScale(), this);
-    if (dlg.exec() == QDialog::Accepted)
+    ChartSymbolSizeDialog dlg(settings_->symbolScale(), settings_->textScale(),
+                              settings_->soundingScale(),
+                              settings_->labelNudgeEnabled(),
+                              settings_->labelNudgeMaxPx(), this);
+    if (dlg.exec() == QDialog::Accepted) {
         settings_->setSymbolScale(dlg.symbolScale());
+        settings_->setTextScale(dlg.textScale());
+        settings_->setSoundingScale(dlg.soundingScale());
+        settings_->setLabelNudge(dlg.nudgeEnabled(), dlg.nudgeMaxPx());
+    }
 }
 
 void MainWindow::editVesselSize() {

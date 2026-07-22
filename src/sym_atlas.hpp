@@ -27,6 +27,7 @@
 #include <QPainterPath>
 #include <QPointF>
 #include <QPolygonF>
+#include <QRectF>
 #include <QString>
 #include <cstdint>
 #include <string>
@@ -74,6 +75,11 @@ public:
     void draw(QPainter& p, uint16_t symIdx, QPointF d,
               float rotationDeg = 0.0f, float scale = 1.0f) const {
         resources_.draw(p, symIdx, d, rotationDeg, scale);
+    }
+
+    // Device-space keep-out box for symbol symIdx drawn at d (ignores rotation).
+    QRectF symbolBox(uint16_t symIdx, QPointF d, float scale = 1.0f) const {
+        return resources_.symbolBox(symIdx, d, scale);
     }
 
     // Stamp LC line-complex `lcIndex` repeatedly along a device-space polyline.
