@@ -259,6 +259,11 @@ void appendCellBatches(const std::vector<Feature>& feats,
     // LineTo), so element iteration reconstructs the segments directly.
     for (const BuiltPath& bp : cell.paths) {
         if (!bp.hasPen) continue;
+        // M_QUAL "chart quality" boundary lines are never batched to the GPU: the
+        // layer's retained batches can't be filtered per-frame by the toggle, so
+        // the quality display (pattern + boundary) is owned entirely by the
+        // toggle-aware QPainter passes instead (see chart_view paint passes).
+        if (bp.isChartQuality) continue;
         std::vector<GpuVertex>& out = bp.isDepthContour ? contourLines : lines;
         const Rgb lc = toRgb(bp.penColor);
         const int n = bp.path.elementCount();

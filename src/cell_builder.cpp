@@ -224,6 +224,7 @@ BuiltCell instantiateCell(const QString& path, const std::vector<Feature>& feats
                 else if (f.kind == FeatureKind::OtherArea)        { bp.penColor = QColor(102, 102, 115, 150); bp.penWidth = 0.7; }
                 else                                              { bp.penColor = QColor(102, 102, 128);      bp.penWidth = 0.8; }
                 bp.isDepthContour = (f.kind == FeatureKind::DepthContour);
+                bp.isChartQuality = (f.objClass == "M_QUAL");
                 bc.paths.push_back(std::move(bp));
 
                 // Area centred symbols (e.g. ACHARE anchor glyph, TSSLPT

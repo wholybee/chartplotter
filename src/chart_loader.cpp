@@ -151,7 +151,12 @@ FeatureKind classify(const std::string& n, OGRwkbGeometryType t) {
 }
 
 bool skipLayer(const std::string& name) {
-    if (name.size() >= 2 && name[0] == 'M' && name[1] == '_') return true; // M_COVR, M_QUAL...
+    // M_QUAL (quality-of-data / CATZOC zones) is drawn like any other area: it
+    // resolves to the S-52 AP(DQUAL*) pattern via its CATZOC attribute, gated by
+    // the "Chart Quality" layer toggle (default off). Every other M_* meta layer
+    // (coverage, nav-system, publication, sounding datum, …) is not portrayed.
+    if (name == "M_QUAL") return false;
+    if (name.size() >= 2 && name[0] == 'M' && name[1] == '_') return true; // M_COVR, M_NSYS...
     if (name == "DSID") return true;
     return false;
 }

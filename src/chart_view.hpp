@@ -167,6 +167,7 @@ public:
     void setShowSymbols(bool on);
     void setShowText(bool on);   // object name (OBJNAM) labels
     void setShowDepthContours(bool on);
+    void setShowChartQuality(bool on);   // M_QUAL/CATZOC quality-of-data pattern
     // Show/hide the MBTiles raster-chart layer (tracking + loading continue).
     void setShowRasterCharts(bool on);
     // Vector-overlay mode: suppress the opaque chart base — land/water area fills
@@ -699,6 +700,7 @@ private:
     bool showSymbols_ = true;
     bool showText_ = true;
     bool showDepthContours_ = true;
+    bool showChartQuality_ = false;   // M_QUAL/CATZOC pattern; off by default
     bool vectorOverlay_ = false;      // hide base land/water fills + basemap so raster shows through
     double chartDetailLevel_ = 0.0;   // -2.0..+2.0, biases target band
     double scaminLevel_      = 0.0;   // -1.0..+1.0, biases SCAMIN declutter

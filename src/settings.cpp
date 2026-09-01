@@ -11,6 +11,7 @@ constexpr auto kSoundings = "display/showSoundings";
 constexpr auto kSymbols   = "display/showSymbols";
 constexpr auto kText      = "display/showText";
 constexpr auto kContours  = "display/showDepthContours";
+constexpr auto kChartQual = "display/showChartQuality";
 constexpr auto kAisShow   = "display/showAisTargets";
 constexpr auto kRasterShow = "display/showRasterCharts";
 constexpr auto kVectorOverlay = "display/vectorOverlay";
@@ -63,6 +64,7 @@ Settings::Settings(QObject* parent) : QObject(parent) {
     showSymbols_       = s.value(QLatin1String(kSymbols),   true).toBool();
     showText_          = s.value(QLatin1String(kText),      true).toBool();
     showDepthContours_ = s.value(QLatin1String(kContours),  true).toBool();
+    showChartQuality_  = s.value(QLatin1String(kChartQual), false).toBool();
     showAisTargets_    = s.value(QLatin1String(kAisShow),   true).toBool();
     showRasterCharts_  = s.value(QLatin1String(kRasterShow), true).toBool();
     vectorOverlay_     = s.value(QLatin1String(kVectorOverlay), false).toBool();
@@ -459,6 +461,13 @@ void Settings::setShowDepthContours(bool on) {
     showDepthContours_ = on;
     QSettings().setValue(QLatin1String(kContours), on);
     emit showDepthContoursChanged(on);
+}
+
+void Settings::setShowChartQuality(bool on) {
+    if (on == showChartQuality_) return;
+    showChartQuality_ = on;
+    QSettings().setValue(QLatin1String(kChartQual), on);
+    emit showChartQualityChanged(on);
 }
 
 void Settings::setShowAisTargets(bool on) {

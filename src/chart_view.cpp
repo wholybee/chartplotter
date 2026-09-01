@@ -993,6 +993,7 @@ void ChartView::setDisplaySettings(const ChartDisplaySettings& s) {
     setShowSymbols(s.showSymbols);
     setShowText(s.showText);
     setShowDepthContours(s.showDepthContours);
+    setShowChartQuality(s.showChartQuality);
     setShowRasterCharts(s.showRasterCharts);
     setVectorOverlay(s.vectorOverlay);
     setChartDetailLevel(s.chartDetailLevel);
@@ -1494,6 +1495,14 @@ void ChartView::setShowDepthContours(bool on) {
     // GPU mode keeps contours in their own retained bucket, so the toggle is a
     // draw-list change — no rebuild.
     showDepthContours_ = on; gpuDrawListDirty_ = true; invalidateChart();
+}
+void ChartView::setShowChartQuality(bool on) {
+    if (on == showChartQuality_) return;
+    // Paint-time filter over tagged M_QUAL paths — a repaint, not a rebuild. The
+    // asterisk pattern is a QPainter overlay in both backends, so this toggles it
+    // consistently; the faint dashed M_QUAL boundary is never pushed to the GPU
+    // batch (see gpu_batches), so nothing lingers there when off.
+    showChartQuality_ = on; invalidateChart();
 }
 
 void ChartView::setShowRasterCharts(bool on) {
@@ -2586,6 +2595,7 @@ void ChartView::renderStatic(QPainter& p, const QTransform& cam,
         const QRectF visFrame = vis.translated(-off, 0.0);   // cull in cell frame
         for (const BuiltPath& bp : c.paths) {
             if (bp.isDepthContour && !showDepthContours_) continue;
+            if (bp.isChartQuality && !showChartQuality_) continue;
             if (!bp.bounds.intersects(visFrame)) continue;
             // Vector-overlay mode drops every area fill (land/water/other) so the
             // raster imagery beneath shows through; pens are kept, so coastlines
@@ -2685,6 +2695,7 @@ void ChartView::drawPointSymbology(QPainter& p, const QTransform& cam,
 
             for (const BuiltPath& bp : c->paths) {
                 if (bp.apIndex < 0 && bp.lcIndex < 0) continue;
+                if (bp.isChartQuality && !showChartQuality_) continue;
                 if (!scaminPasses(bp.scaleMin, scaminDenom)) continue;
                 if (!bp.bounds.intersects(visFrame)) continue;
                 if (clipped) { p.save(); p.setClipPath(*dcIt); }

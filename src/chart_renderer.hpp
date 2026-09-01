@@ -40,6 +40,7 @@ struct ChartDisplaySettings {
     bool   showSymbols       = true;
     bool   showText          = true;
     bool   showDepthContours = true;
+    bool   showChartQuality  = false;   // M_QUAL/CATZOC pattern; off by default
     bool   showRasterCharts  = true;
     bool   vectorOverlay     = false;
     double chartDetailLevel  = 0.0;   // -2..+2 band bias

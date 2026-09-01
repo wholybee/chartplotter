@@ -47,6 +47,12 @@ LayersDialog::LayersDialog(Settings* settings, QWidget* parent)
     connect(con, &QPushButton::toggled, settings_, &Settings::setShowDepthContours);
     connect(settings_, &Settings::showDepthContoursChanged, con, &QPushButton::setChecked);
 
+    // Quality-of-data (M_QUAL/CATZOC) pattern. Only some chart sources emit it
+    // (e.g. o-charts); off by default because it clutters the water.
+    QPushButton* qual = makeToggle(QStringLiteral("Chart Quality"), settings_->showChartQuality());
+    connect(qual, &QPushButton::toggled, settings_, &Settings::setShowChartQuality);
+    connect(settings_, &Settings::showChartQualityChanged, qual, &QPushButton::setChecked);
+
     col->addStretch(1);
 }
 

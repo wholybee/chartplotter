@@ -35,6 +35,12 @@ public:
     // Object text labels (S-57 OBJNAM) drawn next to point objects.
     bool showText() const { return showText_; }
     bool showDepthContours() const { return showDepthContours_; }
+    // "Quality of data" (S-57 M_QUAL / CATZOC) zone-of-confidence areas — the
+    // magenta triangle-and-asterisks pattern. The built-in ENC reader skips all
+    // M_* meta layers, so this only affects chart sources that do emit M_QUAL
+    // (e.g. the o-charts vector plugin). Default off: the pattern is clutter for
+    // most users. Applied as a paint-time filter, so toggling is a repaint.
+    bool showChartQuality() const { return showChartQuality_; }
     // AIS targets drawn on the chart. When off, the overlay paints nothing and
     // ignores clicks, but the store and CpaCalculator keep tracking and the
     // dangerous-ship logic keeps running — it just has nothing to draw.
@@ -180,6 +186,7 @@ public slots:
     void setShowSymbols(bool on);
     void setShowText(bool on);
     void setShowDepthContours(bool on);
+    void setShowChartQuality(bool on);
     void setShowAisTargets(bool on);
     void setShowRasterCharts(bool on);
     void setVectorOverlay(bool on);
@@ -220,6 +227,7 @@ signals:
     void showSymbolsChanged(bool on);
     void showTextChanged(bool on);
     void showDepthContoursChanged(bool on);
+    void showChartQualityChanged(bool on);
     void showAisTargetsChanged(bool on);
     void showRasterChartsChanged(bool on);
     void vectorOverlayChanged(bool on);
@@ -259,6 +267,7 @@ private:
     bool showSymbols_ = true;
     bool showText_ = true;
     bool showDepthContours_ = true;
+    bool showChartQuality_ = false;   // M_QUAL/CATZOC pattern; off by default
     bool showAisTargets_ = true;
     bool showRasterCharts_ = true;
     bool vectorOverlay_ = false;

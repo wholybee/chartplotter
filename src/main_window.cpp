@@ -283,12 +283,14 @@ MainWindow::MainWindow(QWidget* parent) : QMainWindow(parent) {
     view_->setShowSymbols(settings_->showSymbols());
     view_->setShowText(settings_->showText());
     view_->setShowDepthContours(settings_->showDepthContours());
+    view_->setShowChartQuality(settings_->showChartQuality());
     view_->setShowRasterCharts(settings_->showRasterCharts());
     view_->setVectorOverlay(settings_->vectorOverlay());
     connect(settings_, &Settings::showSoundingsChanged,     view_, &ChartView::setShowSoundings);
     connect(settings_, &Settings::showSymbolsChanged,       view_, &ChartView::setShowSymbols);
     connect(settings_, &Settings::showTextChanged,          view_, &ChartView::setShowText);
     connect(settings_, &Settings::showDepthContoursChanged, view_, &ChartView::setShowDepthContours);
+    connect(settings_, &Settings::showChartQualityChanged,  view_, &ChartView::setShowChartQuality);
     connect(settings_, &Settings::showRasterChartsChanged,  view_, &ChartView::setShowRasterCharts);
     connect(settings_, &Settings::vectorOverlayChanged,     view_, &ChartView::setVectorOverlay);
     // Rendering backend (Stage 7): the "Use GPU acceleration" toggle. Applied now

@@ -32,6 +32,10 @@ struct BuiltPath {
     qreal  penWidth = 1.0;
     Qt::PenStyle penStyle = Qt::SolidLine;   // SolidLine / DashLine / DotLine
     bool   isDepthContour = false;
+    // M_QUAL "quality of data" area (the CATZOC asterisk-triangle pattern +
+    // dashed boundary). Tagged here so the paint passes can honour the
+    // "Chart Quality" layer toggle without a cell rebuild.
+    bool   isChartQuality = false;
     // S-52 complex symbology resolved at build time, rendered at constant on-
     // screen size in device space (see paintEvent). -1 when absent.
     int    apIndex = -1;       // AP() area-pattern fill (tiled motif)
