@@ -1,0 +1,9 @@
+// Windows resource script: embeds the multi-resolution application icon into
+// hmvchartplotter.exe. Windows Explorer, the taskbar, and the NSIS installer's
+// "Add/Remove Programs" entry all read the icon from the executable's resources.
+//
+// The path is relative to this .rc file; both the MSVC resource compiler
+// (rc.exe) and MinGW's windres search the .rc's own directory, so appicon.ico
+// (sitting next to this file) resolves under both the local VS2022 build and
+// the MSYS2/MinGW CI build. Regenerate the .ico with tools/make_app_icon.py.
+IDI_ICON1 ICON "appicon.ico"

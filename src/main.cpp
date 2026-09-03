@@ -1,5 +1,6 @@
 #include <QApplication>
 #include <QDir>
+#include <QIcon>
 #include <QSettings>
 #include "chart_loader.hpp"
 #include "main_window.hpp"
@@ -24,6 +25,11 @@ int main(int argc, char** argv) {
     QApplication::setApplicationName(QStringLiteral("HMV Chart"));
     QApplication::setApplicationDisplayName(appinfo::name());
     QApplication::setApplicationVersion(appinfo::version());
+    // Window/taskbar icon on every platform. On Windows the exe also carries the
+    // icon via resources/appicon.rc (used by Explorer and the installer); this
+    // ensures the icon shows at runtime on Linux/macOS too. Embedded as a Qt
+    // resource by CMake (:/appicon.png).
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/appicon.png")));
 
     // Install the file-logging message handler as early as possible so startup
     // messages are captured, then apply the persisted opt-in state. The handler
