@@ -86,6 +86,37 @@ inline QString formatDistance(double nm, DistanceUnit u) {
     return QString::number(v, 'f', prec) + QLatin1Char(' ') + distanceUnitKey(u);
 }
 
+// ---- speed -----------------------------------------------------------------
+
+// Speed shares the distance-unit preference: nautical miles -> knots, statute
+// miles -> mph, kilometres -> km/h. Planned speed is stored and exported in
+// knots (the GPX/OpenCPN convention); these convert for display and entry.
+inline QString speedUnitKey(DistanceUnit u) {
+    switch (u) {
+        case DistanceUnit::StatuteMiles: return QStringLiteral("mph");
+        case DistanceUnit::Kilometers:   return QStringLiteral("km/h");
+        case DistanceUnit::NauticalMiles: break;
+    }
+    return QStringLiteral("kn");
+}
+
+inline double speedFromKnots(double kts, DistanceUnit u) {
+    switch (u) {
+        case DistanceUnit::StatuteMiles: return kts * kNmToStatuteMiles;
+        case DistanceUnit::Kilometers:   return kts * kNmToKilometers;
+        case DistanceUnit::NauticalMiles: break;
+    }
+    return kts;
+}
+inline double knotsFromSpeed(double value, DistanceUnit u) {
+    switch (u) {
+        case DistanceUnit::StatuteMiles: return value / kNmToStatuteMiles;
+        case DistanceUnit::Kilometers:   return value / kNmToKilometers;
+        case DistanceUnit::NauticalMiles: break;
+    }
+    return value;
+}
+
 // ---- short distances (feet / metres) ---------------------------------------
 
 // Thresholds like the track-point spacing are tens-of-metres scale, where a

@@ -59,7 +59,8 @@ bool RouteStore::createSchema(QString& err) {
         " created TEXT, visible INTEGER NOT NULL DEFAULT 1)",
         "CREATE TABLE IF NOT EXISTS routes("
         " id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT, description TEXT,"
-        " created TEXT, visible INTEGER NOT NULL DEFAULT 1)",
+        " created TEXT, visible INTEGER NOT NULL DEFAULT 1,"
+        " planned_speed REAL, planned_departure TEXT, display_color TEXT)",
         "CREATE TABLE IF NOT EXISTS route_points("
         " id INTEGER PRIMARY KEY AUTOINCREMENT,"
         " route_id INTEGER NOT NULL REFERENCES routes(id) ON DELETE CASCADE,"
@@ -79,6 +80,20 @@ bool RouteStore::createSchema(QString& err) {
     for (const char* ddl : kDdl) {
         QSqlQuery q(db_);
         if (!q.exec(QLatin1String(ddl))) { err = q.lastError().text(); return false; }
+    }
+
+    // Migrate databases created before the voyage-plan / colour columns existed.
+    // ADD COLUMN on an existing column fails harmlessly ("duplicate column
+    // name"); a fresh DB already has them from the CREATE above, so these are
+    // no-ops there. Either way the failure is expected and ignored.
+    static const char* kAddColumns[] = {
+        "ALTER TABLE routes ADD COLUMN planned_speed REAL",
+        "ALTER TABLE routes ADD COLUMN planned_departure TEXT",
+        "ALTER TABLE routes ADD COLUMN display_color TEXT",
+    };
+    for (const char* ddl : kAddColumns) {
+        QSqlQuery q(db_);
+        q.exec(QLatin1String(ddl));   // ignore result: pre-existing column is fine
     }
     return true;
 }
@@ -106,7 +121,8 @@ void RouteStore::loadAll() {
     }
 
     QSqlQuery rq(db_);
-    if (rq.exec(QStringLiteral("SELECT id,name,description,created,visible"
+    if (rq.exec(QStringLiteral("SELECT id,name,description,created,visible,"
+                               "planned_speed,planned_departure,display_color"
                                " FROM routes ORDER BY id"))) {
         while (rq.next()) {
             Route r;
@@ -115,6 +131,10 @@ void RouteStore::loadAll() {
             r.description = rq.value(2).toString();
             r.createdUtc  = QDateTime::fromString(rq.value(3).toString(), Qt::ISODate);
             r.visible     = rq.value(4).toInt() != 0;
+            r.plannedSpeedKts = rq.value(5).toDouble();   // NULL -> 0.0 (unset)
+            r.plannedDepartureUtc =
+                QDateTime::fromString(rq.value(6).toString(), Qt::ISODate);
+            r.displayColor = rq.value(7).toString();
             routes_.push_back(std::move(r));
         }
     }
@@ -286,12 +306,16 @@ qint64 RouteStore::addRoute(Route r) {
     if (!r.createdUtc.isValid()) r.createdUtc = QDateTime::currentDateTimeUtc();
     db_.transaction();
     QSqlQuery q(db_);
-    q.prepare(QStringLiteral("INSERT INTO routes(name,description,created,visible)"
-                             " VALUES(?,?,?,?)"));
+    q.prepare(QStringLiteral("INSERT INTO routes(name,description,created,visible,"
+                             "planned_speed,planned_departure,display_color)"
+                             " VALUES(?,?,?,?,?,?,?)"));
     q.addBindValue(r.name);
     q.addBindValue(r.description);
     q.addBindValue(isoOrNull(r.createdUtc));
     q.addBindValue(r.visible ? 1 : 0);
+    q.addBindValue(r.plannedSpeedKts > 0.0 ? QVariant(r.plannedSpeedKts) : QVariant());
+    q.addBindValue(isoOrNull(r.plannedDepartureUtc));
+    q.addBindValue(r.displayColor.isEmpty() ? QVariant() : QVariant(r.displayColor));
     if (!q.exec()) { qWarning() << "addRoute:" << q.lastError().text(); db_.rollback(); return -1; }
     r.id = q.lastInsertId().toLongLong();
 
@@ -317,10 +341,15 @@ void RouteStore::updateRoute(const Route& r) {
     db_.transaction();
     {
         QSqlQuery q(db_);
-        q.prepare(QStringLiteral("UPDATE routes SET name=?,description=?,visible=? WHERE id=?"));
+        q.prepare(QStringLiteral("UPDATE routes SET name=?,description=?,visible=?,"
+                                 "planned_speed=?,planned_departure=?,display_color=?"
+                                 " WHERE id=?"));
         q.addBindValue(r.name);
         q.addBindValue(r.description);
         q.addBindValue(r.visible ? 1 : 0);
+        q.addBindValue(r.plannedSpeedKts > 0.0 ? QVariant(r.plannedSpeedKts) : QVariant());
+        q.addBindValue(isoOrNull(r.plannedDepartureUtc));
+        q.addBindValue(r.displayColor.isEmpty() ? QVariant() : QVariant(r.displayColor));
         q.addBindValue(r.id);
         if (!q.exec()) { qWarning() << "updateRoute:" << q.lastError().text(); db_.rollback(); return; }
     }

@@ -35,6 +35,13 @@ QByteArray write(const QVector<Route>& routes, const QVector<Waypoint>& waypoint
     w.writeAttribute(QStringLiteral("version"), QStringLiteral("1.1"));
     w.writeAttribute(QStringLiteral("creator"), QStringLiteral("Chartplotter"));
     w.writeDefaultNamespace(QStringLiteral("http://www.topografix.com/GPX/1/1"));
+    // Vendor namespaces for the route voyage-plan / colour extensions, so the
+    // prefixes below (opencpn:, gpxx:) are declared once on the root and the file
+    // round-trips with OpenCPN and Garmin readers.
+    w.writeNamespace(QStringLiteral("http://www.opencpn.org"),
+                     QStringLiteral("opencpn"));
+    w.writeNamespace(QStringLiteral("http://www.garmin.com/xmlschemas/GpxExtensions/v3"),
+                     QStringLiteral("gpxx"));
 
     // Standalone waypoints first (GPX puts <wpt> before <rte>).
     for (const Waypoint& wp : waypoints) {
@@ -49,6 +56,35 @@ QByteArray write(const QVector<Route>& routes, const QVector<Waypoint>& waypoint
         w.writeStartElement(QStringLiteral("rte"));
         if (!r.name.isEmpty())        w.writeTextElement(QStringLiteral("name"), r.name);
         if (!r.description.isEmpty())  w.writeTextElement(QStringLiteral("desc"), r.description);
+
+        // Voyage-plan / colour extensions. DisplayColor lives inside the Garmin
+        // gpxx:RouteExtension (where those readers expect it); planned speed and
+        // departure are OpenCPN elements directly under <extensions>.
+        const bool hasExt = r.plannedSpeedKts > 0.0
+                         || r.plannedDepartureUtc.isValid()
+                         || !r.displayColor.isEmpty();
+        if (hasExt) {
+            w.writeStartElement(QStringLiteral("extensions"));
+            if (r.plannedSpeedKts > 0.0)
+                w.writeTextElement(QStringLiteral("http://www.opencpn.org"),
+                                   QStringLiteral("planned_speed"),
+                                   QString::number(r.plannedSpeedKts, 'f', 2));
+            if (r.plannedDepartureUtc.isValid())
+                w.writeTextElement(QStringLiteral("http://www.opencpn.org"),
+                                   QStringLiteral("planned_departure"),
+                                   isoUtc(r.plannedDepartureUtc));
+            if (!r.displayColor.isEmpty()) {
+                w.writeStartElement(
+                    QStringLiteral("http://www.garmin.com/xmlschemas/GpxExtensions/v3"),
+                    QStringLiteral("RouteExtension"));
+                w.writeTextElement(
+                    QStringLiteral("http://www.garmin.com/xmlschemas/GpxExtensions/v3"),
+                    QStringLiteral("DisplayColor"), r.displayColor);
+                w.writeEndElement();  // gpxx:RouteExtension
+            }
+            w.writeEndElement();  // extensions
+        }
+
         for (const RoutePoint& p : r.points) {
             w.writeStartElement(QStringLiteral("rtept"));
             w.writeAttribute(QStringLiteral("lat"), coord(p.lat));
@@ -114,6 +150,17 @@ bool read(const QByteArray& data, Document& out, QString& err) {
                     route.name = r.readElementText();
                 } else if (c == QLatin1String("desc")) {
                     route.description = r.readElementText();
+                } else if (c == QLatin1String("extensions")
+                        || c == QLatin1String("RouteExtension")) {
+                    // Container: fall through so the walk descends into it and
+                    // the route-extension leaves below are seen.
+                } else if (c == QLatin1String("planned_speed")) {
+                    route.plannedSpeedKts = r.readElementText().toDouble();
+                } else if (c == QLatin1String("planned_departure")) {
+                    route.plannedDepartureUtc =
+                        QDateTime::fromString(r.readElementText(), Qt::ISODate);
+                } else if (c == QLatin1String("DisplayColor")) {
+                    route.displayColor = r.readElementText();
                 } else if (c == QLatin1String("rtept")) {
                     RoutePoint p;
                     if (!readLatLon(r, p.lat, p.lon)) { r.skipCurrentElement(); continue; }

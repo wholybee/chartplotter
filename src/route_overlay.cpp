@@ -1,5 +1,6 @@
 #include "route_overlay.hpp"
 #include "route_store.hpp"
+#include "route_colors.hpp"
 #include "nav_data_store.hpp"
 #include "settings.hpp"
 #include "units.hpp"
@@ -28,8 +29,7 @@ constexpr double kActiveRing   = 11.0;   // red highlight around the next waypoi
 // other, so they are left unlabelled until the user zooms in.
 constexpr double kMinLegLabelPx = 44.0;
 constexpr double kLegLabelOffset = 12.0;   // px the label sits off the leg line
-const QColor kRouteLine   (0xB0, 0x30, 0xD0);
-const QColor kRouteNode   (0x80, 0x10, 0xA0);
+const QColor kRouteLine   (0xB0, 0x30, 0xD0);   // default; per-route DisplayColor overrides
 const QColor kWptFill      (0xFF, 0x8C, 0x00);
 const QColor kWptEdge      (0x40, 0x20, 0x00);
 const QColor kEditLine     (0xF0, 0xC0, 0x00);
@@ -225,7 +225,11 @@ void RouteOverlay::paint(QPainter& p, const ChartViewport& vp) {
             const QRectF rb(QPointF(minX, minY), QPointF(maxX, maxY));
             if (!rb.intersects(cull)) continue;   // whole route off-screen
 
-            p.setPen(QPen(kRouteLine, 2.0));
+            // Per-route display colour (from GPX <gpxx:DisplayColor>); falls back
+            // to the default violet. Nodes use a slightly darker shade for contrast.
+            const QColor lineColor = routecolor::toColor(r.displayColor, kRouteLine);
+            const QColor nodeColor = lineColor.darker(130);
+            p.setPen(QPen(lineColor, 2.0));
             p.setBrush(Qt::NoBrush);
             for (size_t i = 1; i < pts.size(); ++i) p.drawLine(pts[i - 1], pts[i]);
 
@@ -235,7 +239,7 @@ void RouteOverlay::paint(QPainter& p, const ChartViewport& vp) {
                              pts[i - 1], pts[i], distUnit, brgMode, variation, cull);
 
             p.setPen(QPen(QColor(255, 255, 255), 1.0));
-            p.setBrush(kRouteNode);
+            p.setBrush(nodeColor);
             for (const QPointF& s : pts) {
                 if (!onScreen(s, cull)) continue;
                 p.drawEllipse(s, kNodeRadius, kNodeRadius);

@@ -39,6 +39,16 @@ struct Route {
     QDateTime createdUtc;
     bool      visible = true;
     QVector<RoutePoint> points;   // ordered (seq)
+
+    // Voyage plan + display, all optional and mapped onto GPX extensions:
+    //   plannedSpeedKts     -> <opencpn:planned_speed>     (knots; 0 == unset)
+    //   plannedDepartureUtc -> <opencpn:planned_departure> (UTC instant)
+    //   displayColor        -> <gpxx:DisplayColor>         (Garmin colour name,
+    //                          e.g. "Red"; empty == app default)
+    // The arrival time is derived (departure + distance / speed), never stored.
+    double    plannedSpeedKts = 0.0;
+    QDateTime plannedDepartureUtc;
+    QString   displayColor;
 };
 
 // One recorded fix along a track. Unlike a RoutePoint (a place the boat is meant

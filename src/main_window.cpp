@@ -1648,7 +1648,7 @@ void MainWindow::openRouteProperties(qint64 id) {
     // One Properties editor at a time; replace any existing.
     if (propsDlg_) propsDlg_->close();
     propsWork_ = *r;
-    propsDlg_ = new RoutePropertiesDialog(*r, this);
+    propsDlg_ = new RoutePropertiesDialog(*r, settings_->distanceUnit(), this);
     propsDlg_->setAttribute(Qt::WA_DeleteOnClose);
     connect(propsDlg_, &RoutePropertiesDialog::editPointRequested,
             this, &MainWindow::onPropsEditPoint);

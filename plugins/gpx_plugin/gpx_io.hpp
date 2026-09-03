@@ -7,7 +7,10 @@
 // GPX 1.1 reader/writer for the routes/waypoints model. The core's plain-data
 // types already map onto GPX (see route_types.hpp), so this is a thin codec:
 //   Waypoint   <-> <wpt lat lon> + <time>/<name>/<desc>/<sym>
-//   Route      <-> <rte> + <name>/<desc> with ordered <rtept>
+//   Route      <-> <rte> + <name>/<desc> with ordered <rtept>, plus voyage-plan
+//                  extensions: <opencpn:planned_speed> (knots),
+//                  <opencpn:planned_departure> (UTC) and, inside
+//                  <gpxx:RouteExtension>, <gpxx:DisplayColor>
 //   RoutePoint <-> <rtept lat lon> + <name>
 //
 // No external dependency: built on QXmlStreamReader/Writer (Qt6::Core). Reads are
