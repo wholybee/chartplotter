@@ -720,10 +720,12 @@ if(WIN32)
     # Branded installer/uninstaller icons and the Add/Remove Programs icon. The
     # first two set the icon of the generated setup and uninstall .exe; the third
     # points the Add/Remove Programs entry at the (icon-bearing) installed exe.
-    # NSIS needs a native path separator here, so hand it a backslash form.
-    file(TO_NATIVE_PATH "${CMAKE_SOURCE_DIR}/resources/appicon.ico" CPACK_NSIS_ICON_PATH)
-    set(CPACK_NSIS_MUI_ICON     "${CPACK_NSIS_ICON_PATH}")
-    set(CPACK_NSIS_MUI_UNIICON  "${CPACK_NSIS_ICON_PATH}")
+    # Keep forward slashes: CPack writes this value verbatim into
+    # CPackConfig.cmake, which cpack re-parses as CMake code — a native backslash
+    # path (e.g. "...\source\...") would trip an invalid-escape error there.
+    # makensis reads the icon file fine with forward slashes.
+    set(CPACK_NSIS_MUI_ICON     "${CMAKE_SOURCE_DIR}/resources/appicon.ico")
+    set(CPACK_NSIS_MUI_UNIICON  "${CMAKE_SOURCE_DIR}/resources/appicon.ico")
     set(CPACK_NSIS_INSTALLED_ICON_NAME "hmvchartplotter.exe")
 
     include(CPack)
